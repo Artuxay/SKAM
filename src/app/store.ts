@@ -110,6 +110,20 @@ export async function ensureProfiles(ids: (string | null | undefined)[]): Promis
   emit('chats', 'feed', 'head', 'online', 'members');
 }
 
+/** Перечитать уже известные профили (когда нет Realtime и изменения имён не приходят сами). */
+export async function refreshProfiles(): Promise<void> {
+  const ids = [...S.profiles.keys()];
+  let changed = false;
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data } = await sb.from('profiles').select('*').in('id', ids.slice(i, i + 100));
+    data?.forEach((p) => {
+      const old = S.profiles.get(p.id);
+      if (!old || old.updated_at !== p.updated_at) { changed = true; S.profiles.set(p.id, p); if (p.id === meId()) S.me = p; }
+    });
+  }
+  if (changed) emit('chats', 'feed', 'head', 'online', 'members', 'me');
+}
+
 export function putProfile(p: Profile): void {
   S.profiles.set(p.id, p);
   if (p.id === meId()) S.me = p;
@@ -291,7 +305,8 @@ export function markRead(chatId: string): void {
   clearTimeout(readTimers.get(chatId));
   readTimers.set(chatId, window.setTimeout(() => {
     readTimers.delete(chatId);
-    void sb.rpc('mark_read', { p_chat: chatId, p_at: latest });
+    // Запросы supabase-js ленивые: без then() они не отправляются.
+    sb.rpc('mark_read', { p_chat: chatId, p_at: latest }).then(() => {}, () => {});
   }, 700));
 }
 

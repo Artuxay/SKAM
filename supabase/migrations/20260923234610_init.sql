@@ -4,12 +4,13 @@
 --
 -- Применение: Supabase Dashboard → SQL Editor → вставить файл целиком → Run
 -- (или `supabase db push`, если проект привязан через CLI).
+-- Скрипт идемпотентный: повторный запуск ничего не ломает и дочиняет частично применённую схему.
 
 -- ---------------------------------------------------------------------------
 -- Таблицы
 -- ---------------------------------------------------------------------------
 
-create table public.profiles (
+create table if not exists public.profiles (
   id          uuid primary key references auth.users (id) on delete cascade,
   name        text check (name is null or char_length(btrim(name)) between 1 and 40),
   avatar_path text check (avatar_path is null or (char_length(avatar_path) <= 200 and avatar_path like id::text || '/%')),
@@ -19,7 +20,7 @@ create table public.profiles (
 );
 comment on table public.profiles is 'Публичный профиль пользователя: имя, аватарка, цвет буквенного аватара.';
 
-create table public.chats (
+create table if not exists public.chats (
   id          uuid primary key default gen_random_uuid(),
   kind        text not null default 'group' check (kind in ('group', 'direct')),
   name        text check (name is null or char_length(btrim(name)) between 1 and 40),
@@ -37,7 +38,7 @@ create table public.chats (
 comment on table public.chats is 'Групповые и личные чаты.';
 comment on column public.chats.is_default is 'Общий чат: в него автоматически попадает каждый новый пользователь.';
 
-create table public.chat_members (
+create table if not exists public.chat_members (
   chat_id      uuid not null references public.chats (id) on delete cascade,
   user_id      uuid not null references public.profiles (id) on delete cascade,
   role         text not null default 'member' check (role in ('owner', 'member')),
@@ -45,9 +46,9 @@ create table public.chat_members (
   last_read_at timestamptz not null default now(),
   primary key (chat_id, user_id)
 );
-create index chat_members_user_idx on public.chat_members (user_id);
+create index if not exists chat_members_user_idx on public.chat_members (user_id);
 
-create table public.messages (
+create table if not exists public.messages (
   id         uuid primary key default gen_random_uuid(),
   chat_id    uuid not null references public.chats (id) on delete cascade,
   user_id    uuid default auth.uid() references public.profiles (id) on delete set null,
@@ -60,9 +61,9 @@ create table public.messages (
     or (deleted_at is not null and body = '')
   )
 );
-create index messages_chat_created_idx on public.messages (chat_id, created_at desc, id desc);
+create index if not exists messages_chat_created_idx on public.messages (chat_id, created_at desc, id desc);
 
-create table public.reactions (
+create table if not exists public.reactions (
   message_id uuid not null references public.messages (id) on delete cascade,
   user_id    uuid not null default auth.uid() references public.profiles (id) on delete cascade,
   emoji      text not null check (emoji in ('like', 'lol', 'fire', 'wow', 'clown')),
@@ -70,7 +71,7 @@ create table public.reactions (
   created_at timestamptz not null default now(),
   primary key (message_id, user_id, emoji)
 );
-create index reactions_chat_idx on public.reactions (chat_id);
+create index if not exists reactions_chat_idx on public.reactions (chat_id);
 
 -- ---------------------------------------------------------------------------
 -- Служебные функции и триггеры
@@ -78,7 +79,7 @@ create index reactions_chat_idx on public.reactions (chat_id);
 
 -- Участник ли текущий пользователь чата. SECURITY DEFINER — чтобы политики
 -- на chat_members не вызывали сами себя рекурсивно.
-create function public.is_chat_member(p_chat uuid)
+create or replace function public.is_chat_member(p_chat uuid)
 returns boolean
 language sql stable security definer set search_path = ''
 as $$
@@ -88,7 +89,7 @@ as $$
   );
 $$;
 
-create function public.touch_updated_at()
+create or replace function public.touch_updated_at()
 returns trigger language plpgsql set search_path = ''
 as $$
 begin
@@ -97,11 +98,12 @@ begin
 end;
 $$;
 
+drop trigger if exists profiles_touch on public.profiles;
 create trigger profiles_touch before update on public.profiles
   for each row execute function public.touch_updated_at();
 
 -- Реакция хранит chat_id сообщения: так проще RLS и фильтры Realtime.
-create function public.reactions_fill_chat()
+create or replace function public.reactions_fill_chat()
 returns trigger language plpgsql security definer set search_path = ''
 as $$
 begin
@@ -112,11 +114,12 @@ begin
 end;
 $$;
 
+drop trigger if exists reactions_fill on public.reactions;
 create trigger reactions_fill before insert on public.reactions
   for each row execute function public.reactions_fill_chat();
 
 -- Новый пользователь → профиль + членство в общих чатах.
-create function public.handle_new_user()
+create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = ''
 as $$
 declare
@@ -135,6 +138,7 @@ begin
 end;
 $$;
 
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
 
@@ -149,21 +153,26 @@ alter table public.messages     enable row level security;
 alter table public.reactions    enable row level security;
 
 -- Профили видят все вошедшие; менять можно только свой.
+drop policy if exists "profiles: read" on public.profiles;
 create policy "profiles: read" on public.profiles
   for select to authenticated using (true);
+drop policy if exists "profiles: update own" on public.profiles;
 create policy "profiles: update own" on public.profiles
   for update to authenticated
   using (id = (select auth.uid())) with check (id = (select auth.uid()));
 
 -- Чаты видят только участники; переименовать/удалить группу может владелец.
+drop policy if exists "chats: members read" on public.chats;
 create policy "chats: members read" on public.chats
   for select to authenticated using (public.is_chat_member(id));
+drop policy if exists "chats: owner update" on public.chats;
 create policy "chats: owner update" on public.chats
   for update to authenticated
   using (kind = 'group' and exists (
     select 1 from public.chat_members m
     where m.chat_id = chats.id and m.user_id = (select auth.uid()) and m.role = 'owner'))
   with check (kind = 'group');
+drop policy if exists "chats: owner delete" on public.chats;
 create policy "chats: owner delete" on public.chats
   for delete to authenticated
   using (not is_default and exists (
@@ -171,26 +180,33 @@ create policy "chats: owner delete" on public.chats
     where m.chat_id = chats.id and m.user_id = (select auth.uid()) and m.role = 'owner'));
 
 -- Состав чата видят его участники; выйти из чата может каждый сам.
+drop policy if exists "members: read" on public.chat_members;
 create policy "members: read" on public.chat_members
   for select to authenticated using (public.is_chat_member(chat_id));
+drop policy if exists "members: leave" on public.chat_members;
 create policy "members: leave" on public.chat_members
   for delete to authenticated using (user_id = (select auth.uid()));
 
 -- Сообщения: читают и пишут участники; автор — всегда текущий пользователь.
+drop policy if exists "messages: members read" on public.messages;
 create policy "messages: members read" on public.messages
   for select to authenticated using (public.is_chat_member(chat_id));
+drop policy if exists "messages: members write" on public.messages;
 create policy "messages: members write" on public.messages
   for insert to authenticated
   with check (user_id = (select auth.uid()) and kind = 'text' and deleted_at is null
               and public.is_chat_member(chat_id));
 
 -- Реакции: участники чата, только от своего имени и не на удалённые сообщения.
+drop policy if exists "reactions: members read" on public.reactions;
 create policy "reactions: members read" on public.reactions
   for select to authenticated using (public.is_chat_member(chat_id));
+drop policy if exists "reactions: add own" on public.reactions;
 create policy "reactions: add own" on public.reactions
   for insert to authenticated
   with check (user_id = (select auth.uid()) and public.is_chat_member(chat_id)
               and exists (select 1 from public.messages m where m.id = message_id and m.deleted_at is null));
+drop policy if exists "reactions: remove own" on public.reactions;
 create policy "reactions: remove own" on public.reactions
   for delete to authenticated using (user_id = (select auth.uid()));
 
@@ -210,7 +226,7 @@ grant delete on public.reactions to authenticated;
 -- ---------------------------------------------------------------------------
 
 -- Создать групповой чат (создатель становится владельцем).
-create function public.create_chat(p_name text, p_emoji text default '💬')
+create or replace function public.create_chat(p_name text, p_emoji text default '💬')
 returns public.chats
 language plpgsql security definer set search_path = ''
 as $$
@@ -228,7 +244,7 @@ end;
 $$;
 
 -- Что за чат скрывается за приглашением (для экрана «Вступить?»).
-create function public.chat_by_invite(p_code text)
+create or replace function public.chat_by_invite(p_code text)
 returns table (id uuid, name text, emoji text, member_count int, is_member boolean)
 language sql stable security definer set search_path = ''
 as $$
@@ -240,7 +256,7 @@ as $$
 $$;
 
 -- Вступить в чат по коду приглашения. Возвращает id чата.
-create function public.join_chat(p_code text)
+create or replace function public.join_chat(p_code text)
 returns uuid
 language plpgsql security definer set search_path = ''
 as $$
@@ -257,7 +273,7 @@ end;
 $$;
 
 -- Новый код приглашения (старая ссылка перестанет работать). Только владелец.
-create function public.reset_invite(p_chat uuid)
+create or replace function public.reset_invite(p_chat uuid)
 returns text
 language plpgsql security definer set search_path = ''
 as $$
@@ -273,7 +289,7 @@ end;
 $$;
 
 -- Личный чат с пользователем: найти или создать. Возвращает id чата.
-create function public.open_direct(p_user uuid)
+create or replace function public.open_direct(p_user uuid)
 returns uuid
 language plpgsql security definer set search_path = ''
 as $$
@@ -300,7 +316,7 @@ end;
 $$;
 
 -- Удалить своё сообщение (остаётся плашка «Сообщение удалено»).
-create function public.delete_message(p_id uuid)
+create or replace function public.delete_message(p_id uuid)
 returns void
 language plpgsql security definer set search_path = ''
 as $$
@@ -314,7 +330,7 @@ end;
 $$;
 
 -- Отметить чат прочитанным до момента p_at (но не позже «сейчас»).
-create function public.mark_read(p_chat uuid, p_at timestamptz default now())
+create or replace function public.mark_read(p_chat uuid, p_at timestamptz default now())
 returns void
 language sql security definer set search_path = ''
 as $$
@@ -324,7 +340,7 @@ as $$
 $$;
 
 -- Выйти из чата. Пустая группа удаляется.
-create function public.leave_chat(p_chat uuid)
+create or replace function public.leave_chat(p_chat uuid)
 returns void
 language plpgsql security definer set search_path = ''
 as $$
@@ -337,7 +353,7 @@ end;
 $$;
 
 -- Список моих чатов для боковой панели: последнее сообщение и счётчик непрочитанных.
-create function public.my_chats()
+create or replace function public.my_chats()
 returns table (
   id uuid, kind text, name text, emoji text, invite_code text, is_default boolean,
   created_at timestamptz, role text, last_read_at timestamptz,
@@ -387,12 +403,17 @@ revoke execute on function public.handle_new_user(), public.reactions_fill_chat(
 -- ---------------------------------------------------------------------------
 
 insert into public.chats (id, kind, name, emoji, is_default, invite_code)
-values ('00000000-0000-0000-0000-000000000001', 'group', 'Общий', '💬', true, null);
+values ('00000000-0000-0000-0000-000000000001', 'group', 'Общий', '💬', true, null)
+on conflict (id) do nothing;
 
 insert into public.messages (chat_id, user_id, kind, body, created_at)
-values ('00000000-0000-0000-0000-000000000001', null, 'system',
-        'Добро пожаловать в СКАМ! Это не развод — это мессенджер. Пишите, ставьте реакции и заводите свои чаты.',
-        now() - interval '1 second');
+select '00000000-0000-0000-0000-000000000001', null, 'system',
+       'Добро пожаловать в СКАМ! Это не развод — это мессенджер. Пишите, ставьте реакции и заводите свои чаты.',
+       now() - interval '1 second'
+where not exists (
+  select 1 from public.messages
+  where chat_id = '00000000-0000-0000-0000-000000000001' and kind = 'system'
+);
 
 -- Пользователи, которые успели зарегистрироваться до миграции.
 insert into public.profiles (id)
@@ -406,10 +427,17 @@ on conflict do nothing;
 -- ---------------------------------------------------------------------------
 
 do $$
+declare t text;
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    alter publication supabase_realtime
-      add table public.messages, public.reactions, public.chat_members, public.chats, public.profiles;
+    foreach t in array array['messages', 'reactions', 'chat_members', 'chats', 'profiles'] loop
+      if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+      ) then
+        execute format('alter publication supabase_realtime add table public.%I', t);
+      end if;
+    end loop;
   end if;
 end $$;
 
@@ -418,6 +446,8 @@ end $$;
 do $$
 begin
   if to_regclass('realtime.messages') is not null then
+    execute 'drop policy if exists "skam: realtime read" on realtime.messages';
+    execute 'drop policy if exists "skam: realtime write" on realtime.messages';
     execute $p$
       create policy "skam: realtime read" on realtime.messages
         for select to authenticated
@@ -456,15 +486,22 @@ on conflict (id) do update
       file_size_limit = excluded.file_size_limit,
       allowed_mime_types = excluded.allowed_mime_types;
 
+drop policy if exists "skam avatars: read own" on storage.objects;
 create policy "skam avatars: read own" on storage.objects
   for select to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select auth.uid())::text);
+drop policy if exists "skam avatars: upload own" on storage.objects;
 create policy "skam avatars: upload own" on storage.objects
   for insert to authenticated
   with check (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select auth.uid())::text);
+drop policy if exists "skam avatars: update own" on storage.objects;
 create policy "skam avatars: update own" on storage.objects
   for update to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select auth.uid())::text);
+drop policy if exists "skam avatars: delete own" on storage.objects;
 create policy "skam avatars: delete own" on storage.objects
   for delete to authenticated
   using (bucket_id = 'avatars' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+-- Попросить PostgREST (Data API) перечитать схему, чтобы новые таблицы и функции сразу стали доступны.
+notify pgrst, 'reload schema';

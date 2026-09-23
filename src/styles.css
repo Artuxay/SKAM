@@ -292,3 +292,6 @@ dialog .dlg-head h2{margin:0}
 .person-card .dlg-actions{justify-content:center}
 .chat-title-row{display:flex;gap:12px;align-items:center}
 .chat-title-row .conv-emoji{cursor:default}
+.conv-title{display:flex;flex-direction:column;min-width:0}
+.conv-title .conv-name{display:block;font-size:17px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conv-title .conv-sub{display:block}

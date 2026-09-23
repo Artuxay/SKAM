@@ -126,7 +126,6 @@ export type Database = {
       delete_message: { Args: { p_id: string }; Returns: undefined };
       mark_read: { Args: { p_chat: string; p_at?: string }; Returns: undefined };
       leave_chat: { Args: { p_chat: string }; Returns: undefined };
-      is_chat_member: { Args: { p_chat: string }; Returns: boolean };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };

@@ -1,0 +1,1044 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>СКАМ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Unbounded:wght@800&display=swap">
+<style>
+:root{
+  --paper:#E9E2D5;
+  --surface:#F4EFE6;
+  --raised:#EDE6DA;
+  --card:#FFFCF7;
+  --ink:#0E0E10;
+  --on-ink:#F4EFE6;
+  --accent:#F25A1E;
+  --accent-text:#B5400C;
+  --accent-soft:#FADCC8;
+  --online:#8FB224;
+  --text:#0E0E10;
+  --muted:#6E685E;
+  --line:#DCD4C6;
+  --danger:#B42318;
+  --grad:linear-gradient(135deg,#FFAB1A 0%,#F25A1E 52%,#A5BC2A 100%);
+  --grad-warm:linear-gradient(135deg,#FFB11B 0%,#F8801C 55%,#F25A1E 100%);
+  --shadow:0 14px 34px rgba(46,30,10,.16);
+  --font:"Onest", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --display:"Unbounded", "Arial Black", "Helvetica Neue", Arial, sans-serif;
+  --emoji:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top, 0px);
+  padding-bottom:env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#070708; --surface:#0E0E10; --raised:#151517; --card:#1C1C20;
+    --ink:#F4EFE6; --on-ink:#0E0E10; --accent:#F4661F; --accent-text:#FF8C50; --accent-soft:#3A1D0E;
+    --online:#A5BC2A; --text:#F4EFE6; --muted:#9C968B; --line:#2A2A2E; --danger:#FF8F85;
+    --shadow:0 14px 34px rgba(0,0,0,.55);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#070708; --surface:#0E0E10; --raised:#151517; --card:#1C1C20;
+  --ink:#F4EFE6; --on-ink:#0E0E10; --accent:#F4661F; --accent-text:#FF8C50; --accent-soft:#3A1D0E;
+  --online:#A5BC2A; --text:#F4EFE6; --muted:#9C968B; --line:#2A2A2E; --danger:#FF8F85;
+  --shadow:0 14px 34px rgba(0,0,0,.55);
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top, 0px);background:var(--paper)}
+body{height:100%;margin:0;background:var(--paper);color:var(--text);font-family:var(--font);font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased;overflow:hidden}
+[hidden]{display:none !important}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:default}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+img{max-width:100%}
+.defs{position:absolute;width:0;height:0;overflow:hidden}
+
+/* ---------- brand ---------- */
+.logo{display:flex;align-items:center;gap:10px;min-width:0}
+.appicon{display:block;flex:none;width:38px;height:38px}
+.wordmark{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:.02em;line-height:1}
+.appicon.hero{width:clamp(104px,16vw,144px);height:auto;margin:0 auto;filter:drop-shadow(0 18px 28px rgba(242,90,30,.28));animation:pop .6s cubic-bezier(.2,.9,.25,1.2) both .1s}
+@keyframes pop{
+  0%{transform:scale(.55) rotate(-10deg);opacity:0}
+  60%{transform:scale(1.04) rotate(2deg);opacity:1}
+  100%{transform:scale(1) rotate(0);opacity:1}
+}
+@media (prefers-reduced-motion: reduce){.appicon.hero{animation:none}}
+
+/* ---------- layout ---------- */
+.app{height:100%;display:grid;grid-template-columns:minmax(270px,330px) 1fr;max-width:1380px;margin:0 auto;background:var(--surface);box-shadow:0 0 0 1px var(--line)}
+.side{display:flex;flex-direction:column;min-height:0;background:var(--raised);border-right:1px solid var(--line)}
+.side-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 16px 16px 18px}
+.new-btn{display:inline-flex;align-items:center;gap:6px;border:1.5px solid var(--ink);color:var(--ink);background:transparent;border-radius:999px;padding:6px 13px 6px 10px;font-weight:600;font-size:14px;white-space:nowrap}
+.new-btn:hover:not(:disabled){background:var(--ink);color:var(--on-ink)}
+.new-btn:disabled{opacity:.4}
+.banner{margin:0 12px 10px;padding:10px 12px;border-radius:14px;background:var(--accent-soft);font-size:13px;line-height:1.4}
+.chat-list{flex:1;min-height:0;overflow-y:auto;padding:2px 8px 8px}
+.chat{display:grid;grid-template-columns:46px minmax(0,1fr) auto;grid-template-rows:auto auto;column-gap:12px;row-gap:1px;align-items:center;width:100%;text-align:left;border:0;background:transparent;padding:10px;border-radius:18px}
+.chat:hover{background:var(--card)}
+.chat[aria-current="true"]{background:var(--ink);color:var(--on-ink)}
+.chat .tile{grid-column:1;grid-row:1 / 3;width:46px;height:46px;border-radius:14px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:23px;font-family:var(--emoji)}
+.chat[aria-current="true"] .tile{border-color:transparent;background:var(--surface)}
+.chat .name{grid-column:2;grid-row:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat .time{grid-column:3;grid-row:1;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.chat .preview{grid-column:2;grid-row:2;font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat .dot{grid-column:3;grid-row:2;justify-self:end;width:10px;height:10px;border-radius:50%;background:var(--accent)}
+.chat.unread .name{font-weight:700}
+.chat.unread .preview{color:var(--text)}
+.chat.unread .time{color:var(--accent-text);font-weight:600}
+.chat[aria-current="true"] .time,.chat[aria-current="true"] .preview{color:inherit;opacity:.72}
+.list-empty{padding:20px 14px;color:var(--muted);font-size:14px;margin:0}
+.side-foot{border-top:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px}
+.me{display:flex;align-items:center;gap:10px;min-width:0}
+.me .nm{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.online{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);white-space:nowrap}
+.online .pulse{width:8px;height:8px;border-radius:50%;background:var(--online);flex:none}
+.faces{display:flex}
+.faces .av{width:24px;height:24px;font-size:11px;margin-left:-7px;box-shadow:0 0 0 2px var(--raised)}
+.faces .av:first-child{margin-left:0}
+
+.av{width:34px;height:34px;border-radius:50%;flex:none;object-fit:cover;display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff;background:var(--muted);overflow:hidden}
+.av.brand{background:transparent}
+.av.brand svg{width:100%;height:100%;display:block}
+
+/* ---------- conversation ---------- */
+.conv{display:flex;flex-direction:column;min-height:0;min-width:0;position:relative;background:var(--surface)}
+.conv-main{display:flex;flex-direction:column;flex:1;min-height:0;position:relative}
+.conv-head{display:flex;align-items:center;gap:12px;padding:12px 22px;border-bottom:1px solid var(--line);min-height:70px}
+.icon-btn{width:40px;height:40px;border-radius:50%;border:0;background:transparent;display:grid;place-items:center;color:var(--text);flex:none}
+.icon-btn:hover{background:var(--raised)}
+.back{display:none;margin-left:-8px}
+.conv-emoji{width:44px;height:44px;border-radius:14px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:23px;line-height:1;font-family:var(--emoji);flex:none}
+.conv-title{min-width:0}
+.conv-title h1{margin:0;font-size:17px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conv-sub{margin:2px 0 0;font-size:13px;color:var(--muted);min-height:1.35em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conv-sub.typing{color:var(--accent-text);font-weight:500}
+
+.feed{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:18px 22px 10px;display:flex;flex-direction:column}
+.feed-inner{margin:auto auto 0;width:100%;max-width:780px;display:flex;flex-direction:column;gap:3px;padding-top:14px}
+.feed-note{align-self:center;color:var(--muted);font-size:14px;margin:24px 0}
+.quiet{align-self:center;text-align:center;max-width:34ch;color:var(--muted);font-size:14px;margin:24px auto}
+.quiet strong{display:block;color:var(--text);font-size:16px;margin-bottom:4px}
+.day{align-self:center;margin:18px 0 8px;font-size:12px;font-weight:600;color:var(--muted);background:var(--raised);border-radius:999px;padding:3px 12px}
+
+.row{display:flex;gap:10px;align-items:flex-start;position:relative}
+.row.first{margin-top:10px}
+.avslot{width:34px;flex:none}
+.row.mine{justify-content:flex-end}
+.row.mine .avslot{display:none}
+.bwrap{display:flex;flex-direction:column;align-items:flex-start;max-width:min(78%,560px);min-width:0}
+.row.mine .bwrap{align-items:flex-end}
+.author{display:block;font-size:13px;font-weight:600;margin:0 0 2px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bubble{position:relative;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:8px 13px 6px;overflow-wrap:anywhere;white-space:pre-wrap;max-width:100%}
+.row.first:not(.mine) .bubble{border-top-left-radius:6px}
+.row.mine .bubble{background:var(--grad-warm);color:#0E0E10;border-color:transparent}
+.row.mine.first .bubble{border-top-right-radius:6px}
+.bubble a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.bubble.deleted{font-style:italic;color:var(--muted);background:transparent;border-style:dashed}
+.row.mine .bubble.deleted{background:transparent;color:var(--muted);border-color:var(--line)}
+.meta{float:right;margin:7px 0 -3px 12px;font-size:11px;color:var(--muted);line-height:1.3;font-variant-numeric:tabular-nums;font-style:normal;white-space:nowrap}
+.row.mine .meta{color:rgba(14,14,16,.6)}
+.row.mine .deleted .meta{color:var(--muted)}
+
+.reacts{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:2px 9px 2px 7px;font-size:14px;display:inline-flex;gap:4px;align-items:center;line-height:1.3}
+.chip .e{font-family:var(--emoji)}
+.chip .n{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.chip.on{border-color:var(--accent);background:var(--accent-soft)}
+.chip:hover:not(:disabled){border-color:var(--accent)}
+
+.actions{position:absolute;top:-18px;display:none;gap:1px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px;box-shadow:var(--shadow);z-index:3}
+.row:not(.mine) .actions{left:44px}
+.row.mine .actions{right:0}
+@media (hover:hover){.row:hover .actions{display:flex}}
+.row:focus-within .actions,.row.open .actions{display:flex}
+.actions button{border:0;background:transparent;border-radius:999px;width:32px;height:32px;font-size:17px;display:grid;place-items:center;font-family:var(--emoji)}
+.actions button:hover{background:var(--raised)}
+.actions .del{font-family:var(--font);font-size:12.5px;width:auto;padding:0 10px;color:var(--danger);font-weight:600}
+
+.jump{position:absolute;left:50%;transform:translateX(-50%);bottom:86px;border:0;background:var(--ink);color:var(--on-ink);border-radius:999px;padding:8px 16px;font-weight:600;font-size:13px;box-shadow:var(--shadow);z-index:4}
+
+.composer{border-top:1px solid var(--line);padding:12px 22px 16px}
+.composer-inner{display:flex;align-items:flex-end;gap:10px;max-width:780px;margin:0 auto}
+.input{flex:1;min-width:0;min-height:44px;resize:none;border:1.5px solid var(--line);background:var(--card);border-radius:22px;padding:10px 16px;max-height:160px;line-height:1.4;outline:none;font-size:16px}
+.input:focus{border-color:var(--accent)}
+.input:disabled{opacity:.6}
+.send{width:44px;height:44px;border-radius:50%;border:0;background:var(--grad-warm);color:#0E0E10;display:grid;place-items:center;flex:none}
+.send:disabled{opacity:.35}
+
+.empty{flex:1;display:grid;place-items:center;text-align:center;padding:32px}
+.empty h2{font-family:var(--display);font-weight:800;font-size:clamp(20px,2.4vw,26px);letter-spacing:.01em;margin:30px 0 8px}
+.empty p{color:var(--muted);margin:0 auto 22px;max-width:36ch}
+.btn{border-radius:999px;padding:10px 20px;font-weight:600;border:1.5px solid transparent}
+.btn.primary{background:var(--ink);color:var(--on-ink)}
+.btn.primary:disabled{opacity:.4}
+.btn.ghost{background:transparent;border-color:var(--line)}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom, 0px));background:var(--ink);color:var(--on-ink);padding:10px 16px;border-radius:14px;font-size:14px;box-shadow:var(--shadow);z-index:20;max-width:calc(100% - 32px)}
+
+dialog{border:0;border-radius:24px;padding:24px;width:min(420px,calc(100% - 32px));background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+dialog::backdrop{background:rgba(14,14,16,.5)}
+dialog h2{margin:0 0 18px;font-size:19px}
+.fld{display:block;font-size:13px;font-weight:600;color:var(--muted);margin-bottom:6px}
+.txt{width:100%;border:1.5px solid var(--line);background:var(--card);border-radius:14px;padding:10px 12px;outline:none;font-size:16px}
+.txt:focus{border-color:var(--accent)}
+.err{color:var(--danger);font-size:13px;margin:6px 0 0;min-height:1.2em}
+.emoji-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:6px 0 22px}
+.emoji-grid button{height:46px;border-radius:14px;border:1.5px solid var(--line);background:var(--card);font-size:22px;font-family:var(--emoji)}
+.emoji-grid button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft)}
+.dlg-actions{display:flex;justify-content:flex-end;gap:8px}
+
+@media (max-width:760px){
+  .app{grid-template-columns:1fr;box-shadow:none}
+  .side,.conv{grid-column:1;grid-row:1}
+  body.chat-open .side{display:none}
+  body:not(.chat-open) .conv{display:none}
+  .back{display:grid}
+  .conv-head{padding:10px 14px;min-height:62px}
+  .conv-emoji{width:40px;height:40px;font-size:21px}
+  .feed{padding:12px 12px 8px}
+  .composer{padding:10px 12px 12px}
+  .bwrap{max-width:84%}
+  .jump{bottom:78px}
+}
+</style>
+</head>
+<body>
+<svg class="defs" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="skamGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFAB1A"/><stop offset=".5" stop-color="#F25A1E"/><stop offset=".9" stop-color="#A8B429"/><stop offset="1" stop-color="#9CC02A"/>
+    </linearGradient>
+    <symbol id="skamMark" viewBox="-1 -1 131 143"><path fill-rule="evenodd" d="M9.84 98.75A64.5 64.5 0 1 1 39.9 124.1L0.5 140.5Z M34 64.5A30.5 30.5 0 1 0 95 64.5A30.5 30.5 0 1 0 34 64.5Z"/></symbol>
+  </defs>
+</svg>
+<div class="app">
+  <aside class="side" aria-label="Чаты">
+    <header class="side-head">
+      <span class="logo"><svg class="appicon" viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200" rx="46" fill="url(#skamGrad)"/><use href="#skamMark" x="54.3" y="50.3" width="91.7" height="100.1" fill="#0E0E10"/></svg><span class="wordmark">СКАМ</span></span>
+      <button class="new-btn" id="newBtn" type="button">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Новый чат
+      </button>
+    </header>
+    <div class="banner" id="banner" role="status" hidden></div>
+    <nav class="chat-list" id="chatList"></nav>
+    <footer class="side-foot">
+      <div class="me" id="meBox"></div>
+      <div class="online" id="onlineBox"></div>
+    </footer>
+  </aside>
+
+  <main class="conv">
+    <section class="empty" id="convEmpty">
+      <div>
+        <svg class="appicon hero" viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200" rx="46" fill="url(#skamGrad)"/><use href="#skamMark" x="54.3" y="50.3" width="91.7" height="100.1" fill="#0E0E10"/></svg>
+        <h2>Не развод, а мессенджер</h2>
+        <p>Выберите чат слева или заведите новый — позовите коллег и болтайте в реальном времени.</p>
+        <button class="btn primary" id="emptyNewBtn" type="button">Создать чат</button>
+      </div>
+    </section>
+
+    <section class="conv-main" id="convMain" hidden>
+      <header class="conv-head">
+        <button class="icon-btn back" id="backBtn" type="button" aria-label="К списку чатов">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <span class="conv-emoji" id="convEmoji" aria-hidden="true"></span>
+        <div class="conv-title">
+          <h1 id="convName"></h1>
+          <p class="conv-sub" id="convSub" aria-live="polite"></p>
+        </div>
+      </header>
+      <div class="feed" id="feed" role="log" aria-label="Сообщения"></div>
+      <button class="jump" id="jumpBtn" type="button" hidden>Новые сообщения ↓</button>
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea class="input" id="input" rows="1" maxlength="1000" placeholder="Сообщение" aria-label="Сообщение"></textarea>
+          <button class="send" id="sendBtn" type="button" aria-label="Отправить" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="newDlg" aria-labelledby="newDlgTitle">
+  <h2 id="newDlgTitle">Новый чат</h2>
+  <label class="fld" for="chatName">Название</label>
+  <input class="txt" id="chatName" maxlength="40" autocomplete="off" placeholder="Например, Мемы отдела">
+  <p class="err" id="chatErr"></p>
+  <span class="fld" id="emojiLbl">Значок</span>
+  <div class="emoji-grid" id="emojiGrid" role="group" aria-labelledby="emojiLbl"></div>
+  <div class="dlg-actions">
+    <button class="btn ghost" id="cancelBtn" type="button">Отмена</button>
+    <button class="btn primary" id="createBtn" type="button">Создать чат</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+(function(){
+'use strict';
+
+var BRAND = 'skam';
+var TAB = Math.random().toString(36).slice(2, 10);
+var REACTIONS = [
+  {k:'like', e:'👍'}, {k:'lol', e:'😂'}, {k:'fire', e:'🔥'}, {k:'wow', e:'😱'}, {k:'clown', e:'🤡'}
+];
+var EMOJIS = ['💬','🕵️','💸','🎲','🍕','🐈','🚀','🎧','📦','🤡'];
+var BRAND_AVATAR = '<svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="100" fill="url(#skamGrad)"/><use href="#skamMark" x="58" y="52" width="84" height="91.7" fill="#0E0E10"/></svg>';
+var WELCOME = 'Добро пожаловать в СКАМ! Это не развод — это мессенджер. Пишите, ставьте реакции и заводите свои чаты.';
+
+var $ = function(id){ return document.getElementById(id); };
+function el(tag, cls, text){
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+function lsGet(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+function use(name){
+  try {
+    if (window.claude && typeof window.claude.use === 'function') {
+      return Promise.resolve(window.claude.use(name)).catch(function(){ return null; });
+    }
+  } catch(e){}
+  return Promise.resolve(null);
+}
+var wideMQ = window.matchMedia('(min-width: 761px)');
+var touchMQ = window.matchMedia('(hover: none)');
+
+var S = {
+  mode:'loading', db:null, user:null, room:null,
+  meId:null, me:null, readOnly:false,
+  chats:[], chatsLoaded:false,
+  cur:null, buckets:new Map(), unsubMsgs:null, msgsLoaded:false,
+  read:{}, peers:[], stick:true, openMsg:null,
+  feedSeq:0, headSeq:0, onlineSeq:0, lastCount:0,
+  localMsgs:{}, drafts:{}, typing:false
+};
+
+/* ---------- time formatting ---------- */
+var fmtTime = new Intl.DateTimeFormat('ru-RU', {hour:'2-digit', minute:'2-digit'});
+var fmtDay = new Intl.DateTimeFormat('ru-RU', {day:'numeric', month:'long'});
+var fmtDayY = new Intl.DateTimeFormat('ru-RU', {day:'numeric', month:'long', year:'numeric'});
+var fmtShort = new Intl.DateTimeFormat('ru-RU', {day:'numeric', month:'short'});
+function dayKey(ts){ var d = new Date(ts); return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); }
+function dayLabel(ts){
+  var now = new Date();
+  if (dayKey(ts) === dayKey(now)) return 'Сегодня';
+  var y = new Date(now); y.setDate(y.getDate() - 1);
+  if (dayKey(ts) === dayKey(y)) return 'Вчера';
+  return new Date(ts).getFullYear() === now.getFullYear() ? fmtDay.format(ts) : fmtDayY.format(ts);
+}
+function listTime(ts){ return dayKey(ts) === dayKey(Date.now()) ? fmtTime.format(ts) : fmtShort.format(ts); }
+
+/* ---------- write queue: one write at a time ---------- */
+var q = Promise.resolve();
+function queue(fn){
+  var p = q.then(fn, fn);
+  q = p.catch(function(){});
+  return p;
+}
+
+/* ---------- ui helpers ---------- */
+function setBanner(text){
+  var b = $('banner');
+  if (text){ b.textContent = text; b.hidden = false; } else { b.hidden = true; }
+}
+var toastTimer = null;
+function toast(text){
+  var t = $('toast');
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ t.hidden = true; }, 3500);
+}
+function handleErr(e){
+  var code = e && e.code;
+  if (code === 'invalid_argument'){
+    S.readOnly = true;
+    setBanner('Писать в этот мессенджер у вас не получится: доступ только для чтения.');
+    renderAll();
+  } else if (code === 'quota_exceeded'){
+    setBanner('Хранилище мессенджера заполнено, новые сообщения не сохраняются.');
+  } else if (code === 'resource_exhausted'){
+    toast('Слишком много действий подряд. Подождите пару секунд.');
+  } else if (code === 'revoked' || code === 'not_granted'){
+    S.readOnly = true; renderAll();
+  } else {
+    toast('Не получилось сохранить. Проверьте соединение и попробуйте ещё раз.');
+  }
+}
+
+/* ---------- identity ---------- */
+function getProfiles(ids){
+  if (!ids.length || !S.user) return Promise.resolve({});
+  return Promise.resolve(S.user.profiles(ids)).catch(function(){ return {}; });
+}
+function who(id, ps){
+  if (id === BRAND) return {name:'СКАМ', brand:true};
+  var p = ps && ps[id];
+  var isMe = id && id === S.meId;
+  var name = (p && p.name) || '';
+  if (!name) name = isMe ? ((S.me && S.me.name) || 'Вы') : 'Участник';
+  var avatar = p ? p.avatarUrl : (isMe && S.me ? S.me.avatarUrl : null);
+  var color = p ? p.color : (isMe && S.me ? S.me.color : null);
+  return {name:name, avatar:avatar, color:color};
+}
+function avatarEl(w){
+  if (w.brand){ var d0 = el('div', 'av brand'); d0.innerHTML = BRAND_AVATAR; return d0; }
+  if (w.avatar){ var i = el('img', 'av'); i.src = w.avatar; i.alt = ''; return i; }
+  var d = el('div', 'av', (w.name || '?').trim().charAt(0).toUpperCase() || '?');
+  if (w.color) d.style.background = w.color;
+  return d;
+}
+
+/* ---------- data shape ---------- */
+function cleanEmoji(s){ return typeof s === 'string' && s ? Array.from(s).slice(0, 4).join('') : '💬'; }
+function normChat(id, d){
+  if (!d || typeof d !== 'object') return null;
+  var last = null;
+  if (d.last && typeof d.last === 'object' && typeof d.last.at === 'number'){
+    last = {at:d.last.at, by:String(d.last.by || ''), text: typeof d.last.text === 'string' ? d.last.text : ''};
+  }
+  return {
+    id:id,
+    name: typeof d.name === 'string' && d.name.trim() ? d.name.slice(0, 40) : 'Без названия',
+    emoji: cleanEmoji(d.emoji),
+    at: typeof d.at === 'number' ? d.at : 0,
+    last:last
+  };
+}
+function chatSortKey(c){ return (c.last && c.last.at) || c.at || 0; }
+function currentChat(){
+  for (var i = 0; i < S.chats.length; i++) if (S.chats[i].id === S.cur) return S.chats[i];
+  return null;
+}
+function currentMessages(){
+  var out = [];
+  S.buckets.forEach(function(b, bid){
+    var m = b && b.msgs;
+    if (!m || typeof m !== 'object') return;
+    Object.keys(m).forEach(function(k){
+      var v = m[k];
+      if (!v || typeof v !== 'object' || typeof v.at !== 'number' || typeof v.by !== 'string') return;
+      out.push({
+        id:k, bid:bid, by:v.by, at:v.at,
+        text: typeof v.text === 'string' ? v.text : '',
+        del: v.del === true,
+        r: v.r && typeof v.r === 'object' ? v.r : {}
+      });
+    });
+  });
+  out.sort(function(a, b){ return a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+  return out;
+}
+function convVisible(){ return !!S.cur && (wideMQ.matches || document.body.classList.contains('chat-open')); }
+
+/* ---------- rendering: sidebar ---------- */
+function previewText(c){
+  if (!c.last) return 'Пока пусто';
+  var t = c.last.text || '…';
+  return c.last.by === S.meId ? 'Вы: ' + t : t;
+}
+function renderSide(){
+  var list = $('chatList');
+  $('newBtn').disabled = S.mode === 'loading' || S.readOnly;
+  $('emptyNewBtn').disabled = S.mode === 'loading' || S.readOnly;
+  if (S.mode === 'loading' || !S.chatsLoaded){
+    list.replaceChildren(el('p', 'list-empty', 'Загружаем чаты…'));
+    return;
+  }
+  var chats = S.chats.slice().sort(function(a, b){ return chatSortKey(b) - chatSortKey(a); });
+  if (!chats.length){
+    list.replaceChildren(el('p', 'list-empty', 'Чатов пока нет. Нажмите «Новый чат», чтобы завести первый.'));
+    return;
+  }
+  var frag = document.createDocumentFragment();
+  chats.forEach(function(c){
+    var b = el('button', 'chat'); b.type = 'button';
+    var active = c.id === S.cur && convVisible();
+    if (active) b.setAttribute('aria-current', 'true');
+    b.append(
+      el('span', 'tile', c.emoji),
+      el('span', 'name', c.name),
+      el('span', 'time', c.last ? listTime(c.last.at) : ''),
+      el('span', 'preview', previewText(c))
+    );
+    var unread = c.last && !active && c.last.by !== S.meId && c.last.at > (S.read[c.id] || 0);
+    if (unread){
+      var d = el('span', 'dot'); d.setAttribute('aria-label', 'Есть новые сообщения');
+      b.append(d); b.classList.add('unread');
+    }
+    b.addEventListener('click', function(){ openChat(c.id); });
+    frag.append(b);
+  });
+  list.replaceChildren(frag);
+}
+function renderMe(){
+  var box = $('meBox');
+  if (S.mode === 'loading'){ box.replaceChildren(); return; }
+  var w;
+  if (S.mode === 'local') w = {name:'Вы (демо)'};
+  else if (!S.meId) w = {name:'Гость'};
+  else w = who(S.meId, {});
+  box.replaceChildren(avatarEl(w), el('span', 'nm', w.name));
+}
+function peerKey(p){
+  if (p.by) return p.by;
+  if (p.presence && typeof p.presence.id === 'string') return p.presence.id;
+  return p.peer;
+}
+function renderOnline(){
+  var box = $('onlineBox');
+  if (!S.room || !S.peers.length){ box.replaceChildren(); return Promise.resolve(); }
+  var seq = ++S.onlineSeq;
+  var viewers = S.peers.filter(function(p){ return p.kind === 'viewer'; });
+  var keys = Array.from(new Set(viewers.map(peerKey)));
+  var others = keys.filter(function(k){ return k !== S.meId; });
+  return getProfiles(others).then(function(ps){
+    if (seq !== S.onlineSeq) return;
+    var faces = el('div', 'faces');
+    others.slice(0, 4).forEach(function(k){
+      var a = avatarEl(who(k, ps));
+      a.title = (ps[k] && ps[k].name) || '';
+      faces.append(a);
+    });
+    var label = keys.length <= 1 ? 'только вы в сети' : keys.length + ' в сети';
+    box.replaceChildren(faces, el('span', 'pulse'), el('span', null, label));
+  });
+}
+
+/* ---------- rendering: conversation ---------- */
+function renderConv(){
+  var has = !!currentChat();
+  $('convMain').hidden = !has;
+  $('convEmpty').hidden = has;
+  var inp = $('input');
+  inp.disabled = S.readOnly || S.mode === 'loading';
+  inp.placeholder = S.readOnly ? 'Только чтение' : 'Сообщение';
+  updateSendBtn();
+}
+function renderHead(){
+  var chat = currentChat();
+  if (!chat) return Promise.resolve();
+  $('convEmoji').textContent = chat.emoji;
+  $('convName').textContent = chat.name;
+  var sub = $('convSub');
+  var seq = ++S.headSeq;
+  var now = Date.now();
+  var typers = [], here = new Set();
+  S.peers.forEach(function(p){
+    if (p.kind !== 'viewer' || !p.presence) return;
+    var k = peerKey(p);
+    if (p.presence.chat === S.cur) here.add(k);
+    if (!p.isMe && p.presence.typing === true && p.presence.chat === S.cur && now - p.updatedAt < 10000) typers.push(k);
+  });
+  typers = Array.from(new Set(typers)).filter(function(k){ return k !== S.meId; });
+  if (!typers.length){
+    sub.classList.remove('typing');
+    if (S.mode === 'local') sub.textContent = 'Демо-режим';
+    else if (S.room && here.size > 1) sub.textContent = 'Сейчас в чате: ' + here.size;
+    else if (S.room && here.size === 1) sub.textContent = 'Сейчас здесь только вы';
+    else sub.textContent = '';
+    return Promise.resolve();
+  }
+  return getProfiles(typers).then(function(ps){
+    if (seq !== S.headSeq) return;
+    var names = typers.map(function(k){ return (ps[k] && ps[k].name) || 'Кто-то'; });
+    var t;
+    if (names.length === 1) t = names[0] + ' печатает…';
+    else if (names.length === 2) t = names[0] + ' и ' + names[1] + ' печатают…';
+    else t = 'Несколько человек печатают…';
+    sub.textContent = t;
+    sub.classList.add('typing');
+  });
+}
+function fillText(node, text){
+  var re = /https?:\/\/[^\s<>"']+/g, last = 0, m;
+  while ((m = re.exec(text))){
+    node.append(text.slice(last, m.index));
+    var a = el('a', null, m[0]);
+    a.href = m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    node.append(a);
+    last = m.index + m[0].length;
+  }
+  node.append(text.slice(last));
+}
+function reactionCounts(m){
+  var out = [];
+  REACTIONS.forEach(function(R){
+    var r = m.r[R.k];
+    if (!r || typeof r !== 'object') return;
+    var n = 0, on = false;
+    Object.keys(r).forEach(function(u){ if (r[u] === true){ n++; if (u === S.meId) on = true; } });
+    if (n) out.push({k:R.k, e:R.e, n:n, on:on});
+  });
+  return out;
+}
+function renderMsg(m, first, ps){
+  var mine = m.by === S.meId;
+  var row = el('div', 'row' + (mine ? ' mine' : '') + (first ? ' first' : ''));
+  if (S.openMsg === m.id) row.classList.add('open');
+  var w = who(m.by, ps);
+  var slot = el('div', 'avslot');
+  if (first && !mine) slot.append(avatarEl(w));
+  row.append(slot);
+
+  var wrap = el('div', 'bwrap');
+  var b = el('div', 'bubble' + (m.del ? ' deleted' : ''));
+  if (first && !mine){
+    var a = el('span', 'author', w.name);
+    if (w.brand) a.style.color = 'var(--ink)';
+    else if (w.color) a.style.color = w.color;
+    b.append(a);
+  }
+  if (m.del) b.append('Сообщение удалено'); else fillText(b, m.text);
+  var meta = el('span', 'meta', fmtTime.format(m.at));
+  meta.title = new Date(m.at).toLocaleString('ru-RU');
+  b.append(meta);
+  wrap.append(b);
+
+  if (!m.del){
+    var counts = reactionCounts(m);
+    if (counts.length){
+      var rs = el('div', 'reacts');
+      counts.forEach(function(c){
+        var chip = el('button', 'chip' + (c.on ? ' on' : ''));
+        chip.type = 'button';
+        chip.append(el('span', 'e', c.e), el('span', 'n', String(c.n)));
+        chip.setAttribute('aria-label', c.e + ' ' + c.n);
+        chip.setAttribute('aria-pressed', String(c.on));
+        chip.disabled = S.readOnly;
+        chip.addEventListener('click', function(){ toggleReact(m, c.k); });
+        rs.append(chip);
+      });
+      wrap.append(rs);
+    }
+    if (!S.readOnly){
+      b.tabIndex = 0;
+      var act = el('div', 'actions');
+      REACTIONS.forEach(function(R){
+        var btn = el('button', null, R.e); btn.type = 'button';
+        btn.setAttribute('aria-label', 'Реакция ' + R.e);
+        btn.addEventListener('click', function(ev){ ev.stopPropagation(); S.openMsg = null; toggleReact(m, R.k); });
+        act.append(btn);
+      });
+      if (mine){
+        var del = el('button', 'del', 'Удалить'); del.type = 'button';
+        del.addEventListener('click', function(ev){ ev.stopPropagation(); S.openMsg = null; deleteMsg(m); });
+        act.append(del);
+      }
+      row.append(act);
+      b.addEventListener('click', function(ev){
+        if (ev.target.closest('a') || !touchMQ.matches) return;
+        S.openMsg = S.openMsg === m.id ? null : m.id;
+        document.querySelectorAll('.row.open').forEach(function(r){ r.classList.remove('open'); });
+        if (S.openMsg) row.classList.add('open');
+      });
+    }
+  }
+  row.append(wrap);
+  return row;
+}
+function renderFeed(){
+  if (!currentChat()) return Promise.resolve();
+  var seq = ++S.feedSeq;
+  var msgs = currentMessages();
+  var ids = Array.from(new Set(msgs.map(function(m){ return m.by; }))).filter(function(id){ return id !== BRAND; });
+  return getProfiles(ids).then(function(ps){
+    if (seq !== S.feedSeq) return;
+    var feed = $('feed');
+    var inner = el('div', 'feed-inner');
+    if (!S.msgsLoaded){
+      inner.append(el('p', 'feed-note', 'Загружаем сообщения…'));
+    } else if (!msgs.length){
+      var qn = el('div', 'quiet');
+      qn.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение — обещаем, это не развод.');
+      inner.append(qn);
+    }
+    var prev = null;
+    msgs.forEach(function(m){
+      if (!prev || dayKey(prev.at) !== dayKey(m.at)){
+        inner.append(el('div', 'day', dayLabel(m.at)));
+        prev = null;
+      }
+      var first = !prev || prev.by !== m.by || m.at - prev.at > 5 * 60 * 1000;
+      inner.append(renderMsg(m, first, ps));
+      prev = m;
+    });
+    var keepFocus = document.activeElement && feed.contains(document.activeElement);
+    feed.replaceChildren(inner);
+    if (keepFocus) $('input').focus({preventScroll:true});
+    if (S.stick) feed.scrollTop = feed.scrollHeight;
+    else if (msgs.length > S.lastCount && S.lastCount > 0) $('jumpBtn').hidden = false;
+    S.lastCount = msgs.length;
+  });
+}
+function renderAll(){
+  renderSide(); renderMe(); renderOnline(); renderConv(); renderHead(); renderFeed();
+}
+
+/* ---------- reading state ---------- */
+var readTimer = null;
+function markRead(){
+  if (!convVisible() || document.visibilityState !== 'visible') return;
+  var chat = currentChat(); if (!chat) return;
+  var latest = chat.last ? chat.last.at : 0;
+  var msgs = currentMessages();
+  if (msgs.length) latest = Math.max(latest, msgs[msgs.length - 1].at);
+  if (latest > (S.read[S.cur] || 0)){
+    S.read[S.cur] = latest;
+    renderSide();
+    if (S.mode === 'live' && S.meId){
+      clearTimeout(readTimer);
+      readTimer = setTimeout(saveRead, 1500);
+    }
+  }
+}
+function saveRead(){
+  var data = {read: Object.assign({}, S.read)};
+  queue(function(){ return S.db.doc('data/users/' + S.meId + '/state').set(data); }).catch(function(){});
+}
+
+/* ---------- opening chats ---------- */
+function openChat(id, opts){
+  opts = opts || {};
+  var inp = $('input');
+  if (S.cur !== id){
+    if (S.cur) S.drafts[S.cur] = inp.value;
+    stopTyping();
+    if (S.unsubMsgs){ S.unsubMsgs(); S.unsubMsgs = null; }
+    S.cur = id; S.buckets = new Map(); S.msgsLoaded = false;
+    S.stick = true; S.openMsg = null; S.lastCount = 0;
+    $('jumpBtn').hidden = true;
+    lsSet('skam:last', id);
+    if (S.mode === 'live'){
+      var cid = id;
+      try {
+        S.unsubMsgs = S.db.collection('chats/' + id + '/b').orderBy('t', 'desc').limit(48).onSnapshot(function(snap){
+          if (S.cur !== cid) return;
+          S.buckets = new Map(snap.docs.map(function(d){ return [d.id, d.data()]; }));
+          S.msgsLoaded = true;
+          renderFeed(); markRead();
+        }, function(err){
+          if (S.cur !== cid) return;
+          S.msgsLoaded = true;
+          if (err.code !== 'revoked') setBanner('Не удалось загрузить сообщения. Обновите страницу.');
+          renderFeed();
+        });
+      } catch(e){ S.msgsLoaded = true; }
+    } else {
+      S.buckets = new Map([['local', S.localMsgs[id] || {msgs:{}}]]);
+      S.msgsLoaded = true;
+    }
+    setPresence({chat:id, typing:false});
+    inp.value = S.drafts[id] || '';
+    autosize();
+  }
+  document.body.classList.add('chat-open');
+  renderAll();
+  autosize();
+  markRead();
+  if (!opts.silent && !touchMQ.matches && !S.readOnly) inp.focus();
+}
+function backToList(){
+  stopTyping();
+  document.body.classList.remove('chat-open');
+  renderSide();
+}
+function autoOpen(){
+  if (S.cur || !wideMQ.matches || !S.chats.length) return;
+  var saved = lsGet('skam:last');
+  var target = S.chats.some(function(c){ return c.id === saved; }) ? saved
+    : S.chats.slice().sort(function(a, b){ return chatSortKey(b) - chatSortKey(a); })[0].id;
+  openChat(target, {silent:true});
+}
+
+/* ---------- writing ---------- */
+function newId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+async function writeMsg(cid, mid, msg){
+  var hour = Math.floor(msg.at / 3600000) * 3600000;
+  var ref = S.db.doc('chats/' + cid + '/b/h' + hour);
+  var patch = {msgs:{}}; patch.msgs[mid] = msg;
+  try { await ref.update(patch); return; }
+  catch(e){ if (!e || e.code !== 'invalid_argument') throw e; }
+  // The hour's bucket doesn't exist yet: claim it briefly so two senders don't overwrite each other.
+  for (var i = 0; i < 6; i++){
+    var lease = await ref.acquire({holder:(S.meId || 'anon') + ':' + TAB, ttlMs:4000});
+    if (lease && lease.acquired){
+      var s = await ref.get();
+      if (s.exists) await ref.update(patch);
+      else await ref.set({t:hour, msgs:patch.msgs});
+      return;
+    }
+    await sleep(250 + Math.random() * 400);
+    try { await ref.update(patch); return; }
+    catch(e2){ if (!e2 || e2.code !== 'invalid_argument') throw e2; }
+  }
+  throw {code:'unavailable', message:'bucket busy'};
+}
+async function send(){
+  var inp = $('input');
+  var text = inp.value.trim();
+  if (!text || !S.cur || S.readOnly || S.mode === 'loading') return;
+  text = text.slice(0, 1000);
+  var cid = S.cur;
+  var msg = {by:S.meId, text:text, at:Date.now()};
+  var mid = newId();
+  var last = {at:msg.at, by:msg.by, text:text.replace(/\s+/g, ' ').slice(0, 140)};
+  inp.value = ''; S.drafts[cid] = ''; autosize(); stopTyping();
+  S.stick = true;
+  if (S.mode === 'local'){
+    var box = S.localMsgs[cid] || (S.localMsgs[cid] = {msgs:{}});
+    box.msgs[mid] = {by:msg.by, text:msg.text, at:msg.at, r:{}};
+    var c = currentChat(); if (c) c.last = last;
+    renderAll(); markRead();
+    return;
+  }
+  try {
+    await queue(function(){ return writeMsg(cid, mid, msg); });
+    queue(function(){ return S.db.doc('chats/' + cid).update({last:last}); }).catch(function(){});
+  } catch(e){
+    if (!inp.value && S.cur === cid){ inp.value = text; autosize(); }
+    handleErr(e);
+  }
+}
+function deepMerge(target, patch){
+  Object.keys(patch).forEach(function(k){
+    var v = patch[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)){
+      if (!target[k] || typeof target[k] !== 'object') target[k] = {};
+      deepMerge(target[k], v);
+    } else target[k] = v;
+  });
+}
+async function patchMsg(cid, m, patch){
+  if (S.mode === 'local'){
+    var box = S.localMsgs[cid];
+    if (box && box.msgs[m.id]){ deepMerge(box.msgs[m.id], patch); renderFeed(); }
+    return;
+  }
+  var body = {msgs:{}}; body.msgs[m.id] = patch;
+  await queue(function(){ return S.db.doc('chats/' + cid + '/b/' + m.bid).update(body); });
+}
+async function toggleReact(m, key){
+  if (S.readOnly || !S.cur || !S.meId) return;
+  var on = !!(m.r[key] && m.r[key][S.meId] === true);
+  var patch = {r:{}}; patch.r[key] = {}; patch.r[key][S.meId] = !on;
+  try { await patchMsg(S.cur, m, patch); } catch(e){ handleErr(e); }
+}
+async function deleteMsg(m){
+  if (S.readOnly || !S.cur || m.by !== S.meId) return;
+  var cid = S.cur;
+  try {
+    await patchMsg(cid, m, {del:true, text:''});
+    var chat = currentChat();
+    if (chat && chat.last && chat.last.at === m.at && chat.last.by === S.meId){
+      if (S.mode === 'local'){ chat.last.text = 'Сообщение удалено'; renderSide(); }
+      else queue(function(){ return S.db.doc('chats/' + cid).update({last:{text:'Сообщение удалено'}}); }).catch(function(){});
+    }
+  } catch(e){ handleErr(e); }
+}
+async function createChat(name, emoji){
+  var data = {name:name.slice(0, 40), emoji:emoji, by:S.meId, at:Date.now()};
+  if (S.mode === 'local'){
+    var id = 'c' + newId();
+    S.chats.push(normChat(id, data));
+    S.localMsgs[id] = {msgs:{}};
+    openChat(id);
+    return;
+  }
+  try {
+    var ref = await queue(function(){ return S.db.collection('chats').add(data); });
+    openChat(ref.id);
+  } catch(e){ handleErr(e); }
+}
+
+/* ---------- presence & typing ---------- */
+function setPresence(p){
+  if (!S.room) return;
+  try { Promise.resolve(S.room.presence(p)).catch(function(){}); } catch(e){}
+}
+var typingTimer = null;
+function onType(){
+  if (!S.room || !S.cur || S.readOnly) return;
+  if (!$('input').value.trim()){ stopTyping(); return; }
+  if (!S.typing){ S.typing = true; setPresence({typing:true, chat:S.cur}); }
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(stopTyping, 3000);
+}
+function stopTyping(){
+  clearTimeout(typingTimer);
+  if (S.typing){ S.typing = false; setPresence({typing:false}); }
+}
+function setupRoom(){
+  try {
+    S.room.onPeers(function(ch){
+      S.peers = ch.peers || [];
+      renderOnline(); renderHead();
+    }, function(){ S.peers = []; renderOnline(); renderHead(); });
+  } catch(e){}
+  var p = {chat:S.cur || null, typing:false};
+  if (S.mode === 'live' && S.meId) p.id = S.meId;
+  setPresence(p);
+  setInterval(function(){ if (S.peers.length) renderHead(); }, 5000);
+}
+
+/* ---------- composer ---------- */
+function autosize(){
+  var inp = $('input');
+  inp.style.height = 'auto';
+  if (inp.scrollHeight > 0) inp.style.height = Math.min(inp.scrollHeight + 3, 160) + 'px';
+  updateSendBtn();
+}
+function updateSendBtn(){
+  $('sendBtn').disabled = S.readOnly || S.mode === 'loading' || !$('input').value.trim();
+}
+
+/* ---------- new chat dialog ---------- */
+var picked = EMOJIS[0];
+function renderEmojiGrid(){
+  var g = $('emojiGrid');
+  g.replaceChildren();
+  EMOJIS.forEach(function(e){
+    var b = el('button', null, e); b.type = 'button';
+    b.setAttribute('aria-pressed', String(e === picked));
+    b.setAttribute('aria-label', 'Значок ' + e);
+    b.addEventListener('click', function(){ picked = e; renderEmojiGrid(); });
+    g.append(b);
+  });
+}
+function openNew(){
+  if (S.readOnly || S.mode === 'loading') return;
+  $('chatName').value = '';
+  $('chatErr').textContent = '';
+  picked = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+  renderEmojiGrid();
+  var dlg = $('newDlg');
+  if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+  $('chatName').focus();
+}
+function closeNew(){
+  var dlg = $('newDlg');
+  if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
+}
+function submitNew(){
+  var name = $('chatName').value.trim();
+  if (!name){ $('chatErr').textContent = 'Введите название чата.'; $('chatName').focus(); return; }
+  closeNew();
+  createChat(name, picked);
+}
+
+/* ---------- wiring ---------- */
+$('newBtn').addEventListener('click', openNew);
+$('emptyNewBtn').addEventListener('click', openNew);
+$('cancelBtn').addEventListener('click', closeNew);
+$('createBtn').addEventListener('click', submitNew);
+$('chatName').addEventListener('keydown', function(e){ if (e.key === 'Enter' && !e.isComposing){ e.preventDefault(); submitNew(); } });
+$('backBtn').addEventListener('click', backToList);
+$('sendBtn').addEventListener('click', send);
+$('input').addEventListener('input', function(){ autosize(); onType(); });
+$('input').addEventListener('keydown', function(e){
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
+});
+$('input').addEventListener('blur', function(){ setTimeout(stopTyping, 800); });
+$('feed').addEventListener('scroll', function(){
+  var f = $('feed');
+  S.stick = f.scrollHeight - f.scrollTop - f.clientHeight < 80;
+  if (S.stick) $('jumpBtn').hidden = true;
+});
+$('jumpBtn').addEventListener('click', function(){
+  var f = $('feed'); S.stick = true; f.scrollTop = f.scrollHeight; $('jumpBtn').hidden = true;
+});
+document.addEventListener('visibilitychange', function(){
+  if (document.visibilityState === 'visible') markRead(); else stopTyping();
+});
+document.addEventListener('click', function(e){
+  if (S.openMsg && !e.target.closest('.row')){
+    S.openMsg = null;
+    document.querySelectorAll('.row.open').forEach(function(r){ r.classList.remove('open'); });
+  }
+});
+if (wideMQ.addEventListener) wideMQ.addEventListener('change', function(){ autoOpen(); renderAll(); });
+
+/* ---------- boot ---------- */
+function startLive(){
+  S.db.collection('chats').limit(300).onSnapshot(function(snap){
+    S.chats = snap.docs.map(function(d){ return normChat(d.id, d.data()); }).filter(Boolean);
+    S.chatsLoaded = true;
+    if (S.cur && !currentChat()){
+      if (S.unsubMsgs){ S.unsubMsgs(); S.unsubMsgs = null; }
+      S.cur = null; document.body.classList.remove('chat-open');
+    }
+    autoOpen();
+    renderSide(); renderConv(); renderHead(); markRead();
+  }, function(err){
+    S.chatsLoaded = true;
+    if (err.code !== 'revoked') setBanner('Не удалось загрузить чаты. Обновите страницу.');
+    renderSide();
+  });
+  if (S.meId){
+    S.db.doc('data/users/' + S.meId + '/state').onSnapshot(function(s){
+      var d = s.exists ? s.data() : null;
+      var r = d && d.read && typeof d.read === 'object' ? d.read : {};
+      Object.keys(r).forEach(function(k){
+        if (typeof r[k] === 'number' && r[k] > (S.read[k] || 0)) S.read[k] = r[k];
+      });
+      renderSide();
+    }, function(){});
+  }
+}
+function startLocal(){
+  var now = Date.now();
+  S.chats = [normChat('demo', {name:'Общий', emoji:'💬', at:now, last:{at:now, by:BRAND, text:WELCOME}})];
+  S.localMsgs.demo = {msgs:{welcome:{by:BRAND, text:WELCOME, at:now, r:{}}}};
+  S.chatsLoaded = true;
+  autoOpen();
+}
+async function init(){
+  renderAll();
+  var caps = await Promise.all([use('db'), use('user'), use('room')]);
+  var db = caps[0], user = caps[1], room = caps[2];
+  S.user = user; S.room = room;
+  if (user){
+    try { S.me = await user.me(); S.meId = S.me && S.me.id; } catch(e){}
+  }
+  if (db){
+    S.db = db; S.mode = 'live';
+    if (!S.meId){
+      S.readOnly = true;
+      setBanner('Войдите в аккаунт, чтобы писать сообщения. Читать можно и так.');
+    } else {
+      try {
+        var can = await user.can('data.write');
+        if (can === false){ S.readOnly = true; setBanner('У вас доступ только для чтения.'); }
+      } catch(e){}
+    }
+    startLive();
+  } else {
+    S.mode = 'local'; S.meId = 'local-me'; S.me = null;
+    setBanner('Демо-режим: общее хранилище недоступно, поэтому сообщения видны только вам и исчезнут после перезагрузки.');
+    startLocal();
+  }
+  if (room) setupRoom();
+  renderAll();
+}
+init();
+})();
+</script>
+</body>
+</html>

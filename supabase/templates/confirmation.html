@@ -1,0 +1,11 @@
+<!-- Supabase → Authentication → Emails → «Confirm signup». Тема письма: Добро пожаловать в СКАМ -->
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:440px;margin:0 auto;padding:24px;color:#0E0E10;background:#F4EFE6;border-radius:20px">
+  <h2 style="margin:0 0 12px;font-size:22px">Добро пожаловать в СКАМ!</h2>
+  <p style="margin:0 0 20px;line-height:1.5">Не развод, а мессенджер. Подтвердите почту, чтобы войти:</p>
+  <p style="margin:0 0 24px">
+    <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#0E0E10;color:#F4EFE6;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:999px">Войти в СКАМ</a>
+  </p>
+  <p style="margin:0 0 6px;line-height:1.5">Или введите код в приложении:</p>
+  <p style="margin:0 0 20px;font-size:28px;font-weight:bold;letter-spacing:6px">{{ .Token }}</p>
+  <p style="margin:0;color:#6E685E;font-size:13px">Если вы не регистрировались — просто проигнорируйте это письмо.</p>
+</div>
