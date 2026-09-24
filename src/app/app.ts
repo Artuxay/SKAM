@@ -11,7 +11,7 @@ import { isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
 import {
-  NoProfileError, REACTIONS, S, USERNAME_RE, createChat, deleteMessage, discardMessage, emit, ensureProfiles,
+  NoProfileError, REACTIONS, S, USERNAME_RE, createChat, usernameRequired, deleteMessage, discardMessage, emit, ensureProfiles,
   feedOf, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
   normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
   SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, toggleReaction, totalUnread, ts,
@@ -1156,8 +1156,11 @@ function renderProfile(): void {
   };
   const first = mk('profFirst', 'Имя', { maxLength: 40, autocomplete: 'given-name', value: keep('profFirst') ?? S.me.first_name ?? '' });
   const last = mk('profLast', 'Фамилия', { maxLength: 40, autocomplete: 'family-name', placeholder: 'необязательно', value: keep('profLast') ?? S.me.last_name ?? '' });
-  const user = mk('profUser', 'Имя пользователя', { maxLength: 33, autocomplete: 'username', placeholder: '@username', required: true, value: keep('profUser') ?? (S.me.username ? `@${S.me.username}` : '') });
-  const UN_HINT = 'Обязательно. По нему вас находят и пишут вам. Латиница, цифры и _, от 5 символов.';
+  const unRequired = usernameRequired();
+  const user = mk('profUser', 'Имя пользователя', { maxLength: 33, autocomplete: 'username', placeholder: unRequired ? '@username' : 'необязательно', required: unRequired, value: keep('profUser') ?? (S.me.username ? `@${S.me.username}` : '') });
+  const UN_HINT = unRequired
+    ? 'Обязательно. По нему вас находят и пишут вам. Латиница, цифры и _, от 5 символов.'
+    : 'Для этого аккаунта необязательно. Латиница, цифры и _, от 5 символов.';
   const unHint = el('p', 'hint', UN_HINT);
   user.f.append(unHint);
   const err = el('p', 'err');
@@ -1171,7 +1174,12 @@ function renderProfile(): void {
     clearTimeout(unTimer);
     const v = normUsername(user.i.value);
     unHint.classList.remove('ok', 'bad');
-    if (!v) { unOk = false; unHint.textContent = 'Имя пользователя обязательно.'; unHint.classList.add('bad'); return; }
+    if (!v) {
+      unOk = !unRequired;
+      unHint.textContent = unRequired ? 'Имя пользователя обязательно.' : UN_HINT;
+      if (unRequired) unHint.classList.add('bad');
+      return;
+    }
     if (v === S.me?.username) { unOk = true; unHint.textContent = UN_HINT; return; }
     if (!USERNAME_RE.test(v)) { unOk = false; unHint.textContent = 'Только латиница, цифры и _, от 5 до 32 символов, первая — буква.'; unHint.classList.add('bad'); return; }
     unOk = false;
@@ -1191,11 +1199,11 @@ function renderProfile(): void {
     const ln = last.i.value.trim();
     const un = normUsername(user.i.value);
     if (!fn) { err.textContent = 'Введите имя — так вас увидят в чатах.'; first.i.focus(); return; }
-    if (!un) { err.textContent = 'Имя пользователя обязательно — по нему вас находят.'; user.i.focus(); return; }
-    if (!USERNAME_RE.test(un) || !unOk) { err.textContent = 'Выберите другое имя пользователя.'; user.i.focus(); return; }
+    if (!un && unRequired) { err.textContent = 'Имя пользователя обязательно — по нему вас находят.'; user.i.focus(); return; }
+    if (un && (!USERNAME_RE.test(un) || !unOk)) { err.textContent = 'Выберите другое имя пользователя.'; user.i.focus(); return; }
     save.disabled = true;
     try {
-      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un });
+      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un || null });
       err.textContent = '';
       toast('Профиль сохранён');
     } catch (e) {
@@ -1623,8 +1631,8 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   }
   if (!mounted) return;
   // Новый аккаунт (или старый без имени или @username) — сначала «Создание аккаунта», как в Telegram.
-  // @username обязателен: без него база не даст писать сообщения.
-  if (!S.me?.first_name || !S.me?.username) {
+  // @username обязателен: без него база не даст писать сообщения. Исключение — username_optional.
+  if (!S.me?.first_name || (!S.me?.username && usernameRequired())) {
     mountRegister(root, () => { if (mounted) void mountShell(root); }, { existing: !!S.me?.first_name });
     return;
   }

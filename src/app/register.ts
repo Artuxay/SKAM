@@ -3,7 +3,7 @@
 // с заполненными именем и фото — остаётся выбрать @username (есть готовые свободные варианты).
 import { avatarUrl, sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, toast } from '../lib/dom';
-import { S, USERNAME_RE, normUsername, removeAvatar, updateMyProfile, uploadAvatar, usernameAvailable } from './store';
+import { S, USERNAME_RE, normUsername, removeAvatar, updateMyProfile, uploadAvatar, usernameAvailable, usernameRequired } from './store';
 
 const TRANSLIT: Record<string, string> = {
   а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm',
@@ -102,12 +102,16 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   };
   const fn = field('regFirst', 'Имя', { maxLength: 40, autocomplete: 'given-name', required: true, value: S.me?.first_name ?? '' });
   const ln = field('regLast', 'Фамилия (необязательно)', { maxLength: 40, autocomplete: 'family-name', value: S.me?.last_name ?? '' });
-  const un = field('regUser', 'Имя пользователя', { maxLength: 33, autocomplete: 'username', required: true, placeholder: '@username', value: S.me?.username ? `@${S.me.username}` : '' });
+  // Аккаунтам-исключениям (profiles.username_optional) @username необязателен.
+  const unRequired = usernameRequired();
+  const un = field('regUser', unRequired ? 'Имя пользователя' : 'Имя пользователя (необязательно)', { maxLength: 33, autocomplete: 'username', required: unRequired, placeholder: '@username', value: S.me?.username ? `@${S.me.username}` : '' });
   un.i.setAttribute('aria-describedby', 'regUserHint');
   un.i.spellcheck = false;
   un.i.autocapitalize = 'off';
   const first = fn.i;
-  const UN_HINT = 'Обязательно. По нему вас найдут. Латиница, цифры и _, от 5 символов.';
+  const UN_HINT = unRequired
+    ? 'Обязательно. По нему вас найдут. Латиница, цифры и _, от 5 символов.'
+    : 'По нему вас смогут найти. Латиница, цифры и _, от 5 символов.';
   const unHint = el('p', 'hint', UN_HINT);
   unHint.id = 'regUserHint';
   unHint.setAttribute('aria-live', 'polite');
@@ -197,12 +201,12 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
     const lastName = ln.i.value.trim();
     const username = normUsername(un.i.value);
     if (!firstName) { err.textContent = 'Введите имя.'; first.focus(); return; }
-    if (!username) { err.textContent = 'Придумайте имя пользователя — без него в СКАМ нельзя писать.'; un.i.focus(); return; }
-    if (!USERNAME_RE.test(username)) { err.textContent = 'Имя пользователя: латиница, цифры и _, от 5 до 32 символов, первая — буква.'; un.i.focus(); return; }
+    if (!username && unRequired) { err.textContent = 'Придумайте имя пользователя — без него в СКАМ нельзя писать.'; un.i.focus(); return; }
+    if (username && !USERNAME_RE.test(username)) { err.textContent = 'Имя пользователя: латиница, цифры и _, от 5 до 32 символов, первая — буква.'; un.i.focus(); return; }
     submit.disabled = true;
     submit.textContent = existing ? 'Сохраняем…' : 'Создаём…';
     // Проверка на лету могла не успеть — спросим ещё раз.
-    if (!unOk) {
+    if (username && !unOk) {
       unOk = await usernameAvailable(username).catch(() => false);
       if (!unOk) {
         err.textContent = `@${username} уже занято. Выберите другое.`;
@@ -214,7 +218,7 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
       }
     }
     try {
-      await updateMyProfile({ first_name: firstName, last_name: lastName || null, username });
+      await updateMyProfile({ first_name: firstName, last_name: lastName || null, username: username || null });
       onDone();
     } catch (e) {
       const code = (e as { code?: string }).code;

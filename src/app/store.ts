@@ -140,7 +140,13 @@ export function putProfile(p: Profile): void {
   else emit('chats', 'feed', 'head', 'online', 'members', 'me');
 }
 
-export type ProfileFields = { first_name: string; last_name: string | null; username: string };
+/** username = null — только для аккаунтов-исключений (profiles.username_optional). */
+export type ProfileFields = { first_name: string; last_name: string | null; username: string | null };
+
+/** Нужен ли мне @username: обязателен всем, кроме аккаунтов-исключений. */
+export function usernameRequired(): boolean {
+  return !S.me?.username_optional;
+}
 
 export async function updateMyProfile(fields: ProfileFields): Promise<void> {
   const { data, error } = await sb.from('profiles').update(fields).eq('id', meId()).select().single();

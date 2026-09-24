@@ -29,6 +29,8 @@ export type Database = {
           first_name: string | null;
           last_name: string | null;
           username: string | null;
+          /** Исключение: этому аккаунту @username необязателен (ставит администратор). */
+          username_optional: boolean;
           avatar_path: string | null;
           color: string;
           last_seen_at: string | null;
