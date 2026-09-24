@@ -275,8 +275,13 @@ export async function resetInvite(chatId: string): Promise<string> {
   return data;
 }
 
+/** Адрес приложения с учётом подпути (на GitHub Pages сайт живёт в /<репозиторий>/). */
+export function appUrl(): string {
+  return `${location.origin}${import.meta.env.BASE_URL}`;
+}
+
 export function inviteLink(code: string): string {
-  return `${location.origin}/?join=${encodeURIComponent(code)}`;
+  return `${appUrl()}?join=${encodeURIComponent(code)}`;
 }
 
 export function totalUnread(): number {

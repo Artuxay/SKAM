@@ -76,7 +76,7 @@ function emailStep(notice: string | null): void {
 function sendLink(email: string) {
   return sb.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: `${location.origin}/`, shouldCreateUser: true },
+    options: { emailRedirectTo: `${location.origin}${import.meta.env.BASE_URL}`, shouldCreateUser: true },
   });
 }
 

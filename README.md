@@ -86,6 +86,16 @@ npm run dev               # http://localhost:5173
 
 Чтобы установить приложение на телефон, его нужно открыть по **HTTPS**. Разверните `dist/` на Vercel, Netlify, Cloudflare Pages или GitHub Pages и добавьте этот адрес в Redirect URLs в Supabase. Дальше: Android/Chrome → «Установить приложение», iPhone/Safari → «Поделиться» → «На экран “Домой”».
 
+## Публикация на GitHub Pages
+
+Workflow `.github/workflows/deploy.yml` собирает сайт и выкладывает его на GitHub Pages при каждом пуше в `main`.
+
+1. Один раз включите Pages: репозиторий → **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. Запушьте код. Ход сборки видно на вкладке **Actions**, адрес сайта — `https://<логин>.github.io/<репозиторий>/`.
+3. Добавьте этот адрес в Supabase → Authentication → URL Configuration: поставьте его в **Site URL** и добавьте `https://<логин>.github.io/<репозиторий>/**` в **Redirect URLs**. Без этого ссылка из письма не вернёт человека на сайт.
+
+Приложение умеет жить в подпапке: сборка получает подпуть (`--base`), а ссылки-приглашения, адрес возврата после входа, манифест и service worker считаются от него.
+
 ## Структура
 
 ```
@@ -101,6 +111,7 @@ src/app/app.ts              интерфейс: список чатов, лен�
 src/app/store.ts            состояние и запросы к базе
 src/app/realtime.ts         Realtime: изменения в БД, presence, «печатает…», резервный опрос
 src/app/pwa.ts              регистрация service worker
+.github/workflows/deploy.yml сборка и публикация на GitHub Pages
 supabase/migrations/        SQL-схема, RLS, RPC, Realtime, Storage
 supabase/templates/         шаблоны писем
 public/                     манифест, иконки, service worker
