@@ -5,10 +5,13 @@
   "description": "СКАМ — не развод, а мессенджер. Vite + TypeScript + Supabase.",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/gen-icons.mjs --if-missing",
     "dev": "vite",
+    "prebuild": "node scripts/gen-icons.mjs --if-missing",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "icons": "node scripts/gen-icons.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1"

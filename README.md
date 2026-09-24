@@ -36,6 +36,7 @@ npm run dev               # http://localhost:5173
 | `npm run build` | проверка типов (`tsc`) и production-сборка в `dist/` |
 | `npm run preview` | локальный просмотр сборки на http://localhost:4173 (с service worker) |
 | `npm run typecheck` | только проверка типов |
+| `npm run icons` | пересоздать PNG-иконки PWA из логотипа |
 
 ## Настройка Supabase
 
@@ -81,7 +82,7 @@ npm run dev               # http://localhost:5173
 
 ## PWA
 
-`public/manifest.webmanifest`, иконки в `public/icons/` (сгенерированы из логотипа, включая maskable и apple-touch-icon), `public/sw.js`. Service worker включается только в production-сборке: оболочка приложения открывается даже без сети, а запросы к Supabase никогда не кэшируются.
+`public/manifest.webmanifest`, `public/sw.js` и иконки в `public/icons/`: обычные, maskable и apple-touch-icon. Иконки рисует из логотипа скрипт `scripts/gen-icons.mjs` без внешних зависимостей. Он запускается сам перед `npm run dev` и `npm run build`, если иконок ещё нет; пересоздать их вручную можно командой `npm run icons`. Service worker включается только в production-сборке: оболочка приложения открывается даже без сети, а запросы к Supabase никогда не кэшируются.
 
 Чтобы установить приложение на телефон, его нужно открыть по **HTTPS**. Разверните `dist/` на Vercel, Netlify, Cloudflare Pages или GitHub Pages и добавьте этот адрес в Redirect URLs в Supabase. Дальше: Android/Chrome → «Установить приложение», iPhone/Safari → «Поделиться» → «На экран “Домой”».
 

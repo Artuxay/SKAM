@@ -4,6 +4,9 @@ dist/
 dist-ssr/
 *.local
 
+# иконки PWA генерируются из логотипа: npm run icons
+public/icons/*.png
+
 # секреты
 .env
 .env.*
