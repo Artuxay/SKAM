@@ -56,7 +56,8 @@ const SHELL = `
       </header>
       <div class="feed" id="feed" role="log" aria-label="Сообщения"></div>
       <button class="jump" id="jumpBtn" type="button" hidden>Новые сообщения ↓</button>
-      <div class="composer">
+      <div class="composer" id="composer">
+        <p class="composer-note" id="composerNote" hidden>Это канал: писать могут только авторы. А реакции — пожалуйста 🔥</p>
         <div class="composer-inner">
           <textarea class="input" id="input" rows="1" maxlength="${MAX_LEN}" placeholder="Сообщение" aria-label="Сообщение"></textarea>
           <button class="send" id="sendBtn" type="button" aria-label="Отправить" disabled>${ICONS.send}</button>
@@ -155,6 +156,22 @@ function chatTitle(c: MyChat): string {
   return c.name ?? 'Без названия';
 }
 
+/** Можно ли мне писать в этот чат (в канал — только авторам). */
+function canPost(c: MyChat | null): boolean {
+  return !!c && (c.kind !== 'channel' || c.role === 'owner');
+}
+
+/** Живой канал (presence, «печатает…») нужен только там, где переписываются люди. */
+function isConversation(c: MyChat | null | undefined): boolean {
+  return !!c && (c.kind === 'group' || c.kind === 'direct');
+}
+
+function brandAvatar(cls = ''): HTMLElement {
+  const node = el('div', `av brand ${cls}`);
+  node.append(html(BRAND_SVG));
+  return node;
+}
+
 function plural(n: number, one: string, few: string, many: string): string {
   const m10 = n % 10, m100 = n % 100;
   if (m10 === 1 && m100 !== 11) return `${n} ${one}`;
@@ -194,6 +211,7 @@ function previewText(c: MyChat): string {
   if (!c.last_id) return c.kind === 'direct' ? 'Напишите первым' : 'Пока пусто';
   if (c.last_deleted) return 'Сообщение удалено';
   const t = (c.last_body || '…').replace(/\s+/g, ' ');
+  if (c.kind === 'channel') return t;
   if (c.last_user_id === meId()) return `Вы: ${t}`;
   if (c.kind === 'group' && c.last_kind === 'text') return `${who(c.last_user_id).name}: ${t}`;
   return t;
@@ -221,6 +239,9 @@ function renderSide(): void {
       tile = el('span', 'tile person');
       tile.append(avatarEl(who(c.peer_id)));
       if (c.peer_id && S.online.has(c.peer_id)) tile.append(el('span', 'on-dot'));
+    } else if (c.kind === 'bot') {
+      tile = el('span', 'tile person');
+      tile.append(brandAvatar());
     } else {
       tile = el('span', 'tile', c.emoji);
     }
@@ -275,9 +296,12 @@ function updateTitle(): void {
 // ---------------------------------------------------------------------------
 
 function renderConv(): void {
-  const has = !!currentChat();
-  $('convMain').hidden = !has;
-  $('convEmpty').hidden = has;
+  const c = currentChat();
+  $('convMain').hidden = !c;
+  $('convEmpty').hidden = !!c;
+  const ro = !!c && !canPost(c);
+  $('composer').classList.toggle('readonly', ro);
+  $('composerNote').hidden = !ro;
   updateSendBtn();
 }
 
@@ -285,8 +309,8 @@ function renderHead(): void {
   const c = currentChat();
   if (!c) return;
   const emoji = $('convEmoji');
-  if (c.kind === 'direct') {
-    emoji.replaceChildren(personAvatar(c.peer_id));
+  if (c.kind === 'direct' || c.kind === 'bot') {
+    emoji.replaceChildren(c.kind === 'bot' ? brandAvatar() : personAvatar(c.peer_id));
     emoji.style.border = '0';
     emoji.style.background = 'transparent';
   } else {
@@ -314,6 +338,11 @@ function renderHead(): void {
     sub.textContent = c.peer_id && S.online.has(c.peer_id) ? 'в сети' : 'не в сети';
     return;
   }
+  if (c.kind === 'bot') { sub.textContent = 'бот'; return; }
+  if (c.kind === 'channel') {
+    sub.textContent = `канал · ${plural(c.member_count, 'подписчик', 'подписчика', 'подписчиков')}`;
+    return;
+  }
   const parts = [plural(c.member_count, 'участник', 'участника', 'участников')];
   const here = S.inChat.size;
   const members = S.members.get(c.id);
@@ -331,12 +360,15 @@ function reactionCounts(m: Msg) {
   }).filter((x) => x.n > 0);
 }
 
-function renderMsg(m: Msg, first: boolean, readUpTo: number): HTMLElement {
-  const mine = m.user_id === meId() && m.kind === 'text';
+function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTMLElement {
+  const channel = chat.kind === 'channel';
+  const own = m.user_id === meId() && m.kind === 'text';
+  // В канале посты публикуются от имени канала и стоят слева.
+  const mine = own && !channel;
   const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}`);
   row.dataset.id = m.id;
   if (U.openMsg === m.id) row.classList.add('open');
-  const w = who(m.user_id, m.kind);
+  const w: Who = channel ? { id: null, name: chat.name ?? 'Канал', avatar: null, color: null, brand: true } : who(m.user_id, m.kind);
   const slot = el('div', 'avslot');
   if (first && !mine) slot.append(avatarEl(w, '', true));
   row.append(slot);
@@ -401,7 +433,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number): HTMLElement {
       btn.setAttribute('aria-label', `Реакция ${R.e}`);
       act.append(btn);
     });
-    if (mine) {
+    if (own) {
       const armed = U.armedDelete === m.id;
       const del = button('del', armed ? 'Точно?' : 'Удалить', (ev) => {
         ev.stopPropagation();
@@ -449,8 +481,10 @@ function renderFeed(): void {
     inner.append(el('p', 'feed-note', 'Не удалось загрузить сообщения.'));
   } else if (!f.msgs.length) {
     const q = el('div', 'quiet');
-    if (c.kind === 'direct') {
+    if (c.kind === 'direct' || c.kind === 'bot') {
       q.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение — обещаем, это не развод.');
+    } else if (c.kind === 'channel') {
+      q.append(el('strong', null, 'Новостей пока нет'), 'Как только появятся — они будут здесь.');
     } else {
       q.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение или позовите друзей по ссылке.');
       if (c.invite_code) q.append(el('br'), button('btn primary small', 'Пригласить', () => shareInvite(c)));
@@ -458,8 +492,10 @@ function renderFeed(): void {
     inner.append(q);
   }
 
+  // ✓✓: сообщение прочитал хотя бы один собеседник; в чате с ботом — бот ответил.
   const others = (S.members.get(c.id) ?? []).filter((m) => m.user_id !== meId());
-  const readUpTo = Math.max(0, ...others.map((m) => ts(m.last_read_at)));
+  const botSeen = c.kind === 'bot' ? f.msgs.filter((m) => m.kind === 'system').map((m) => ts(m.created_at)) : [];
+  const readUpTo = Math.max(0, ...others.map((m) => ts(m.last_read_at)), ...botSeen);
   let prev: Msg | null = null;
   for (const m of f.msgs) {
     const t = ts(m.created_at);
@@ -467,8 +503,9 @@ function renderFeed(): void {
       inner.append(el('div', 'day', dayLabel(t)));
       prev = null;
     }
-    const first = !prev || prev.user_id !== m.user_id || prev.kind !== m.kind || t - ts(prev.created_at) > 5 * 60 * 1000;
-    inner.append(renderMsg(m, first, readUpTo));
+    const sameAuthor = c.kind === 'channel' || (prev?.user_id === m.user_id && prev?.kind === m.kind);
+    const first = !prev || !sameAuthor || t - ts(prev.created_at) > 5 * 60 * 1000;
+    inner.append(renderMsg(m, first, readUpTo, c));
     prev = m;
   }
 
@@ -523,14 +560,14 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
     inp.value = U.drafts.get(id) ?? '';
     loadFeed(id).catch(() => toast('Не удалось загрузить сообщения.'));
   }
-  joinChatChannel(id);
+  joinChatChannel(isConversation(S.chats.get(id)) ? id : null);
   if (!wideMQ.matches && !document.body.classList.contains('chat-open')) {
     history.pushState({ skamChat: id }, '');
   }
   document.body.classList.add('chat-open');
   renderAll();
   autosize();
-  if (!opts.silent && !touchMQ.matches) inp.focus();
+  if (!opts.silent && !touchMQ.matches && canPost(currentChat())) inp.focus();
 }
 
 function backToList(fromHistory = false): void {
@@ -584,7 +621,7 @@ function updateSendBtn(): void {
 
 let typingIdle: number | undefined;
 function onType(): void {
-  if (!S.cur) return;
+  if (!S.cur || !isConversation(currentChat())) return;
   if (!$<HTMLTextAreaElement>('input').value.trim()) { stopTyping(); return; }
   sendTyping(true);
   clearTimeout(typingIdle);
@@ -832,14 +869,43 @@ function openChatInfo(): void {
     if (c.peer_id) openPerson(c.peer_id);
     return;
   }
+  if (c.kind === 'bot') {
+    openBotCard();
+    return;
+  }
   renderChatInfo();
   openDialog($<HTMLDialogElement>('chatDlg'));
+}
+
+function openBotCard(): void {
+  const dlg = $<HTMLDialogElement>('personDlg');
+  const card = el('div', 'person-card');
+  const p = el('p', null, 'Бот-помощник СКАМ. Напишите ему «помощь» — расскажет, что умеет.');
+  p.style.margin = '0 0 18px';
+  const actions = el('div', 'dlg-actions');
+  actions.append(button('btn primary', 'Понятно', () => closeDialog(dlg)));
+  card.append(brandAvatar('xl'), el('h2', null, 'СКАМ'), el('p', 'st', 'бот'), p, actions);
+  dlg.replaceChildren(card);
+  openDialog(dlg);
+}
+
+function renderChannelInfo(dlg: HTMLDialogElement, c: MyChat): void {
+  const stack = el('div', 'stack');
+  const row = el('div', 'chat-title-row');
+  const text = el('span');
+  text.append(el('strong', null, chatTitle(c)), el('br'),
+    el('span', 'hint', `канал · ${plural(c.member_count, 'подписчик', 'подписчика', 'подписчиков')}`));
+  row.append(el('span', 'conv-emoji', c.emoji), text);
+  stack.append(row, el('p', null, 'Официальный канал СКАМ: новости, обновления и важные объявления. Читать и ставить реакции могут все, писать — только авторы.'));
+  if (c.role === 'owner') stack.append(el('p', 'hint', 'Вы автор канала: ваши посты публикуются от имени канала.'));
+  dlg.replaceChildren(dlgHead('О канале', dlg), stack);
 }
 
 let editEmoji = '';
 function renderChatInfo(): void {
   const dlg = $<HTMLDialogElement>('chatDlg');
   const c = currentChat();
+  if (c?.kind === 'channel') { renderChannelInfo(dlg, c); return; }
   if (!c || c.kind !== 'group') { closeDialog(dlg); return; }
   const owner = c.role === 'owner';
   const stack = el('div', 'stack');
@@ -896,8 +962,6 @@ function renderChatInfo(): void {
       f.append(reset);
     }
     stack.append(f);
-  } else if (c.is_default) {
-    stack.append(el('p', 'hint', 'Это общий чат: в нём все пользователи СКАМ.'));
   }
 
   const members = S.members.get(c.id);
@@ -1042,7 +1106,7 @@ function wire(): void {
   listen(window, 'popstate', () => {
     if (document.body.classList.contains('chat-open') && !wideMQ.matches && !history.state?.skamChat) backToList(true);
   });
-  const onWide = () => { if (wideMQ.matches) joinChatChannel(S.cur); autoOpen(); renderAll(); };
+  const onWide = () => { if (wideMQ.matches && isConversation(currentChat())) joinChatChannel(S.cur); autoOpen(); renderAll(); };
   wideMQ.addEventListener('change', onWide);
   unsubs.push(() => wideMQ.removeEventListener('change', onWide));
   // Онбординг нельзя закрыть без имени.

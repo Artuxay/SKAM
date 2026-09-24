@@ -4,9 +4,11 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
+export type ChatKind = 'group' | 'direct' | 'channel' | 'bot';
+
 type ChatRow = {
   id: string;
-  kind: 'group' | 'direct';
+  kind: ChatKind;
   name: string | null;
   emoji: string;
   created_by: string | null;
@@ -96,7 +98,7 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: {
           id: string;
-          kind: 'group' | 'direct';
+          kind: ChatKind;
           name: string | null;
           emoji: string;
           invite_code: string | null;

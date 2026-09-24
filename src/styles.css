@@ -295,3 +295,7 @@ dialog .dlg-head h2{margin:0}
 .conv-title{display:flex;flex-direction:column;min-width:0}
 .conv-title .conv-name{display:block;font-size:17px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .conv-title .conv-sub{display:block}
+.composer.readonly .composer-inner{display:none}
+.composer-note{max-width:780px;margin:0 auto;padding:10px 12px;text-align:center;color:var(--muted);font-size:14px;background:var(--raised);border-radius:16px}
+.av.brand.xl{margin:0 auto 12px}
+.chat .tile .av.brand{background:transparent}
