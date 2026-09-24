@@ -2,6 +2,8 @@
 // Запросы к Supabase (API, Realtime, Storage) никогда не кэшируются.
 // Все пути считаются от области действия SW: сайт может жить и в корне, и в подпапке (GitHub Pages).
 const CACHE = 'skam-v4';
+// Кэш зашифрованных вложений ведёт само приложение (расшифровать их без ключа нельзя) — его не трогаем.
+const KEEP = (k) => k === CACHE || k.startsWith('skam-media');
 const BASE = new URL('./', self.registration.scope).pathname; // например '/' или '/skam/'
 const SHELL = ['', 'manifest.webmanifest', 'favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png'].map((p) => BASE + p);
 
@@ -12,7 +14,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => !KEEP(k)).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });

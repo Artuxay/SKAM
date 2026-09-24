@@ -1,17 +1,20 @@
 // Supabase Realtime: изменения в базе, «печатает…» (broadcast), а также пульс «в сети» (ping).
 import type { RealtimeChannel, RealtimeChannelOptions } from '@supabase/supabase-js';
 import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
-import type { Member, Message, Profile, Reaction } from '../lib/database.types';
+import type { KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
 import {
-  S, addReaction, bumpChat, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId,
-  putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage,
+  S, addReaction, bumpChat, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
+  putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
 } from './store';
+import * as e2e from './e2e';
 
 const TYPING_TTL = 6000;
 /** Если WebSocket недоступен (корпоративная сеть, прокси) — подтягиваем изменения опросом. */
 const POLL_MS = 8000;
 /** Как часто сообщаем «я в сети» (сервер держит статус 75 секунд). */
 const PING_MS = 45_000;
+/** Как часто на всякий случай раздаём ключи чатов тем, кому их не хватает. */
+const SWEEP_MS = 5 * 60_000;
 
 let dbChannel: RealtimeChannel | null = null;
 let chatChannel: RealtimeChannel | null = null;
@@ -20,9 +23,11 @@ let everConnected = false;
 let hiddenAt = 0;
 let typingSweep: number | undefined;
 let pingTimer: number | undefined;
+let sweepTimer: number | undefined;
 let statusTick: number | undefined;
 let lastToken: string | null = null;
 let statusCb: (ok: boolean) => void = () => {};
+let identityCb: () => void = () => {};
 let pollTimer: number | undefined;
 let connectTimer: number | undefined;
 let connected: boolean | null = null;
@@ -55,7 +60,11 @@ function channel(topic: string, config: NonNullable<RealtimeChannelOptions['conf
 // Изменения в базе
 // ---------------------------------------------------------------------------
 
-function onMessageInsert(m: Message): void {
+function onMessageInsert(raw: Message): void {
+  void prepareMsg(raw as Msg).then(onMessageReady);
+}
+
+function onMessageReady(m: Msg): void {
   const f = S.feeds.get(m.chat_id);
   const isNew = f ? !f.msgs.some((x) => x.id === m.id) : true;
   if (f) upsertMessage(m);
@@ -72,9 +81,13 @@ function onMessageInsert(m: Message): void {
   emit('chats', 'feed');
 }
 
-function onMessageUpdate(m: Message): void {
+function onMessageUpdate(raw: Message): void {
+  void prepareMsg(raw as Msg).then(onMessageChanged);
+}
+
+function onMessageChanged(m: Msg): void {
   const old = S.feeds.get(m.chat_id)?.msgs.find((x) => x.id === m.id);
-  if (old) Object.assign(old, m, { pending: false, failed: false });
+  if (old) Object.assign(old, m, { pending: false, failed: false, upload: undefined });
   if (m.deleted_at) S.reactions.delete(m.id);
   const c = S.chats.get(m.chat_id);
   if (c?.last_id === m.id) bumpChat(m);
@@ -103,6 +116,8 @@ function onMember(event: string, row: Partial<Member>): void {
   const mine = row.user_id === meId();
   if (event === 'INSERT') {
     if (mine) { reloadChatsSoon(); return; }
+    // Новый участник: раздадим ему ключи чата (историю), если у нас они есть.
+    e2e.sweepSoon();
     if (!c) return;
     if (list && !list.some((m) => m.user_id === row.user_id)) {
       list.push(row as Member);
@@ -121,6 +136,8 @@ function onMember(event: string, row: Partial<Member>): void {
     }
   } else if (event === 'DELETE') {
     if (mine) { dropChat(row.chat_id); return; }
+    // Кто-то вышел — следующее сообщение зашифруем новым ключом, которого у него не будет.
+    e2e.membersChanged(row.chat_id);
     if (!c) return;
     if (list) {
       S.members.set(row.chat_id, list.filter((m) => m.user_id !== row.user_id));
@@ -153,6 +170,7 @@ async function resync(withProfiles = false): Promise<void> {
     await loadChats();
     if (S.cur && S.chats.has(S.cur)) await loadFeed(S.cur, true);
     if (withProfiles) await refreshProfiles();
+    e2e.sweepSoon();
   } catch { /* повторим при следующем переподключении */ } finally {
     resyncing = false;
   }
@@ -208,8 +226,20 @@ function onVisibility(): void {
   }
 }
 
-export async function startRealtime(onStatus: (ok: boolean) => void): Promise<void> {
+function onUserKey(row: Partial<UserKey>): void {
+  if (!row.user_id || !row.public_key) return;
+  if (row.user_id === meId()) {
+    // Ключ сбросили на другом устройстве — здесь он больше не подходит.
+    if (e2e.ready() && row.public_key !== e2e.myPublicKey()) identityCb();
+    return;
+  }
+  // Собеседник включил шифрование (или сменил ключ) — отдадим ему ключи наших общих чатов.
+  e2e.sweepSoon();
+}
+
+export async function startRealtime(onStatus: (ok: boolean) => void, onIdentityReplaced: () => void = () => {}): Promise<void> {
   statusCb = onStatus;
+  identityCb = onIdentityReplaced;
   everConnected = false;
   connected = null;
   await sb.realtime.setAuth();
@@ -227,6 +257,10 @@ export async function startRealtime(onStatus: (ok: boolean) => void): Promise<vo
     .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, (p) =>
       onChat(p.eventType, (p.eventType === 'DELETE' ? p.old : p.new) as Record<string, never>))
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (p) => putProfile(p.new as Profile))
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_key_shares' }, (p) => e2e.onShare(p.new as KeyShare))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'user_keys' }, (p) => {
+      if (p.eventType !== 'DELETE') onUserKey(p.new as Partial<UserKey>);
+    })
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setConnected(true);
@@ -239,6 +273,8 @@ export async function startRealtime(onStatus: (ok: boolean) => void): Promise<vo
 
   if (document.visibilityState === 'visible') ping(true);
   pingTimer = window.setInterval(() => { if (document.visibilityState === 'visible') ping(true); }, PING_MS);
+  e2e.sweepSoon(800);
+  sweepTimer = window.setInterval(() => { if (document.visibilityState === 'visible') e2e.sweepSoon(0); }, SWEEP_MS);
   // Статусы «в сети» истекают и «N минут назад» растёт — перерисовываем раз в 30 секунд.
   statusTick = window.setInterval(() => emit('online', 'head', 'chats', 'members'), 30_000);
   window.addEventListener('pagehide', onPageHide);
@@ -256,6 +292,7 @@ export async function stopRealtime(): Promise<void> {
   window.removeEventListener('pagehide', onPageHide);
   clearInterval(typingSweep);
   clearInterval(pingTimer);
+  clearInterval(sweepTimer);
   clearInterval(statusTick);
   clearInterval(pollTimer);
   clearTimeout(connectTimer);

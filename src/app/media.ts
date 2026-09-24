@@ -10,6 +10,7 @@
 import { sb } from '../lib/supabase';
 import { ICONS, el, fmtDur, html, lsGet, lsSet, toast } from '../lib/dom';
 import type { Msg } from './store';
+import { cachedUrl, sealedUrl } from './attach';
 
 // ---------------------------------------------------------------------------
 // Ссылки на файлы
@@ -27,7 +28,7 @@ export function setLocalMedia(path: string, blob: Blob): void {
 }
 
 export function cachedMediaUrl(path: string): string | null {
-  const own = local.get(path);
+  const own = local.get(path) ?? cachedUrl(path);
   if (own) return own;
   const s = signed.get(path);
   return s && s.exp - Date.now() > 5 * 60_000 ? s.url : null;
@@ -37,6 +38,9 @@ export function cachedMediaUrl(path: string): string | null {
 export function mediaUrl(path: string): Promise<string> {
   const hit = cachedMediaUrl(path);
   if (hit) return Promise.resolve(hit);
+  // Голосовое или кружочек из зашифрованного чата: скачиваем и расшифровываем.
+  const sealed = sealedUrl(path);
+  if (sealed) return sealed;
   return new Promise((resolve, reject) => {
     const list = queue.get(path) ?? [];
     list.push({ resolve, reject });

@@ -6,6 +6,28 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 
 export type ChatKind = 'group' | 'direct' | 'channel' | 'bot';
 
+
+/** Вложение: файл лежит в бакете media зашифрованным своим ключом (key, base64, 32 байта). */
+export type Attachment = {
+  id: string;
+  kind: 'photo' | 'video' | 'file';
+  name: string;
+  mime: string;
+  /** Размер исходного файла в байтах. */
+  size: number;
+  /** media/<чат>/<автор>/<uuid>.bin */
+  path: string;
+  key: string;
+  w?: number;
+  h?: number;
+  /** Длительность видео, секунды. */
+  dur?: number;
+  /** Крошечное размытое превью (data:image/jpeg), показывается, пока грузится картинка. */
+  mini?: string;
+  /** Уменьшенная копия (до 720 px) — для ленты; зашифрована тем же ключом. */
+  thumb?: { path: string; w: number; h: number };
+};
+
 type ChatRow = {
   id: string;
   kind: ChatKind;
@@ -74,7 +96,7 @@ export type Database = {
           chat_id: string;
           user_id: string | null;
           kind: MessageKind;
-          /** Текст; у стикера — его эмодзи; у голосового и кружочка — пусто. */
+          /** Текст; у стикера — его эмодзи; у голосового, кружочка и зашифрованного — пусто. */
           body: string;
           created_at: string;
           deleted_at: string | null;
@@ -86,22 +108,64 @@ export type Database = {
           duration_ms: number | null;
           /** Громкость голосового: до 100 значений 0–100. */
           waveform: number[] | null;
-          /** Поля шифрованных сообщений и вложений (миграция e2e_attachments) — этот клиент их пока не создаёт. */
+          /** Шифротекст (base64) для kind = 'e2e'. */
           enc: string | null;
+          /** Ключ чата, которым зашифровано сообщение. */
           key_id: string | null;
-          files: Json | null;
+          /** Вложения для kind = 'media'. */
+          files: Attachment[] | null;
         };
         Insert: {
           id?: string;
           chat_id: string;
           body: string;
-          kind?: 'text' | 'sticker' | 'voice' | 'video_note';
+          kind?: 'text' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media';
           sticker?: string | null;
           media_path?: string | null;
           media_mime?: string | null;
           duration_ms?: number | null;
           waveform?: number[] | null;
+          enc?: string | null;
+          key_id?: string | null;
+          files?: Attachment[] | null;
         };
+        Update: never;
+        Relationships: [];
+      };
+      user_keys: {
+        Row: {
+          user_id: string;
+          public_key: string;
+          reset_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      chat_keys: {
+        Row: {
+          id: string;
+          chat_id: string;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: { id: string; chat_id: string };
+        Update: never;
+        Relationships: [];
+      };
+      chat_key_shares: {
+        Row: {
+          key_id: string;
+          user_id: string;
+          sender_id: string;
+          chat_id: string;
+          sender_pub: string;
+          wrapped: string;
+          created_at: string;
+        };
+        Insert: { key_id: string; user_id: string; sender_pub: string; wrapped: string };
         Update: never;
         Relationships: [];
       };
@@ -144,9 +208,9 @@ export type Database = {
           last_kind: MessageKind | null;
           last_at: string | null;
           last_deleted: boolean | null;
-          last_enc?: string | null;
-          last_key_id?: string | null;
-          last_files?: Json | null;
+          last_enc: string | null;
+          last_key_id: string | null;
+          last_files: Attachment[] | null;
         }[];
       };
       create_chat: { Args: { p_name: string; p_emoji?: string }; Returns: ChatRow };
@@ -173,6 +237,19 @@ export type Database = {
         }[];
       };
       username_available: { Args: { p_username: string }; Returns: boolean };
+      set_identity_key: {
+        Args: { p_public: string; p_backup: string; p_salt: string; p_iterations: number; p_reset?: boolean };
+        Returns: undefined;
+      };
+      my_key_backup: {
+        Args: Record<PropertyKey, never>;
+        Returns: { public_key: string; backup: string; salt: string; iterations: number }[];
+      };
+      update_key_backup: { Args: { p_backup: string; p_salt: string; p_iterations: number }; Returns: undefined };
+      e2e_pending: {
+        Args: { p_limit?: number };
+        Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -180,7 +257,10 @@ export type Database = {
 };
 
 export type ReactionKey = 'like' | 'lol' | 'fire' | 'wow' | 'clown';
-/** text/system — текст; sticker, voice (голосовое), video_note (кружочек); e2e и media — из миграции шифрования. */
+/**
+ * Вид сообщения: text/system — текст; sticker, voice (голосовое), video_note (кружочек);
+ * e2e — зашифрованное (содержимое внутри enc); media — вложения там, где E2E нет (канал, бот).
+ */
 export type MessageKind = 'text' | 'system' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media';
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
 export type Profile = Tables<'profiles'>;
@@ -188,4 +268,6 @@ export type Chat = Tables<'chats'>;
 export type Member = Tables<'chat_members'>;
 export type Message = Tables<'messages'>;
 export type Reaction = Tables<'reactions'>;
+export type KeyShare = Tables<'chat_key_shares'>;
+export type UserKey = Tables<'user_keys'>;
 export type MyChat = Database['public']['Functions']['my_chats']['Returns'][number];

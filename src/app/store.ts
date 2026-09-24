@@ -1,17 +1,44 @@
 // Состояние приложения и работа с данными Supabase.
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
-import type { Database, Member, Message, MyChat, Profile, Reaction, ReactionKey } from '../lib/database.types';
+import type { Attachment, Database, Member, Message, MessageKind, MyChat, Profile, Reaction, ReactionKey } from '../lib/database.types';
 import { uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
+import * as e2e from './e2e';
+import {
+  type Prepared, type Sealed, registerSealed, removeFiles, sealBlob, sealPrepared, seedUrl, uploadPart,
+} from './attach';
 
+/** Что показывать в пузыре: текст и вложения (для зашифрованных — после расшифровки). */
+export type Content = { text: string; files: Attachment[] };
+export type Upload = { sealed: Sealed[]; loaded: number; total: number; ctrl: AbortController; error?: string };
 export type Msg = Message & {
   pending?: boolean;
   failed?: boolean;
   /** Голосовое или кружочек, записанные здесь: файл, пока он не загружен в хранилище. */
   blob?: Blob;
   uploaded?: boolean;
+  /** Ключ файла зашифрованного голосового или кружочка (base64). */
+  fileKey?: string;
+  /** Как выглядит зашифрованное сообщение после расшифровки: стикер, голосовое, кружочек или текст с вложениями. */
+  view?: MessageKind;
+  /** Текст и вложения; null — удалено или ещё не расшифровано. */
+  content?: Content | null;
+  /** Не удалось расшифровать: nokey — ключа пока нет, bad — шифротекст повреждён. */
+  locked?: 'nokey' | 'bad' | null;
+  /** Загрузка вложений до отправки. */
+  upload?: Upload;
+  /** Локальные превью вложений, пока сообщение отправляется. */
+  local?: Map<string, string>;
 };
+
+/** Вид сообщения для показа: у зашифрованного — то, что внутри. */
+export function viewKind(m: Msg): MessageKind {
+  return m.view ?? m.kind;
+}
+
+/** Расшифрованное последнее сообщение для списка чатов. */
+export type Preview = { view: MessageKind; text: string; files: Attachment[] };
 export type Feed = { msgs: Msg[]; loaded: boolean; hasMore: boolean; loadingOlder: boolean; error: boolean };
 
 export const PAGE = 50;
@@ -33,6 +60,8 @@ export const S = {
   typing: new Map<string, number>(),
   /** Кто сейчас записывает голосовое или кружочек (вместо «печатает…»). */
   typingWhat: new Map<string, 'voice' | 'video_note'>(),
+  /** Расшифрованные последние сообщения для списка чатов (по id сообщения); 'locked' — ключа нет. */
+  previews: new Map<string, Preview | 'locked'>(),
   /** UI сообщает, какой чат сейчас реально виден пользователю (для непрочитанных). */
   visibleChat: (): string | null => null,
 };
@@ -82,6 +111,8 @@ export function resetState(): void {
   S.inChat.clear();
   S.typing.clear();
   S.typingWhat.clear();
+  S.previews.clear();
+  e2e.reset();
   listeners.clear();
   pending.clear();
 }
@@ -259,9 +290,43 @@ export async function loadChats(): Promise<void> {
   S.chatsLoaded = true;
   for (const id of [...S.feeds.keys()]) if (!next.has(id)) S.feeds.delete(id);
   emit('chats');
+  void decryptPreviews();
   await ensureProfiles((data ?? []).flatMap((c) => [c.peer_id, c.last_user_id]));
   emit('chats', 'head', 'feed');
 }
+
+/** Расшифровать последние сообщения зашифрованных чатов для превью в списке. */
+async function decryptPreviews(): Promise<void> {
+  const jobs = [...S.chats.values()]
+    .filter((c) => c.last_kind === 'e2e' && c.last_id && c.last_enc && c.last_key_id && !S.previews.has(c.last_id))
+    .map(async (c) => {
+      const m = { id: c.last_id!, chat_id: c.id, user_id: c.last_user_id, enc: c.last_enc, key_id: c.last_key_id } as Msg;
+      await prepareMsg(Object.assign(m, { kind: 'e2e', body: '', deleted_at: null }));
+      S.previews.set(c.last_id!, m.content ? previewOf(m) : 'locked');
+    });
+  if (!jobs.length) return;
+  await Promise.all(jobs);
+  emit('chats');
+}
+
+function previewOf(m: Msg): Preview {
+  return { view: viewKind(m), text: m.content?.text ?? '', files: m.content?.files ?? [] };
+}
+
+/** Пришли новые ключи чата: пробуем расшифровать то, что ждало ключа. */
+e2e.onKeysArrived((chatId) => {
+  void (async () => {
+    const f = S.feeds.get(chatId);
+    const waiting = f?.msgs.filter((m) => m.locked === 'nokey') ?? [];
+    await Promise.all(waiting.map((m) => prepareMsg(m)));
+    const c = S.chats.get(chatId);
+    if (c?.last_id && S.previews.get(c.last_id) === 'locked') {
+      S.previews.delete(c.last_id);
+      await decryptPreviews();
+    }
+    if (waiting.length) emit('feed');
+  })();
+});
 
 let reloadTimer: number | undefined;
 export function reloadChatsSoon(): void {
@@ -407,8 +472,96 @@ export function bumpChat(m: Msg): void {
       last_kind: m.kind,
       last_at: m.created_at,
       last_deleted: m.deleted_at != null,
+      last_enc: m.enc,
+      last_key_id: m.key_id,
+      last_files: m.files,
     });
+    if (m.kind === 'e2e' && m.content) S.previews.set(m.id, previewOf(m));
+    else if (m.kind === 'e2e' && m.locked) S.previews.set(m.id, 'locked');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Содержимое сообщений: расшифровка и проверка вложений
+// ---------------------------------------------------------------------------
+
+const KINDS = new Set(['photo', 'video', 'file']);
+const PATH_RE = /^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.bin$/;
+const KEY_RE = /^[A-Za-z0-9+/]{43}=$/;
+const STICKER_RE = /^[a-z0-9_]{1,32}\/[a-z0-9_]{1,32}$/;
+const REC_MIME = new Set(['audio/webm', 'audio/ogg', 'audio/mp4', 'video/webm', 'video/mp4']);
+const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined);
+
+/** Вложения из чужого сообщения: берём только то, что похоже на настоящее описание файла. */
+function cleanFiles(list: unknown): Attachment[] {
+  if (!Array.isArray(list)) return [];
+  const out: Attachment[] = [];
+  for (const raw of list.slice(0, 10)) {
+    const f = raw as Record<string, unknown>;
+    if (!f || typeof f !== 'object') continue;
+    if (typeof f.path !== 'string' || !PATH_RE.test(f.path) || typeof f.key !== 'string' || !KEY_RE.test(f.key)) continue;
+    const kind = KINDS.has(f.kind as string) ? (f.kind as Attachment['kind']) : 'file';
+    const a: Attachment = {
+      id: typeof f.id === 'string' ? f.id.slice(0, 64) : f.path,
+      kind,
+      name: typeof f.name === 'string' && f.name.trim() ? f.name.slice(0, 255) : 'файл',
+      mime: typeof f.mime === 'string' ? f.mime.slice(0, 255) : 'application/octet-stream',
+      size: num(f.size) ?? 0,
+      path: f.path,
+      key: f.key,
+    };
+    const w = num(f.w), h = num(f.h), dur = num(f.dur);
+    if (w && h) { a.w = w; a.h = h; }
+    if (dur) a.dur = dur;
+    if (typeof f.mini === 'string' && f.mini.startsWith('data:image/jpeg;base64,') && f.mini.length < 4000) a.mini = f.mini;
+    const t = f.thumb as Record<string, unknown> | undefined;
+    if (t && typeof t.path === 'string' && PATH_RE.test(t.path) && num(t.w) && num(t.h)) a.thumb = { path: t.path, w: num(t.w)!, h: num(t.h)! };
+    // Картинка или видео без размеров показываются как файл.
+    if (a.kind !== 'file' && !(a.w && a.h)) a.kind = 'file';
+    out.push(a);
+  }
+  return out;
+}
+
+/** Разложить расшифрованное содержимое по полям сообщения (только в памяти). */
+function applyPayload(m: Msg, p: e2e.Payload): void {
+  m.content = { text: typeof p.text === 'string' ? p.text.slice(0, 4000) : '', files: cleanFiles(p.files) };
+  m.view = 'e2e';
+  if (typeof p.sticker === 'string' && STICKER_RE.test(p.sticker)) {
+    m.view = 'sticker';
+    m.sticker = p.sticker;
+    m.body = m.content.text.slice(0, 16);
+    return;
+  }
+  const r = p.rec as Record<string, unknown> | undefined;
+  if (r && (r.kind === 'voice' || r.kind === 'video_note') && typeof r.path === 'string' && PATH_RE.test(r.path)
+      && typeof r.key === 'string' && KEY_RE.test(r.key) && typeof r.mime === 'string' && REC_MIME.has(r.mime)) {
+    m.view = r.kind;
+    m.media_path = r.path;
+    m.media_mime = r.mime;
+    m.duration_ms = Math.round(num(r.dur) ?? 0);
+    m.waveform = Array.isArray(r.wave) ? r.wave.slice(0, 100).map((x) => Math.max(0, Math.min(100, Number(x) || 0))) : null;
+    registerSealed(r.path, r.key, r.mime);
+  }
+}
+
+/** Подготовить сообщение к показу: расшифровать, разобрать вложения. Меняет объект на месте. */
+export async function prepareMsg(m: Msg): Promise<Msg> {
+  if (m.deleted_at) { m.content = null; m.locked = null; m.view = undefined; return m; }
+  if (m.kind === 'e2e') {
+    try {
+      applyPayload(m, await e2e.decryptMessage(m));
+      m.locked = null;
+    } catch (e) {
+      m.content = null;
+      m.locked = e instanceof e2e.NoKeyError ? 'nokey' : 'bad';
+    }
+  } else if (m.kind === 'media') {
+    m.content = { text: m.body, files: cleanFiles(m.files) };
+  } else {
+    m.content = { text: m.body, files: [] };
+  }
+  return m;
 }
 
 async function fetchPage(chatId: string, before?: Msg) {
@@ -419,7 +572,9 @@ async function fetchPage(chatId: string, before?: Msg) {
   }
   const { data, error } = await q.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(PAGE);
   if (error) throw error;
-  return data.reverse();
+  const rows = data.reverse() as Msg[];
+  await Promise.all(rows.map(prepareMsg));
+  return rows;
 }
 
 export async function loadReactions(ids: string[]): Promise<void> {
@@ -502,45 +657,120 @@ function draftMessage(chatId: string, fields: Partial<Msg> & Pick<Message, 'kind
   };
 }
 
+/**
+ * Шифровать ли сообщение сквозным шифрованием: в обычных чатах (личных и группах) — всё,
+ * в том числе фото и видео. Канал новостей и чат с ботом — без сквозного шифрования.
+ */
+export function secretFor(chatId: string): boolean {
+  return e2e.isE2EKind(S.chats.get(chatId)?.kind);
+}
+
 type Insert = Database['public']['Tables']['messages']['Insert'];
 
-function insertRow(m: Msg): Insert {
-  const row: Insert = { id: m.id, chat_id: m.chat_id, body: m.body };
-  if (m.kind === 'sticker') Object.assign(row, { kind: 'sticker', sticker: m.sticker });
-  if (m.kind === 'voice' || m.kind === 'video_note') {
-    Object.assign(row, {
-      kind: m.kind, media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform,
-    });
+/** Строка для базы: в личных чатах и группах — только шифротекст, в канале и с ботом — как есть. */
+async function insertRow(m: Msg): Promise<Insert> {
+  const view = viewKind(m);
+  const content = m.content ?? { text: m.body, files: [] };
+  if (m.kind === 'e2e') {
+    const payload: e2e.Payload = { v: 1 };
+    if (view === 'sticker') {
+      payload.sticker = m.sticker ?? undefined;
+      if (m.body) payload.text = m.body;
+    } else if (view === 'voice' || view === 'video_note') {
+      payload.rec = {
+        kind: view, path: m.media_path, key: m.fileKey, mime: m.media_mime, dur: m.duration_ms, wave: m.waveform,
+      };
+    } else {
+      if (content.text) payload.text = content.text;
+      if (content.files.length) payload.files = content.files;
+    }
+    const { enc, key_id } = await e2e.encryptMessage(m.chat_id, m.id, payload);
+    return { id: m.id, chat_id: m.chat_id, body: '', kind: 'e2e', enc, key_id };
   }
-  return row;
+  if (view === 'sticker') return { id: m.id, chat_id: m.chat_id, body: m.body, kind: 'sticker', sticker: m.sticker };
+  if (view === 'voice' || view === 'video_note') {
+    return {
+      id: m.id, chat_id: m.chat_id, body: '', kind: view,
+      media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform,
+    };
+  }
+  if (content.files.length) return { id: m.id, chat_id: m.chat_id, body: content.text, kind: 'media', files: content.files };
+  return { id: m.id, chat_id: m.chat_id, body: content.text };
 }
 
-function failed(m: Msg): void {
-  m.pending = false;
-  m.failed = true;
-  emit('feed');
+let progressHook: (m: Msg) => void = () => {};
+/** Прогресс загрузки вложений: интерфейс обновляет полоску, не перерисовывая ленту. */
+export function onUploadProgress(fn: (m: Msg) => void): void {
+  progressHook = fn;
 }
 
+/** Загрузить файлы (вложения, голосовое, кружочек), зашифровать и записать сообщение. */
 async function pushMessage(m: Msg): Promise<void> {
-  // Голосовое и кружочек: сначала файл в хранилище, потом сообщение со ссылкой на него.
-  if (m.blob && m.media_path && !m.uploaded) {
-    const up = await sb.storage.from('media').upload(m.media_path, m.blob, {
-      contentType: m.media_mime ?? undefined, cacheControl: '31536000', upsert: false,
-    });
-    // «Уже существует» — файл загрузился при прошлой попытке.
-    const dup = up.error && /exists|duplicate/i.test(up.error.message);
-    if (up.error && !dup) { failed(m); throw up.error; }
-    m.uploaded = true;
-  }
-  const { data, error } = await sb.from('messages').insert(insertRow(m)).select().single();
-  if (error && error.code !== '23505') { failed(m); throw error; }
-  if (data) {
-    upsertMessage(data);
-    bumpChat(data);
-  } else {
+  try {
+    const up = m.upload;
+    if (up) {
+      if (up.ctrl.signal.aborted) up.ctrl = new AbortController();
+      up.error = undefined;
+      const parts = up.sealed.flatMap((x) => x.parts);
+      const doneBytes = () => parts.filter((p) => p.done).reduce((n, p) => n + p.data.length, 0);
+      let last = 0;
+      for (const part of parts) {
+        if (part.done) continue;
+        const base = doneBytes();
+        await uploadPart(part, (loaded) => {
+          up.loaded = base + loaded;
+          const now = Date.now();
+          if (now - last > 100) { last = now; progressHook(m); }
+        }, up.ctrl.signal);
+        up.loaded = doneBytes();
+        progressHook(m);
+      }
+      // Свои картинки уже есть локально — не будем их скачивать обратно.
+      m.local?.forEach((url, attId) => {
+        const a = m.content?.files.find((f) => f.id === attId);
+        if (a) seedUrl(a.thumb?.path ?? a.path, url);
+      });
+    }
+    // Голосовое и кружочек: сначала файл в хранилище, потом сообщение со ссылкой на него.
+    if (m.blob && m.media_path && !m.uploaded) {
+      if (m.kind === 'e2e') {
+        // Файл шифруется своим ключом, ключ уходит внутрь зашифрованного сообщения.
+        const sealed = await sealBlob(m.blob, m.fileKey);
+        m.fileKey = sealed.key;
+        await uploadPart({ path: m.media_path, data: sealed.data, done: false }, () => {}, new AbortController().signal);
+      } else {
+        const res = await sb.storage.from('media').upload(m.media_path, m.blob, {
+          contentType: m.media_mime ?? undefined, cacheControl: '31536000', upsert: false,
+        });
+        // «Уже существует» — файл загрузился при прошлой попытке.
+        if (res.error && !/exists|duplicate/i.test(res.error.message)) throw res.error;
+      }
+      m.uploaded = true;
+    }
+    const { data, error } = await sb.from('messages').insert(await insertRow(m)).select().single();
+    if (error && error.code !== '23505') throw error;
+    if (data) {
+      // Своё сообщение уже расшифровано — переносим содержимое, чтобы не расшифровывать заново.
+      const saved = Object.assign(data as Msg, {
+        content: m.content ?? null, view: m.view, locked: null,
+        sticker: m.sticker, media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform,
+        body: m.kind === 'e2e' ? m.body : data.body,
+      });
+      upsertMessage(saved);
+      bumpChat(saved);
+    } else {
+      m.pending = false;
+      m.upload = undefined;
+    }
+    emit('feed', 'chats');
+  } catch (error) {
+    if ((error as Error)?.name === 'AbortError') return;
     m.pending = false;
+    m.failed = true;
+    if (m.upload) m.upload.error = (error as Error)?.message;
+    emit('feed');
+    throw error;
   }
-  emit('feed', 'chats');
 }
 
 async function post(m: Msg): Promise<void> {
@@ -550,12 +780,49 @@ async function post(m: Msg): Promise<void> {
   await pushMessage(m);
 }
 
-export async function sendMessage(chatId: string, text: string): Promise<void> {
-  await post(draftMessage(chatId, { kind: 'text', body: text }));
+/** Черновик: зашифрованное сообщение имеет вид e2e, а что внутри — в view. */
+function draftFor(chatId: string, view: MessageKind, fields: Partial<Msg> & { body: string }): Msg {
+  if (!secretFor(chatId)) return draftMessage(chatId, { ...fields, kind: view, view });
+  // Текст и вложения внутри шифротекста показываются как «e2e» — так же, как после расшифровки.
+  return draftMessage(chatId, { ...fields, kind: 'e2e', view: view === 'text' || view === 'media' ? 'e2e' : view });
+}
+
+/**
+ * Отправить сообщение. В личных чатах и группах оно шифруется, вложения — всегда.
+ * files — подготовленные вложения (одно сообщение — до 10 штук, как альбом в Telegram).
+ */
+export async function sendMessage(chatId: string, text: string, files: Prepared[] = []): Promise<void> {
+  const m = draftFor(chatId, files.length ? 'media' : 'text', { body: text, content: { text, files: [] } });
+  if (files.length) {
+    m.local = new Map(files.filter((p) => p.preview).map((p) => [p.id, p.preview!]));
+    // Сначала показываем сообщение с локальными превью, потом шифруем и грузим.
+    m.content = {
+      text,
+      files: files.map((p) => ({ id: p.id, kind: p.kind, name: p.name, mime: p.mime, size: p.size, path: '', key: '', w: p.w, h: p.h, dur: p.dur, mini: p.mini })),
+    };
+    m.upload = { sealed: [], loaded: 0, total: files.reduce((n, p) => n + p.size + (p.thumb?.size ?? 0), 0), ctrl: new AbortController() };
+    upsertMessage(m);
+    bumpChat(m);
+    emit('feed', 'chats');
+    try {
+      const sealed = await Promise.all(files.map((p) => sealPrepared(p, chatId, meId())));
+      m.upload.sealed = sealed;
+      m.upload.total = sealed.reduce((n, x) => n + x.parts.reduce((k, p) => k + p.data.length, 0), 0);
+      m.content = { text, files: sealed.map((x) => x.att) };
+    } catch (e) {
+      m.pending = false;
+      m.failed = true;
+      emit('feed');
+      throw e;
+    }
+    await pushMessage(m);
+    return;
+  }
+  await post(m);
 }
 
 export async function sendSticker(chatId: string, s: Sticker): Promise<void> {
-  await post(draftMessage(chatId, { kind: 'sticker', body: s.emoji, sticker: s.ref }));
+  await post(draftFor(chatId, 'sticker', { body: s.emoji, sticker: s.ref, content: { text: s.emoji, files: [] } }));
 }
 
 export type Recorded = { blob: Blob; mime: string; ext: string; durationMs: number; waveform: number[] | null };
@@ -563,16 +830,17 @@ export type Recorded = { blob: Blob; mime: string; ext: string; durationMs: numb
 /** Отправить голосовое или кружочек. onLocal получает путь файла — чтобы сразу играть его локальную копию. */
 export async function sendRecorded(chatId: string, kind: 'voice' | 'video_note', rec: Recorded,
   onLocal?: (path: string, blob: Blob) => void): Promise<void> {
-  const path = `${chatId}/${meId()}/${uuid()}.${rec.ext}`;
+  // В зашифрованных чатах файл хранится как .bin — снаружи не видно даже его формата.
+  const path = `${chatId}/${meId()}/${uuid()}.${secretFor(chatId) ? 'bin' : rec.ext}`;
   onLocal?.(path, rec.blob);
-  await post(draftMessage(chatId, {
-    kind,
+  await post(draftFor(chatId, kind, {
     body: '',
     media_path: path,
     media_mime: rec.mime,
     duration_ms: Math.round(rec.durationMs),
     waveform: rec.waveform,
     blob: rec.blob,
+    content: { text: '', files: [] },
   }));
 }
 
@@ -584,10 +852,14 @@ export async function retryMessage(m: Msg): Promise<void> {
 }
 
 export function discardMessage(m: Msg): void {
+  m.upload?.ctrl.abort();
+  // Файлы успели загрузиться, а сообщение — нет: не оставляем их в хранилище.
+  const uploaded = m.upload?.sealed.flatMap((x) => x.parts).filter((p) => p.done).map((p) => p.path) ?? [];
+  if (m.uploaded && m.media_path) uploaded.push(m.media_path);
+  if (uploaded.length) void sb.storage.from('media').remove(uploaded).catch(() => {});
+  m.local?.forEach((url) => URL.revokeObjectURL(url));
   const f = feedOf(m.chat_id);
   f.msgs = f.msgs.filter((x) => x.id !== m.id);
-  // Файл успел загрузиться, а сообщение — нет: не оставляем его в хранилище.
-  if (m.uploaded && m.media_path) void sb.storage.from('media').remove([m.media_path]).catch(() => {});
   emit('feed');
   reloadChatsSoon();
 }
@@ -595,12 +867,13 @@ export function discardMessage(m: Msg): void {
 export async function deleteMessage(m: Msg): Promise<void> {
   const before = {
     body: m.body, deleted_at: m.deleted_at, sticker: m.sticker, media_path: m.media_path, media_mime: m.media_mime,
-    duration_ms: m.duration_ms, waveform: m.waveform,
+    duration_ms: m.duration_ms, waveform: m.waveform, content: m.content, view: m.view, enc: m.enc, key_id: m.key_id, files: m.files,
   };
+  const files = m.content?.files ?? [];
   const reacts = S.reactions.get(m.id);
   Object.assign(m, {
     body: '', deleted_at: new Date().toISOString(), sticker: null, media_path: null, media_mime: null,
-    duration_ms: null, waveform: null,
+    duration_ms: null, waveform: null, content: null, view: undefined, enc: null, key_id: null, files: null,
   });
   S.reactions.delete(m.id);
   bumpChat(m);
@@ -613,8 +886,11 @@ export async function deleteMessage(m: Msg): Promise<void> {
     emit('feed', 'chats');
     throw error;
   }
-  // Файл голосового или кружочка удаляет автор (база хранит только ссылку на него).
-  if (before.media_path) void sb.storage.from('media').remove([before.media_path]).catch(() => {});
+  // Файлы удаляет автор: база хранит только ссылки на них (у зашифрованных — внутри шифротекста).
+  if (m.user_id === meId()) {
+    if (before.media_path) void sb.storage.from('media').remove([before.media_path]).catch(() => {});
+    if (files.length) void removeFiles(files).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------

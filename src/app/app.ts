@@ -15,11 +15,17 @@ import {
   feedOf, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
   normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
   SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, toggleReaction, totalUnread, ts,
-  updateMyProfile, uploadAvatar, usernameAvailable, type FoundUser, type Msg,
+  updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
 } from './store';
 import { goOffline, joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
 import { dropNotes, setLocalMedia, setVoiceQueue, stopVoice, videoNoteEl, voiceEl } from './media';
 import { mountRecorder, type RecordUI } from './record-ui';
+import * as e2e from './e2e';
+import { MIN_PASSWORD, mountKeySetup, mountKeyUnlock, mountNoCrypto } from './keysetup';
+import { MAX_ALBUM, dropMediaUrls, type Prepared } from './attach';
+import {
+  filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
+} from './attachui';
 
 const EMOJIS = ['💬', '🕵️', '💸', '🎲', '🍕', '🐈', '🚀', '🎧', '📦', '🤡'];
 const MAX_LEN = 4000;
@@ -68,12 +74,17 @@ const SHELL = `
         <div class="sticker-panel" id="stickerPanel" role="dialog" aria-label="Стикеры" hidden></div>
         <div class="sticker-suggest" id="stickerSuggest" role="listbox" aria-label="Стикеры к эмодзи" hidden></div>
         <div class="composer-inner">
+          <button class="cbtn attach" id="attachBtn" type="button" aria-label="Прикрепить фото, видео или файл" title="Фото, видео или файл">${ICONS.clip}</button>
+          <input type="file" id="fileInput" multiple hidden>
           <button class="cbtn" id="stickerBtn" type="button" aria-label="Стикеры" title="Стикеры" aria-expanded="false" aria-controls="stickerPanel">${ICONS.sticker}</button>
           <textarea class="input" id="input" rows="1" maxlength="${MAX_LEN}" placeholder="Сообщение" aria-label="Сообщение"></textarea>
           <div class="rec-bar" id="recBar" hidden></div>
           <button class="send" id="sendBtn" type="button" aria-label="Отправить" disabled hidden>${ICONS.send}</button>
           <button class="rec-btn" id="recBtn" type="button"></button>
         </div>
+      </div>
+      <div class="drop" id="drop" hidden>
+        <div class="drop-box">${ICONS.clip}<b>Отпустите, чтобы отправить</b><span>Фото, видео и файлы до 50 МБ</span></div>
       </div>
     </section>
   </main>
@@ -106,6 +117,9 @@ const SHELL = `
 <dialog id="chatDlg" aria-label="О чате"></dialog>
 <dialog id="personDlg" aria-label="Профиль участника"></dialog>
 <dialog id="joinDlg" aria-label="Приглашение в чат"></dialog>
+<dialog id="keyDlg" aria-label="Ключ шифрования"></dialog>
+<dialog id="mediaDlg" class="media-dlg" aria-label="Отправка файлов"></dialog>
+<dialog id="viewer" class="viewer" aria-label="Просмотр"></dialog>
 `;
 
 // Локальное состояние интерфейса
@@ -186,6 +200,11 @@ function canPost(c: MyChat | null): boolean {
   return !!c && (c.kind !== 'channel' || c.role === 'owner');
 }
 
+/** Сквозное шифрование — в личных чатах и группах (канал и бот — без него, как в Telegram). */
+function isE2E(c: MyChat | null | undefined): boolean {
+  return !!c && e2e.isE2EKind(c.kind);
+}
+
 /** Живой канал (presence, «печатает…») нужен только там, где переписываются люди. */
 function isConversation(c: MyChat | null | undefined): boolean {
   return !!c && (c.kind === 'group' || c.kind === 'direct');
@@ -226,14 +245,22 @@ function setBanner(text: string | null): void {
 // Боковая панель
 // ---------------------------------------------------------------------------
 
-/** Как сообщение выглядит в списке чатов: текст, «👋 Стикер», «Голосовое сообщение»… */
-function kindText(kind: string | null, body: string | null): string {
+/** Текст с вложениями: «🖼 Фото», «🖼 подпись», «📎 отчёт.pdf». */
+function contentPreview(text: string, files: { kind?: unknown; name?: unknown }[]): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (!files.length) return t || '…';
+  const label = filesLabel(files);
+  return t ? `${label.split(' ')[0]} ${t}` : label;
+}
+
+/** Как сообщение выглядит в списке чатов: текст, «👋 Стикер», «Голосовое сообщение», «🖼 Фото»… */
+function kindText(kind: string | null, body: string | null, files: { kind?: unknown; name?: unknown }[] = []): string {
   switch (kind) {
     case 'sticker': return `${body ? `${body} ` : ''}Стикер`;
     case 'voice': return 'Голосовое сообщение';
     case 'video_note': return 'Кружочек';
     case 'e2e': return '🔒 Зашифрованное сообщение';
-    case 'media': return body ? `📎 ${body}` : '📎 Вложение';
+    case 'media': return contentPreview(body ?? '', files);
     default: return body || '…';
   }
 }
@@ -241,7 +268,16 @@ function kindText(kind: string | null, body: string | null): string {
 function previewText(c: MyChat): string {
   if (!c.last_id) return c.kind === 'direct' ? 'Напишите первым' : 'Пока пусто';
   if (c.last_deleted) return 'Сообщение удалено';
-  const t = kindText(c.last_kind, c.last_body).replace(/\s+/g, ' ');
+  let t: string;
+  if (c.last_kind === 'e2e') {
+    // Зашифрованное: показываем то, что внутри, после расшифровки.
+    const p = S.previews.get(c.last_id);
+    t = !p ? '🔒 …' : p === 'locked' ? '🔒 Зашифрованное сообщение'
+      : p.view === 'e2e' || p.view === 'media' || p.view === 'text' ? contentPreview(p.text, p.files) : kindText(p.view, p.text);
+  } else {
+    t = kindText(c.last_kind, c.last_body, Array.isArray(c.last_files) ? c.last_files : []);
+  }
+  t = t.replace(/\s+/g, ' ');
   if (c.kind === 'channel') return t;
   if (c.last_user_id === meId()) return `Вы: ${t}`;
   if (c.kind === 'group' && c.last_kind !== 'system') return `${who(c.last_user_id).name}: ${t}`;
@@ -359,7 +395,15 @@ function renderHead(): void {
     emoji.style.border = '';
     emoji.style.background = '';
   }
-  $('convName').textContent = chatTitle(c);
+  const nameEl = $('convName');
+  nameEl.replaceChildren(chatTitle(c));
+  if (isE2E(c)) {
+    const lock = el('span', 'lock');
+    lock.title = 'Сквозное шифрование';
+    lock.setAttribute('aria-label', 'сквозное шифрование');
+    lock.append(html(ICONS.lock));
+    nameEl.append(lock);
+  }
 
   const sub = $('convSub');
   const typers = [...S.typing.keys()].filter((k) => k !== meId());
@@ -431,20 +475,34 @@ function stickerEl(m: Msg): HTMLElement {
   return img;
 }
 
-/** Содержимое сообщения по его виду. */
-function messageBody(b: HTMLElement, m: Msg): void {
-  switch (m.kind) {
-    case 'sticker': b.append(stickerEl(m)); break;
-    case 'voice': b.append(voiceEl(m)); break;
-    case 'video_note': b.append(videoNoteEl(m)); break;
-    case 'e2e':
-      b.append(el('span', 'unsupported', '🔒 Зашифрованное сообщение. Эта версия СКАМ пока не умеет его показать.'));
-      break;
-    case 'media':
-      if (m.body) { fillText(b, m.body); b.append(el('br')); }
-      b.append(el('span', 'unsupported', '📎 Вложение. Эта версия СКАМ пока не умеет его показать.'));
-      break;
-    default: fillText(b, m.body);
+/**
+ * Содержимое сообщения по его виду (у зашифрованного — по тому, что внутри).
+ * Возвращает элемент, в конец которого ставится время: у текста с вложениями это подпись.
+ */
+function messageBody(b: HTMLElement, m: Msg, author: string): HTMLElement {
+  if (m.locked) {
+    const ic = el('span', 'lock');
+    ic.append(html(ICONS.lock));
+    b.append(ic, m.locked === 'nokey' ? 'Ожидание ключа шифрования…' : 'Не удалось расшифровать сообщение');
+    b.title = m.locked === 'nokey'
+      ? 'Ключ этого сообщения ещё не пришёл на это устройство. Он придёт сам, когда кто-то из участников чата будет в сети.'
+      : 'Шифротекст повреждён или подменён.';
+    return b;
+  }
+  switch (viewKind(m)) {
+    case 'sticker': b.append(stickerEl(m)); return b;
+    case 'voice': b.append(voiceEl(m)); return b;
+    case 'video_note': b.append(videoNoteEl(m)); return b;
+    default: {
+      const content: Content = m.content ?? { text: m.body, files: [] };
+      if (!content.files.length) { fillText(b, content.text); return b; }
+      b.append(renderAttachments(m, content.files, author));
+      if (!content.text) return b;
+      const cap = el('div', 'caption');
+      fillText(cap, content.text);
+      b.append(cap);
+      return cap;
+    }
   }
 }
 
@@ -477,8 +535,11 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   // В канале посты публикуются от имени канала и стоят слева.
   const mine = own && !channel;
   const deleted = !!m.deleted_at;
+  const view = viewKind(m);
   // Стикер и кружочек — без «пузыря», время поверх картинки.
-  const bare = !deleted && (m.kind === 'sticker' || m.kind === 'video_note');
+  const bare = !deleted && !m.locked && (view === 'sticker' || view === 'video_note');
+  const files = !deleted && !m.locked && (view === 'e2e' || view === 'media') ? m.content?.files ?? [] : [];
+  const mediaOnly = files.length > 0 && !m.content?.text && files.every((f) => f.kind !== 'file');
   const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}${bare ? ' bare' : ''}`);
   row.dataset.id = m.id;
   if (U.openMsg === m.id) row.classList.add('open');
@@ -488,8 +549,9 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   row.append(slot);
 
   const wrap = el('div', 'bwrap');
-  const kindCls = deleted ? '' : m.kind === 'voice' ? ' voice-msg' : bare ? ` media ${m.kind}` : '';
-  const b = el('div', `bubble${kindCls}${deleted ? ' deleted' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}`);
+  const kindCls = deleted || m.locked ? '' : view === 'voice' ? ' voice-msg' : bare ? ` media ${view}` : '';
+  const b = el('div', `bubble${kindCls}${deleted ? ' deleted' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}`
+    + `${files.length ? ' has-media' : ''}${mediaOnly ? ' media-only' : ''}${m.locked ? ' locked' : ''}`);
   if (first && !mine) {
     const a = el(w.id ? 'button' : 'span', 'author', w.name);
     if (a instanceof HTMLButtonElement) {
@@ -500,9 +562,10 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     else if (w.color) a.style.color = w.color;
     b.append(a);
   }
+  let textBox: HTMLElement = b;
   if (deleted) b.append('Сообщение удалено');
-  else messageBody(b, m);
-  const meta = el('span', `meta${bare ? ' pill' : ''}`, timeLabel(ts(m.created_at)));
+  else textBox = messageBody(b, m, w.name);
+  const meta = el('span', `meta${bare ? ' pill' : ''}${mediaOnly ? ' over' : ''}`, timeLabel(ts(m.created_at)));
   meta.title = new Date(ts(m.created_at)).toLocaleString('ru-RU');
   if (mine && !deleted && !m.failed) {
     const read = !m.pending && readUpTo >= ts(m.created_at);
@@ -511,13 +574,13 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     if (m.pending) tick.style.opacity = '.45';
     meta.append(tick);
   }
-  b.append(meta);
+  textBox.append(meta);
   wrap.append(b);
 
   if (m.failed) {
     const r = el('div', 'retry');
     r.append(
-      el('span', null, 'Не отправлено.'),
+      el('span', null, m.upload?.error ? `Не отправлено: ${m.upload.error.replace(/\.$/, '')}.` : 'Не отправлено.'),
       button(null, 'Повторить', () => { retryMessage(m).catch((e) => toast(errText(e))); }),
       button(null, 'Убрать', () => discardMessage(m)),
     );
@@ -614,9 +677,26 @@ function renderFeed(): void {
   const others = (S.members.get(c.id) ?? []).filter((m) => m.user_id !== meId());
   const botSeen = c.kind === 'bot' ? f.msgs.filter((m) => m.kind === 'system').map((m) => ts(m.created_at)) : [];
   const readUpTo = Math.max(0, ...others.map((m) => ts(m.last_read_at)), ...botSeen);
+
+  // Плашка о шифровании: в начале чата, перед первым зашифрованным сообщением
+  // (если до него была старая открытая переписка) или в конце старой переписки.
+  let noteBefore: string | null = null;
+  let noteEnd = false;
+  if (isE2E(c) && f.loaded) {
+    const firstEnc = f.msgs.find((m) => m.kind === 'e2e');
+    const isPlain = (m: Msg) => m.kind !== 'e2e' && m.kind !== 'system' && !!m.user_id;
+    const plainBefore = firstEnc
+      ? f.msgs.some((m) => isPlain(m) && ts(m.created_at) < ts(firstEnc.created_at))
+      : f.msgs.some(isPlain);
+    if (firstEnc && plainBefore) noteBefore = firstEnc.id;
+    else if (!firstEnc && plainBefore) noteEnd = true;
+    else inner.insertBefore(e2eNote(c, 'top'), inner.querySelector('.quiet'));
+  }
+
   let prev: Msg | null = null;
   for (const m of f.msgs) {
     const t = ts(m.created_at);
+    if (m.id === noteBefore) { inner.append(e2eNote(c, 'from')); prev = null; }
     if (!prev || dayKey(ts(prev.created_at)) !== dayKey(t)) {
       inner.append(el('div', 'day', dayLabel(t)));
       prev = null;
@@ -626,6 +706,7 @@ function renderFeed(): void {
     inner.append(renderMsg(m, first, readUpTo, c));
     prev = m;
   }
+  if (noteEnd) inner.append(e2eNote(c, 'next'));
 
   const keepFocus = document.activeElement && feed.contains(document.activeElement);
   feed.replaceChildren(inner);
@@ -640,6 +721,19 @@ function renderFeed(): void {
   }
   U.lastCount = f.msgs.length;
   markVisibleRead();
+}
+
+function e2eNote(c: MyChat, where: 'top' | 'from' | 'next'): HTMLElement {
+  const b = button('e2e-note', null, () => openEncryptionInfo(c));
+  const ic = el('span', 'lock');
+  ic.append(html(ICONS.lock));
+  const text = where === 'from'
+    ? 'Дальше сообщения защищены сквозным шифрованием'
+    : where === 'next'
+      ? 'Новые сообщения в этом чате будут защищены сквозным шифрованием'
+      : 'Сообщения, файлы, голосовые и кружочки в этом чате защищены сквозным шифрованием. Прочитать их могут только участники — даже сервер видит лишь шифротекст.';
+  b.append(ic, text);
+  return b;
 }
 
 function requestOlder(): void {
@@ -783,6 +877,108 @@ async function send(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Вложения: скрепка, перетаскивание, вставка из буфера
+// ---------------------------------------------------------------------------
+
+function startSendFiles(files: File[]): void {
+  const c = currentChat();
+  if (!c || !canPost(c) || !files.length) return;
+  const inp = $<HTMLTextAreaElement>('input');
+  const first = !sendDialogOpen();
+  // Как в Telegram: набранный текст становится подписью, а при отмене возвращается в поле ввода.
+  const caption = first ? inp.value : '';
+  closeStickers();
+  openSendDialog(files, {
+    caption,
+    send: (cap, prepared) => { void sendFiles(c.id, cap, prepared); },
+    onCancel: (cap) => { if (!inp.value) { inp.value = cap; autosize(); } },
+  });
+  if (first && sendDialogOpen()) {
+    inp.value = '';
+    autosize();
+    stopTyping();
+  }
+}
+
+async function sendFiles(chatId: string, caption: string, prepared: Prepared[]): Promise<void> {
+  U.stick = true;
+  U.drafts.delete(chatId);
+  for (let i = 0; i < prepared.length; i += MAX_ALBUM) {
+    const chunk = prepared.slice(i, i + MAX_ALBUM);
+    try {
+      await sendMessage(chatId, i === 0 ? caption : '', chunk);
+    } catch (e) {
+      toast(errText(e, 'Не получилось отправить. Нажмите «Повторить».'));
+    }
+  }
+}
+
+function hasFiles(e: DragEvent): boolean {
+  return !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+}
+
+// ---------------------------------------------------------------------------
+// Шифрование: ключ собеседника, сведения о шифровании, смена пароля
+// ---------------------------------------------------------------------------
+
+function openEncryptionInfo(c: MyChat): void {
+  const dlg = $<HTMLDialogElement>('keyDlg');
+  const stack = el('div', 'stack');
+  const where = c.kind === 'direct' ? 'в этом чате' : 'в этой группе';
+  stack.append(
+    el('p', null, `Сообщения, фото, видео, файлы, стикеры, голосовые и кружочки ${where} шифруются прямо на устройствах участников и расшифровываются только у них. На сервере СКАМ лежит лишь шифротекст.`),
+  );
+  if (c.kind === 'group') {
+    stack.append(el('p', 'hint', 'Новые участники получают ключ и видят историю группы. Когда кто-то выходит, группа переходит на новый ключ — вышедший не прочитает то, что напишут после него.'));
+  }
+  stack.append(el('p', 'hint', 'Ключ шифрования хранится на ваших устройствах. На новом устройстве его восстанавливает пароль шифрования.'));
+  dlg.replaceChildren(dlgHead('Сквозное шифрование', dlg), stack);
+  openDialog(dlg);
+}
+
+function openChangePassword(): void {
+  const dlg = $<HTMLDialogElement>('keyDlg');
+  const form = el('form', 'stack');
+  form.noValidate = true;
+  const mk = (id: string, label: string, ac: string) => {
+    const f = el('div', 'field');
+    const l = el('label', 'fld', label);
+    l.htmlFor = id;
+    const i = el('input', 'txt');
+    Object.assign(i, { id, type: 'password', autocomplete: ac, maxLength: 200 });
+    f.append(l, i);
+    return { f, i };
+  };
+  const cur = mk('pwCur', 'Текущий пароль шифрования', 'current-password');
+  const n1 = mk('pwNew1', 'Новый пароль', 'new-password');
+  const n2 = mk('pwNew2', 'Повторите новый пароль', 'new-password');
+  const err = el('p', 'err');
+  const save = el('button', 'btn primary', 'Сменить пароль');
+  save.type = 'submit';
+  save.style.alignSelf = 'flex-start';
+  form.append(cur.f, n1.f, n2.f, el('p', 'hint', `Ключ шифрования останется прежним — переписка никуда не денется. Не короче ${MIN_PASSWORD} символов.`), err, save);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    if (n1.i.value.length < MIN_PASSWORD) { err.textContent = `Новый пароль должен быть не короче ${MIN_PASSWORD} символов.`; n1.i.focus(); return; }
+    if (n1.i.value !== n2.i.value) { err.textContent = 'Новые пароли не совпадают.'; n2.i.focus(); return; }
+    save.disabled = true;
+    save.textContent = 'Сохраняем…';
+    try {
+      await e2e.changePassword(cur.i.value, n1.i.value);
+      closeDialog(dlg);
+      toast('Пароль шифрования изменён');
+    } catch (e) {
+      err.textContent = e instanceof e2e.WrongPasswordError ? 'Неверный текущий пароль.' : errText(e);
+      save.disabled = false;
+      save.textContent = 'Сменить пароль';
+    }
+  });
+  dlg.replaceChildren(dlgHead('Пароль шифрования', dlg), form);
+  openDialog(dlg);
+  cur.i.focus();
+}
+
+// ---------------------------------------------------------------------------
 // Стикеры, голосовые и кружочки
 // ---------------------------------------------------------------------------
 
@@ -913,7 +1109,7 @@ function nextVoiceAfter(cur: { id: string; chatId: string }): Msg | null {
   const msgs = feedOf(cur.chatId).msgs;
   const i = msgs.findIndex((x) => x.id === cur.id);
   if (i < 0) return null;
-  return msgs.slice(i + 1).find((x) => x.kind === 'voice' && !x.deleted_at && x.media_path) ?? null;
+  return msgs.slice(i + 1).find((x) => viewKind(x) === 'voice' && !x.deleted_at && x.media_path) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,14 +1425,34 @@ function renderProfile(): void {
   });
   themeField.append(seg);
 
+  // Шифрование
+  const encField = el('div', 'field');
+  encField.append(el('span', 'fld', 'Шифрование'));
+  const encRow = el('div', 'enc-row');
+  const ic = el('span', 'enc-ic');
+  ic.append(html(ICONS.lock));
+  const encText = el('span', 'enc-text');
+  encText.append(el('b', null, 'Сквозное шифрование включено'), el('span', 'hint', 'Личные чаты и группы шифруются на ваших устройствах.'));
+  encRow.append(ic, encText);
+  const pwBtn = button('btn ghost small', 'Сменить пароль шифрования', () => openChangePassword());
+  pwBtn.style.alignSelf = 'flex-start';
+  encField.append(encRow, pwBtn);
+
   // Выход
   const out = el('div', 'field');
   out.append(
-    button('btn danger', 'Выйти из аккаунта', async () => { closeDialog(dlg); await goOffline(); void sb.auth.signOut(); }),
+    button('btn danger', 'Выйти из аккаунта', async () => {
+      closeDialog(dlg);
+      await goOffline();
+      await e2e.forgetDevice(meId());
+      dropMediaUrls();
+      void sb.auth.signOut();
+    }),
     el('p', 'hint', contactLine()),
+    el('p', 'hint', 'После выхода ключ шифрования удалится с этого устройства: чтобы войти снова, понадобятся код и пароль шифрования.'),
   );
 
-  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), themeField, el('div', 'hr'), out);
+  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), out);
   dlg.replaceChildren(dlgHead('Профиль', dlg), stack);
 }
 
@@ -1269,6 +1485,7 @@ function openPerson(uid: string): void {
   const st = el('p', `st${online ? ' on' : ''}`, isMe ? 'это вы' : statusText(p));
   st.id = 'personSt';
   card.append(st);
+
   const actions = el('div', 'dlg-actions');
   actions.append(button('btn ghost', 'Закрыть', () => closeDialog(dlg)));
   if (isMe) {
@@ -1540,6 +1757,47 @@ function wire(): void {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touchMQ.matches) { e.preventDefault(); void send(); }
   });
   listen(inp, 'blur', () => { setTimeout(stopTyping, 800); });
+  listen(inp, 'paste', (e: ClipboardEvent) => {
+    const files = [...(e.clipboardData?.files ?? [])];
+    if (files.length) { e.preventDefault(); startSendFiles(files); }
+  });
+  const fileInput = $<HTMLInputElement>('fileInput');
+  listen($('attachBtn'), 'click', () => fileInput.click());
+  listen(fileInput, 'change', () => {
+    const files = [...(fileInput.files ?? [])];
+    fileInput.value = '';
+    startSendFiles(files);
+  });
+  // Перетаскивание файлов в беседу.
+  const conv = $('convMain');
+  const drop = $('drop');
+  let dragDepth = 0;
+  listen(conv, 'dragenter', (e: DragEvent) => {
+    if (!hasFiles(e) || !canPost(currentChat())) return;
+    e.preventDefault();
+    dragDepth++;
+    drop.hidden = false;
+  });
+  listen(conv, 'dragover', (e: DragEvent) => {
+    if (!hasFiles(e) || !canPost(currentChat())) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  listen(conv, 'dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) drop.hidden = true;
+  });
+  listen(conv, 'drop', (e: DragEvent) => {
+    dragDepth = 0;
+    drop.hidden = true;
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (canPost(currentChat())) startSendFiles([...(e.dataTransfer?.files ?? [])]);
+  });
+  // Файл, брошенный мимо беседы, браузер не должен открывать вместо СКАМ.
+  listen(window, 'dragover', (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); });
+  listen(window, 'drop', (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); });
+  unsubs.push(wireViewer(), wireSendDialog());
   const feed = $('feed');
   listen(feed, 'scroll', () => {
     U.stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
@@ -1586,7 +1844,7 @@ function wire(): void {
   const onSys = () => renderThemeBtn();
   sysDark.addEventListener('change', onSys);
   unsubs.push(() => sysDark.removeEventListener('change', onSys));
-  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg']) {
+  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg']) {
     const d = $<HTMLDialogElement>(id);
     listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
@@ -1633,15 +1891,39 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   // Новый аккаунт (или старый без имени или @username) — сначала «Создание аккаунта», как в Telegram.
   // @username обязателен: без него база не даст писать сообщения. Исключение — username_optional.
   if (!S.me?.first_name || (!S.me?.username && usernameRequired())) {
-    mountRegister(root, () => { if (mounted) void mountShell(root); }, { existing: !!S.me?.first_name });
+    mountRegister(root, () => { if (mounted) void keyGate(root, user); }, { existing: !!S.me?.first_name });
     return;
   }
-  await mountShell(root);
+  await keyGate(root, user);
 }
 
-async function mountShell(root: HTMLElement): Promise<void> {
+/** Ключ шифрования: уже есть на устройстве — дальше; нет — создать или восстановить паролем. */
+async function keyGate(root: HTMLElement, user: User): Promise<void> {
+  let st: e2e.InitState;
+  try {
+    st = await e2e.init(user.id);
+  } catch (e) {
+    if (!mounted) return;
+    const err = e as { code?: string };
+    if (err.code === 'PGRST205' || err.code === '42P01') {
+      showFatal(root, 'База ещё не настроена', 'Примените SQL из supabase/migrations в Supabase → SQL Editor и обновите страницу.');
+    } else {
+      showFatal(root, 'Нет связи с сервером', 'Не получилось проверить ключ шифрования. Проверьте интернет и обновите страницу.');
+    }
+    return;
+  }
+  if (!mounted) return;
+  const go = () => { if (mounted) void mountShell(root, user); };
+  if (st === 'ready') go();
+  else if (st === 'unsupported') mountNoCrypto(root);
+  else if (st === 'setup') mountKeySetup(root, user.id, go);
+  else mountKeyUnlock(root, user.id, go);
+}
+
+async function mountShell(root: HTMLElement, user: User): Promise<void> {
   root.replaceChildren(html(SHELL));
   wire();
+  onUploadProgress(updateProgress);
   setVoiceQueue(nextVoiceAfter);
   recUI = mountRecorder({
     btn: $<HTMLButtonElement>('recBtn'),
@@ -1669,6 +1951,8 @@ async function mountShell(root: HTMLElement): Promise<void> {
   renderAll();
 
   try {
+    // Сначала свои ключи чатов — чтобы превью в списке сразу расшифровались.
+    await e2e.loadMyShares().catch(() => {});
     await loadChats();
   } catch {
     setBanner('Не удалось загрузить чаты. Обновите страницу.');
@@ -1678,7 +1962,15 @@ async function mountShell(root: HTMLElement): Promise<void> {
   autoOpen();
   renderAll();
 
-  startRealtime((ok) => setBanner(ok ? null : 'Нет живого соединения — новые сообщения подтягиваются раз в несколько секунд.')).catch(() => {});
+  startRealtime(
+    (ok) => setBanner(ok ? null : 'Нет живого соединения — новые сообщения подтягиваются раз в несколько секунд.'),
+    () => {
+      // Ключ сбросили на другом устройстве: здесь нужен новый пароль.
+      toast('Ключ шифрования сменили на другом устройстве');
+      unmountApp();
+      void mountApp(root, user);
+    },
+  ).catch(() => {});
   void handlePendingJoin();
 }
 
@@ -1692,6 +1984,7 @@ export function unmountApp(): void {
   unsubs.forEach((f) => f());
   unsubs = [];
   resetState();
+  dropMediaUrls();
   U.drafts.clear();
   document.body.classList.remove('chat-open');
   document.title = 'СКАМ';
@@ -1699,4 +1992,4 @@ export function unmountApp(): void {
 }
 
 // Для отладки в консоли разработчика.
-if (import.meta.env.DEV) Object.assign(window, { skam: { S, sb } });
+if (import.meta.env.DEV) Object.assign(window, { skam: { S, sb, sendRecorded, sendSticker } });
