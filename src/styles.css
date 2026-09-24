@@ -9,6 +9,7 @@
   --accent-text:#B5400C;
   --accent-soft:#FADCC8;
   --online:#8FB224;
+  --online-text:#4F6B0E;
   --text:#0E0E10;
   --muted:#6E685E;
   --line:#DCD4C6;
@@ -28,7 +29,7 @@
   :root:not([data-theme="light"]){
     --paper:#070708; --surface:#0E0E10; --raised:#151517; --card:#1C1C20;
     --ink:#F4EFE6; --on-ink:#0E0E10; --accent:#F4661F; --accent-text:#FF8C50; --accent-soft:#3A1D0E;
-    --online:#A5BC2A; --text:#F4EFE6; --muted:#9C968B; --line:#2A2A2E; --danger:#FF8F85;
+    --online:#A5BC2A; --online-text:#B5CC3A; --text:#F4EFE6; --muted:#9C968B; --line:#2A2A2E; --danger:#FF8F85;
     --shadow:0 14px 34px rgba(0,0,0,.55);
     color-scheme:dark;
   }
@@ -36,7 +37,7 @@
 :root[data-theme="dark"]{
   --paper:#070708; --surface:#0E0E10; --raised:#151517; --card:#1C1C20;
   --ink:#F4EFE6; --on-ink:#0E0E10; --accent:#F4661F; --accent-text:#FF8C50; --accent-soft:#3A1D0E;
-  --online:#A5BC2A; --text:#F4EFE6; --muted:#9C968B; --line:#2A2A2E; --danger:#FF8F85;
+  --online:#A5BC2A; --online-text:#B5CC3A; --text:#F4EFE6; --muted:#9C968B; --line:#2A2A2E; --danger:#FF8F85;
   --shadow:0 14px 34px rgba(0,0,0,.55);
   color-scheme:dark;
 }
@@ -91,11 +92,14 @@ img{max-width:100%}
 .me{display:flex;align-items:center;gap:10px;min-width:0;border:0;background:transparent;padding:4px 10px 4px 4px;margin:-4px 0 -4px -4px;border-radius:999px;text-align:left}
 .me:hover{background:var(--card)}
 .me .nm{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.online{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);white-space:nowrap}
-.online .pulse{width:8px;height:8px;border-radius:50%;background:var(--online);flex:none}
-.faces{display:flex}
-.faces .av{width:24px;height:24px;font-size:11px;margin-left:-7px;box-shadow:0 0 0 2px var(--raised)}
-.faces .av:first-child{margin-left:0}
+.me-text{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.me-st{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+.me-st.on{color:var(--online-text)}
+.me-st .pulse{width:8px;height:8px;border-radius:50%;background:var(--online);flex:none;animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--online) 25%,transparent)}}
+@media (prefers-reduced-motion: reduce){.me-st .pulse{animation:none}}
+.theme-btn{color:var(--muted)}
+.theme-btn:hover{color:var(--text);background:var(--card)}
 
 .av{width:34px;height:34px;border-radius:50%;flex:none;object-fit:cover;display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff;background:var(--muted);overflow:hidden}
 .av.brand{background:transparent}
@@ -233,7 +237,7 @@ dialog h2{margin:0 0 18px;font-size:19px}
 .chat .tile .on-dot,.person-av .on-dot{position:absolute;right:-1px;bottom:-1px;width:13px;height:13px;border-radius:50%;background:var(--online);box-shadow:0 0 0 2.5px var(--raised)}
 .chat:hover .tile .on-dot{box-shadow:0 0 0 2.5px var(--card)}
 .chat[aria-current="true"] .tile .on-dot{box-shadow:0 0 0 2.5px var(--ink)}
-.faces .av{cursor:pointer;border:0;padding:0}
+
 
 /* ---------- заголовок беседы ---------- */
 .conv-head .head-btn{display:flex;align-items:center;gap:12px;min-width:0;flex:1;border:0;background:transparent;padding:4px 8px 4px 4px;margin:-4px 0 -4px -4px;border-radius:16px;text-align:left}
@@ -282,13 +286,13 @@ dialog .dlg-head h2{margin:0}
 .members li button:hover{background:var(--raised)}
 .members .nm{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .members .st{font-size:13px;color:var(--muted)}
-.members .st.on{color:var(--online)}
+.members .st.on{color:var(--online-text)}
 .members .role{margin-left:auto;font-size:12px;color:var(--muted);font-weight:600}
 .person-card{text-align:center}
 .person-card .av.xl{margin:0 auto 12px}
 .person-card h2{margin:0 0 4px}
 .person-card .st{color:var(--muted);margin:0 0 18px;font-size:14px}
-.person-card .st.on{color:var(--online)}
+.person-card .st.on{color:var(--online-text)}
 .person-card .dlg-actions{justify-content:center}
 .chat-title-row{display:flex;gap:12px;align-items:center}
 .chat-title-row .conv-emoji{cursor:default}
@@ -299,3 +303,26 @@ dialog .dlg-head h2{margin:0}
 .composer-note{max-width:780px;margin:0 auto;padding:10px 12px;text-align:center;color:var(--muted);font-size:14px;background:var(--raised);border-radius:16px}
 .av.brand.xl{margin:0 auto 12px}
 .chat .tile .av.brand{background:transparent}
+
+/* ---------- аккаунты: вход по коду, создание аккаунта, поиск по @username, статусы ---------- */
+.auth-sent-text{margin:0 0 16px;color:var(--muted);text-align:center}
+.auth-sent-text b{color:var(--text);overflow-wrap:anywhere}
+.auth-card .seg{margin-bottom:4px}
+.reg-avatar{display:flex;flex-direction:column;align-items:center;gap:6px;margin:0 0 6px}
+.reg-avatar .hint{margin:0}
+.reg-av{width:96px;height:96px;border-radius:50%;border:0;padding:0;display:grid;place-items:center;overflow:hidden;background:var(--raised);color:#fff;font-weight:700;font-size:38px;cursor:pointer;box-shadow:0 0 0 1px var(--line) inset}
+.reg-av:hover{filter:brightness(1.06)}
+.reg-av svg{color:var(--muted)}
+.reg-av img{width:100%;height:100%;object-fit:cover;display:block}
+.hint.ok{color:var(--online-text)}
+.hint.bad{color:var(--danger)}
+.uname{color:var(--accent-text);font-weight:600;font-size:14px;margin:0 0 2px}
+.person-card .uname{margin:0 0 2px}
+.find-form #findResult{margin-top:8px}
+.find-form #findResult .err,.find-form #findResult .hint{margin:0}
+.found{display:flex;align-items:center;gap:12px;padding:10px;border-radius:16px;background:var(--raised);border:1px solid var(--line)}
+.found .av{width:42px;height:42px;font-size:17px}
+.found-text{display:flex;flex-direction:column;min-width:0;flex:1}
+.found-text .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.found-text .uname{font-size:13px;margin:0}
+.conv-sub.online{color:var(--online-text)}

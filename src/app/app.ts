@@ -4,16 +4,18 @@ import { avatarUrl, sb } from '../lib/supabase';
 import type { MyChat, ReactionKey } from '../lib/database.types';
 import {
   $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, el, fillText, html,
-  listTime, lsGet, lsSet, openDialog, timeLabel, toast, touchMQ, wideMQ,
+  listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ,
 } from '../lib/dom';
+import { isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
+import { mountRegister } from './register';
 import {
-  NoProfileError, REACTIONS, S, createChat, deleteMessage, discardMessage, emit, ensureProfiles,
-  feedOf, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
-  on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
-  sendMessage, sortedChats, toggleReaction, totalUnread, ts, updateMyName, uploadAvatar, type Msg,
+  NoProfileError, REACTIONS, S, USERNAME_RE, createChat, deleteMessage, discardMessage, emit, ensureProfiles,
+  feedOf, findUser, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
+  normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
+  sendMessage, sortedChats, toggleReaction, totalUnread, ts, updateMyProfile, uploadAvatar, usernameAvailable, type Msg,
 } from './store';
-import { joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
+import { goOffline, joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
 
 const EMOJIS = ['💬', '🕵️', '💸', '🎲', '🍕', '🐈', '🚀', '🎧', '📦', '🤡'];
 const MAX_LEN = 4000;
@@ -29,7 +31,7 @@ const SHELL = `
     <nav class="chat-list" id="chatList"></nav>
     <footer class="side-foot">
       <button class="me" id="meBox" type="button" aria-label="Профиль и настройки"></button>
-      <div class="online" id="onlineBox"></div>
+      <button class="icon-btn theme-btn" id="themeBtn" type="button"></button>
     </footer>
   </aside>
 
@@ -69,6 +71,16 @@ const SHELL = `
 
 <dialog id="newDlg" aria-labelledby="newDlgTitle">
   <h2 id="newDlgTitle">Новый чат</h2>
+  <form class="find-form" id="findForm" novalidate>
+    <label class="fld" for="findUser">Написать человеку</label>
+    <div class="invite">
+      <input class="txt" id="findUser" maxlength="33" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="@username">
+      <button class="btn ghost small" id="findBtn" type="submit">Найти</button>
+    </div>
+    <div id="findResult"></div>
+  </form>
+  <div class="hr" style="margin:18px 0 16px"></div>
+  <span class="fld" style="font-size:15px;color:var(--text);margin-bottom:10px">Или создайте группу</span>
   <label class="fld" for="chatName">Название</label>
   <input class="txt" id="chatName" maxlength="40" autocomplete="off" placeholder="Например, Мемы отдела">
   <p class="err" id="chatErr"></p>
@@ -76,7 +88,7 @@ const SHELL = `
   <div class="emoji-grid" id="emojiGrid" role="group" aria-labelledby="emojiLbl"></div>
   <div class="dlg-actions">
     <button class="btn ghost" id="cancelBtn" type="button">Отмена</button>
-    <button class="btn primary" id="createBtn" type="button">Создать чат</button>
+    <button class="btn primary" id="createBtn" type="button">Создать группу</button>
   </div>
 </dialog>
 <dialog id="profileDlg" aria-label="Профиль"></dialog>
@@ -93,7 +105,6 @@ const U = {
   armedDelete: null as string | null,
   drafts: new Map<string, string>(),
   restoreScroll: null as { height: number; top: number } | null,
-  onboarding: false,
 };
 let unsubs: (() => void)[] = [];
 let mounted = false;
@@ -143,7 +154,7 @@ const BRAND_SVG = '<svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100
 function personAvatar(uid: string | null, cls = '', clickable = false): HTMLElement {
   const wrap = el('span', 'person-av');
   wrap.append(avatarEl(who(uid), cls, clickable));
-  if (uid && S.online.has(uid) && uid !== meId()) {
+  if (uid && uid !== meId() && isOnline(S.profiles.get(uid))) {
     const d = el('span', 'on-dot');
     d.setAttribute('aria-label', 'в сети');
     wrap.append(d);
@@ -172,12 +183,6 @@ function brandAvatar(cls = ''): HTMLElement {
   return node;
 }
 
-function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return `${n} ${one}`;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return `${n} ${few}`;
-  return `${n} ${many}`;
-}
 
 function errText(e: unknown, fallback = 'Не получилось. Проверьте соединение и попробуйте ещё раз.'): string {
   const err = e as { code?: string; message?: string } | null;
@@ -238,7 +243,7 @@ function renderSide(): void {
     if (c.kind === 'direct') {
       tile = el('span', 'tile person');
       tile.append(avatarEl(who(c.peer_id)));
-      if (c.peer_id && S.online.has(c.peer_id)) tile.append(el('span', 'on-dot'));
+      if (c.peer_id && isOnline(S.profiles.get(c.peer_id))) tile.append(el('span', 'on-dot'));
     } else if (c.kind === 'bot') {
       tile = el('span', 'tile person');
       tile.append(brandAvatar());
@@ -263,24 +268,33 @@ function renderSide(): void {
   list.replaceChildren(frag);
 }
 
+/** Внизу слева — только я: имя и мой статус. Списка «кто ещё в сети» нет. */
 function renderMe(): void {
   const box = $('meBox');
   if (!S.me) { box.replaceChildren(); return; }
-  box.replaceChildren(avatarEl(who(meId())), el('span', 'nm', S.me.name || 'Без имени'));
+  const text = el('span', 'me-text');
+  // Пока приложение открыто, мы «в сети» (сервер узнаёт об этом из пульса ping).
+  const on = navigator.onLine !== false;
+  const st = el('span', `me-st${on ? ' on' : ''}`);
+  if (on) st.append(el('span', 'pulse'));
+  st.append(on ? 'в сети' : 'нет подключения');
+  text.append(el('span', 'nm', S.me.name || 'Без имени'), st);
+  box.replaceChildren(avatarEl(who(meId())), text);
 }
 
-function renderOnline(): void {
-  const box = $('onlineBox');
-  if (!S.online.size) { box.replaceChildren(); return; }
-  const others = [...S.online].filter((k) => k !== meId());
-  const faces = el('div', 'faces');
-  others.slice(0, 4).forEach((k) => {
-    const a = avatarEl(who(k), '', true);
-    a.title = who(k).name;
-    faces.append(a);
-  });
-  const label = others.length === 0 ? 'только вы в сети' : `${others.length + 1} в сети`;
-  box.replaceChildren(faces, el('span', 'pulse'), el('span', null, label));
+function effectiveTheme(): 'light' | 'dark' {
+  const t = getTheme();
+  if (t !== 'auto') return t;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function renderThemeBtn(): void {
+  const btn = $('themeBtn');
+  const dark = effectiveTheme() === 'dark';
+  btn.replaceChildren(html(dark ? ICONS.sun : ICONS.moon));
+  const label = dark ? 'Включить светлую тему' : 'Включить тёмную тему';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
 }
 
 function updateTitle(): void {
@@ -335,21 +349,24 @@ function renderHead(): void {
   }
   sub.classList.remove('typing');
   if (c.kind === 'direct') {
-    sub.textContent = c.peer_id && S.online.has(c.peer_id) ? 'в сети' : 'не в сети';
+    // Как в Telegram: «в сети» или «был(а) в сети …».
+    const peer = c.peer_id ? S.profiles.get(c.peer_id) : null;
+    sub.textContent = statusText(peer);
+    sub.classList.toggle('online', isOnline(peer));
     return;
   }
+  sub.classList.remove('online');
   if (c.kind === 'bot') { sub.textContent = 'бот'; return; }
   if (c.kind === 'channel') {
     sub.textContent = `канал · ${plural(c.member_count, 'подписчик', 'подписчика', 'подписчиков')}`;
     return;
   }
+  // Группа: «5 участников, 2 в сети» — считаем только участников этого чата.
+  const members = S.members.get(c.id) ?? [];
+  const onlineMembers = members.filter((m) => isOnline(S.profiles.get(m.user_id))).length;
   const parts = [plural(c.member_count, 'участник', 'участника', 'участников')];
-  const here = S.inChat.size;
-  const members = S.members.get(c.id);
-  const onlineMembers = members ? members.filter((m) => S.online.has(m.user_id)).length : 0;
-  if (here > 1) parts.push(`сейчас в чате: ${here}`);
-  else if (onlineMembers > 1) parts.push(`${onlineMembers} в сети`);
-  sub.textContent = parts.join(' · ');
+  if (onlineMembers > 0) parts.push(`${onlineMembers} в сети`);
+  sub.textContent = parts.join(', ');
 }
 
 function reactionCounts(m: Msg) {
@@ -598,7 +615,7 @@ function closeMissingChat(): void {
 function renderAll(): void {
   renderSide();
   renderMe();
-  renderOnline();
+  renderThemeBtn();
   renderConv();
   renderHead();
   renderFeed();
@@ -668,10 +685,57 @@ function renderEmojiGrid(grid: HTMLElement, current: string, onPick: (e: string)
 function openNew(): void {
   $<HTMLInputElement>('chatName').value = '';
   $('chatErr').textContent = '';
+  $<HTMLInputElement>('findUser').value = '';
+  $('findResult').replaceChildren();
   picked = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
   renderEmojiGrid($('emojiGrid'), picked, (e) => { picked = e; });
   openDialog($<HTMLDialogElement>('newDlg'));
-  $('chatName').focus();
+  $('findUser').focus();
+}
+
+/** Поиск человека по точному @username — как в Telegram. */
+let findSeq = 0;
+async function submitFind(): Promise<void> {
+  const out = $('findResult');
+  const v = normUsername($<HTMLInputElement>('findUser').value);
+  if (!v) { out.replaceChildren(el('p', 'err', 'Введите имя пользователя, например @ivan_petrov.')); return; }
+  if (!USERNAME_RE.test(v)) { out.replaceChildren(el('p', 'err', 'Такого имени пользователя не бывает: латиница, цифры и _, от 5 символов.')); return; }
+  const my = ++findSeq;
+  const btn = $<HTMLButtonElement>('findBtn');
+  btn.disabled = true;
+  out.replaceChildren(el('p', 'hint', 'Ищем…'));
+  let found: Awaited<ReturnType<typeof findUser>> | null = null;
+  try {
+    found = await findUser(v);
+  } catch (e) {
+    if (my === findSeq) out.replaceChildren(el('p', 'err', errText(e, 'Не получилось найти. Попробуйте ещё раз.')));
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+  if (my !== findSeq) return;
+  if (!found) { out.replaceChildren(el('p', 'err', `Пользователь @${v} не найден.`)); return; }
+  const person = found;
+  const row = el('div', 'found');
+  const w: Who = { id: person.id, name: person.name ?? 'Участник', avatar: avatarUrl(person.avatar_path), color: person.color };
+  const text = el('span', 'found-text');
+  text.append(el('span', 'nm', w.name), el('span', 'uname', `@${person.username}`));
+  const isMe = person.id === meId();
+  const action = isMe
+    ? button('btn ghost small', 'Это вы', () => { closeDialog($<HTMLDialogElement>('newDlg')); openProfile(); })
+    : button('btn primary small', 'Написать', async () => {
+      action.disabled = true;
+      try {
+        const id = await openDirect(person.id);
+        closeDialog($<HTMLDialogElement>('newDlg'));
+        openChat(id);
+      } catch (e) {
+        toast(errText(e, 'Не получилось открыть личный чат.'));
+        action.disabled = false;
+      }
+    });
+  row.append(avatarEl(w), text, action);
+  out.replaceChildren(row);
 }
 
 async function submitNew(): Promise<void> {
@@ -710,12 +774,17 @@ function dlgHead(title: string, dlg: HTMLDialogElement, closable = true): HTMLEl
   return head;
 }
 
-function openProfile(onboarding = false): void {
+function openProfile(): void {
   const dlg = $<HTMLDialogElement>('profileDlg');
-  U.onboarding = onboarding;
   renderProfile();
   openDialog(dlg);
-  if (onboarding) $('profName').focus();
+}
+
+function contactLine(): string {
+  const u = S.user;
+  if (!u) return '';
+  if (u.phone) return `Телефон: +${u.phone.replace(/^\+/, '')}`;
+  return u.email ? `Почта: ${u.email}` : '';
 }
 
 function renderProfile(): void {
@@ -723,6 +792,7 @@ function renderProfile(): void {
   if (!S.me) return;
   const stack = el('div', 'stack');
 
+  // Фото
   const avEdit = el('div', 'av-edit');
   const btns = el('div', 'btns');
   const file = el('input');
@@ -749,76 +819,121 @@ function renderProfile(): void {
   });
   avEdit.append(avatarEl(who(meId()), 'xl'), btns, file);
 
-  const field = el('div', 'field');
-  const lbl = el('label', 'fld', 'Имя');
-  lbl.htmlFor = 'profName';
-  const name = el('input', 'txt');
-  const typed = dlg.open ? (document.getElementById('profName') as HTMLInputElement | null)?.value : undefined;
-  Object.assign(name, { id: 'profName', maxLength: 40, autocomplete: 'nickname', placeholder: 'Как вас называть', value: typed ?? S.me.name ?? '' });
+  // Имя, фамилия, @username
+  const keep = (id: string) => (dlg.open ? (document.getElementById(id) as HTMLInputElement | null)?.value : undefined);
+  const mk = (id: string, label: string, attrs: Partial<HTMLInputElement>) => {
+    const f = el('div', 'field');
+    const l = el('label', 'fld', label);
+    l.htmlFor = id;
+    const i = el('input', 'txt');
+    Object.assign(i, { id, ...attrs });
+    f.append(l, i);
+    return { f, i };
+  };
+  const first = mk('profFirst', 'Имя', { maxLength: 40, autocomplete: 'given-name', value: keep('profFirst') ?? S.me.first_name ?? '' });
+  const last = mk('profLast', 'Фамилия', { maxLength: 40, autocomplete: 'family-name', placeholder: 'необязательно', value: keep('profLast') ?? S.me.last_name ?? '' });
+  const user = mk('profUser', 'Имя пользователя', { maxLength: 33, autocomplete: 'username', placeholder: '@username', value: keep('profUser') ?? (S.me.username ? `@${S.me.username}` : '') });
+  const unHint = el('p', 'hint', 'По нему вас смогут найти и написать вам. Латиница, цифры и _, от 5 символов.');
+  user.f.append(unHint);
   const err = el('p', 'err');
-  field.append(lbl, name, err);
-  const save = button('btn primary', U.onboarding ? 'Готово' : 'Сохранить имя', () => void saveName());
-  name.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void saveName(); } });
+  const save = button('btn primary', 'Сохранить', () => void saveProfile());
+  save.style.alignSelf = 'flex-start';
 
-  async function saveName(): Promise<void> {
-    const v = name.value.trim();
-    if (!v) { err.textContent = 'Введите имя — так вас увидят в чатах.'; name.focus(); return; }
+  let unOk = true;
+  let seq = 0;
+  let unTimer: number | undefined;
+  user.i.addEventListener('input', () => {
+    clearTimeout(unTimer);
+    const v = normUsername(user.i.value);
+    unHint.classList.remove('ok', 'bad');
+    if (!v || v === S.me?.username) { unOk = true; unHint.textContent = 'По нему вас смогут найти и написать вам. Латиница, цифры и _, от 5 символов.'; return; }
+    if (!USERNAME_RE.test(v)) { unOk = false; unHint.textContent = 'Только латиница, цифры и _, от 5 до 32 символов, первая — буква.'; unHint.classList.add('bad'); return; }
+    unOk = false;
+    unHint.textContent = 'Проверяем…';
+    const my = ++seq;
+    unTimer = window.setTimeout(async () => {
+      const free = await usernameAvailable(v).catch(() => false);
+      if (my !== seq) return;
+      unOk = free;
+      unHint.textContent = free ? `@${v} свободно` : `@${v} уже занято`;
+      unHint.classList.add(free ? 'ok' : 'bad');
+    }, 350);
+  });
+
+  async function saveProfile(): Promise<void> {
+    const fn = first.i.value.trim();
+    const ln = last.i.value.trim();
+    const un = normUsername(user.i.value);
+    if (!fn) { err.textContent = 'Введите имя — так вас увидят в чатах.'; first.i.focus(); return; }
+    if (un && (!USERNAME_RE.test(un) || !unOk)) { err.textContent = 'Выберите другое имя пользователя.'; user.i.focus(); return; }
     save.disabled = true;
     try {
-      await updateMyName(v);
+      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un || null });
       err.textContent = '';
-      if (U.onboarding) {
-        U.onboarding = false;
-        closeDialog(dlg);
-        toast(`Приятно познакомиться, ${v}!`);
-      } else {
-        toast('Имя сохранено');
-      }
+      toast('Профиль сохранён');
     } catch (e) {
-      err.textContent = errText(e, 'Не получилось сохранить имя.');
+      err.textContent = (e as { code?: string }).code === '23505' ? 'Это имя пользователя уже занято.' : errText(e, 'Не получилось сохранить.');
     } finally {
       save.disabled = false;
     }
   }
+  [first.i, last.i, user.i].forEach((i) => i.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void saveProfile(); }
+  }));
 
-  stack.append(avEdit, field, save);
+  // Тема
+  const themeField = el('div', 'field');
+  themeField.append(el('span', 'fld', 'Тема'));
+  const seg = el('div', 'seg');
+  seg.setAttribute('role', 'group');
+  const cur = getTheme();
+  ([['auto', 'Как в системе'], ['light', 'Светлая'], ['dark', 'Тёмная']] as [Theme, string][]).forEach(([t, label]) => {
+    const b = button(null, label, () => { setTheme(t); renderThemeBtn(); renderProfile(); });
+    b.setAttribute('aria-pressed', String(t === cur));
+    seg.append(b);
+  });
+  themeField.append(seg);
 
-  if (!U.onboarding) {
-    const themeField = el('div', 'field');
-    themeField.append(el('span', 'fld', 'Тема'));
-    const seg = el('div', 'seg');
-    seg.setAttribute('role', 'group');
-    const cur = getTheme();
-    ([['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']] as [Theme, string][]).forEach(([t, label]) => {
-      const b = button(null, label, () => { setTheme(t); renderProfile(); });
-      b.setAttribute('aria-pressed', String(t === cur));
-      seg.append(b);
-    });
-    themeField.append(seg);
+  // Выход
+  const out = el('div', 'field');
+  out.append(
+    button('btn danger', 'Выйти из аккаунта', async () => { closeDialog(dlg); await goOffline(); void sb.auth.signOut(); }),
+    el('p', 'hint', contactLine()),
+  );
 
-    const out = el('div', 'field');
-    out.append(
-      button('btn danger', 'Выйти из аккаунта', () => { closeDialog(dlg); void sb.auth.signOut(); }),
-      el('p', 'hint', `Вы вошли как ${S.user?.email ?? ''}`),
-    );
-    stack.append(el('div', 'hr'), themeField, el('div', 'hr'), out);
-  }
-
-  dlg.replaceChildren(dlgHead(U.onboarding ? 'Как вас зовут?' : 'Профиль', dlg, !U.onboarding), stack);
+  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), themeField, el('div', 'hr'), out);
+  dlg.replaceChildren(dlgHead('Профиль', dlg), stack);
 }
 
 // ---------------------------------------------------------------------------
 // Карточка участника
 // ---------------------------------------------------------------------------
 
+let personUid: string | null = null;
+
+/** Статус в открытой карточке человека обновляется вместе со всеми остальными. */
+function refreshPersonStatus(): void {
+  const st = document.getElementById('personSt');
+  if (!personUid || !st || personUid === meId()) return;
+  const p = S.profiles.get(personUid);
+  st.textContent = statusText(p);
+  st.classList.toggle('on', isOnline(p));
+}
+
 function openPerson(uid: string): void {
   const dlg = $<HTMLDialogElement>('personDlg');
   void ensureProfiles([uid]);
+  personUid = uid;
+  const p = S.profiles.get(uid);
   const w = who(uid);
   const card = el('div', 'person-card');
   const isMe = uid === meId();
-  const online = S.online.has(uid);
-  card.append(avatarEl(w, 'xl'), el('h2', null, w.name), el('p', `st${online ? ' on' : ''}`, isMe ? 'это вы' : online ? 'в сети' : 'не в сети'));
+  const online = isOnline(p);
+  card.append(avatarEl(w, 'xl'), el('h2', null, w.name));
+  if (p?.username) card.append(el('p', 'uname', `@${p.username}`));
+  const st = el('p', `st${online ? ' on' : ''}`, isMe ? 'это вы' : statusText(p));
+  st.id = 'personSt';
+  card.append(st);
   const actions = el('div', 'dlg-actions');
   actions.append(button('btn ghost', 'Закрыть', () => closeDialog(dlg)));
   if (isMe) {
@@ -830,6 +945,7 @@ function openPerson(uid: string): void {
         const id = await openDirect(uid);
         closeDialog(dlg);
         closeDialog($<HTMLDialogElement>('chatDlg'));
+        closeDialog($<HTMLDialogElement>('newDlg'));
         openChat(id);
       } catch (e) {
         toast(errText(e, 'Не получилось открыть личный чат.'));
@@ -884,6 +1000,7 @@ function openBotCard(): void {
   p.style.margin = '0 0 18px';
   const actions = el('div', 'dlg-actions');
   actions.append(button('btn primary', 'Понятно', () => closeDialog(dlg)));
+  personUid = null;
   card.append(brandAvatar('xl'), el('h2', null, 'СКАМ'), el('p', 'st', 'бот'), p, actions);
   dlg.replaceChildren(card);
   openDialog(dlg);
@@ -971,19 +1088,23 @@ function renderChatInfo(): void {
     mf.append(el('p', 'hint', 'Загружаем…'));
   } else {
     const ul = el('ul', 'members');
+    const onl = (uid: string) => uid === meId() || isOnline(S.profiles.get(uid));
+    const seen = (uid: string) => Date.parse(S.profiles.get(uid)?.last_seen_at ?? '') || 0;
     const sorted = [...members].sort((a, b) =>
-      Number(S.online.has(b.user_id)) - Number(S.online.has(a.user_id))
+      Number(onl(b.user_id)) - Number(onl(a.user_id))
       || (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : 0)
+      || seen(b.user_id) - seen(a.user_id)
       || who(a.user_id).name.localeCompare(who(b.user_id).name, 'ru'));
     sorted.slice(0, 200).forEach((m) => {
       const li = el('li');
-      const on = S.online.has(m.user_id);
       const isMe = m.user_id === meId();
+      const p = S.profiles.get(m.user_id);
+      const on = isMe || isOnline(p);
       const b = button(null, null, () => openPerson(m.user_id));
       const text = el('span');
       text.style.minWidth = '0';
       text.append(el('span', 'nm', isMe ? `${who(m.user_id).name} (вы)` : who(m.user_id).name), el('br'),
-        el('span', `st${on ? ' on' : ''}`, on ? 'в сети' : 'не в сети'));
+        el('span', `st${on ? ' on' : ''}`, isMe ? 'в сети' : statusText(p)));
       b.append(personAvatar(m.user_id), text);
       if (m.role === 'owner') b.append(el('span', 'role', 'владелец'));
       li.append(b);
@@ -1109,11 +1230,22 @@ function wire(): void {
   const onWide = () => { if (wideMQ.matches && isConversation(currentChat())) joinChatChannel(S.cur); autoOpen(); renderAll(); };
   wideMQ.addEventListener('change', onWide);
   unsubs.push(() => wideMQ.removeEventListener('change', onWide));
-  // Онбординг нельзя закрыть без имени.
-  listen($('profileDlg'), 'cancel', (e: Event) => { if (U.onboarding) e.preventDefault(); });
+  listen(window, 'online', renderMe);
+  listen(window, 'offline', renderMe);
+  listen($('findForm'), 'submit', (e: Event) => { e.preventDefault(); void submitFind(); });
+  listen($('findUser'), 'input', () => { findSeq++; $('findResult').replaceChildren(); });
+  listen($('themeBtn'), 'click', () => {
+    setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark');
+    renderThemeBtn();
+    if ($<HTMLDialogElement>('profileDlg').open) renderProfile();
+  });
+  const sysDark = window.matchMedia('(prefers-color-scheme: dark)');
+  const onSys = () => renderThemeBtn();
+  sysDark.addEventListener('change', onSys);
+  unsubs.push(() => sysDark.removeEventListener('change', onSys));
   for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg']) {
     const d = $<HTMLDialogElement>(id);
-    listen(d, 'click', (e: MouseEvent) => { if (e.target === d && !(id === 'profileDlg' && U.onboarding)) closeDialog(d); });
+    listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
 }
 
@@ -1132,21 +1264,16 @@ function showFatal(root: HTMLElement, title: string, text: string): void {
   $('fatalOut').addEventListener('click', () => void sb.auth.signOut());
 }
 
+const SPLASH = `
+<main class="auth"><div class="auth-card">
+  ${APP_ICON_HERO}
+  <span class="wordmark">СКАМ</span>
+  <p class="lead">Загружаем…</p>
+</div></main>`;
+
 export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   mounted = true;
-  root.replaceChildren(html(SHELL));
-  wire();
-  S.visibleChat = () => (S.cur && convVisible() && document.visibilityState === 'visible' ? S.cur : null);
-  unsubs.push(
-    on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
-    on('feed', renderFeed),
-    on('head', renderHead),
-    on('online', () => { renderOnline(); renderSide(); }),
-    on('me', () => { renderMe(); renderSide(); }),
-    on('members', () => { if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
-  );
-  renderAll();
-
+  root.replaceChildren(html(SPLASH));
   try {
     await loadMe(user);
   } catch (e) {
@@ -1160,7 +1287,27 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
     return;
   }
   if (!mounted) return;
-  if (!S.me?.name) openProfile(true);
+  // Новый аккаунт (или старый без имени) — сначала «Создание аккаунта», как в Telegram.
+  if (!S.me?.first_name) {
+    mountRegister(root, () => { if (mounted) void mountShell(root); });
+    return;
+  }
+  await mountShell(root);
+}
+
+async function mountShell(root: HTMLElement): Promise<void> {
+  root.replaceChildren(html(SHELL));
+  wire();
+  S.visibleChat = () => (S.cur && convVisible() && document.visibilityState === 'visible' ? S.cur : null);
+  unsubs.push(
+    on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
+    on('feed', renderFeed),
+    on('head', renderHead),
+    on('online', () => { renderMe(); renderSide(); if ($<HTMLDialogElement>('personDlg').open) refreshPersonStatus(); }),
+    on('me', () => { renderMe(); renderSide(); }),
+    on('members', () => { if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
+  );
+  renderAll();
 
   try {
     await loadChats();
@@ -1173,12 +1320,7 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   renderAll();
 
   startRealtime((ok) => setBanner(ok ? null : 'Нет живого соединения — новые сообщения подтягиваются раз в несколько секунд.')).catch(() => {});
-  if (!U.onboarding) void handlePendingJoin();
-  else {
-    // Приглашение покажем после того, как человек представится.
-    const d = $<HTMLDialogElement>('profileDlg');
-    d.addEventListener('close', () => void handlePendingJoin(), { once: true });
-  }
+  void handlePendingJoin();
 }
 
 export function unmountApp(): void {
@@ -1189,7 +1331,6 @@ export function unmountApp(): void {
   unsubs = [];
   resetState();
   U.drafts.clear();
-  U.onboarding = false;
   document.body.classList.remove('chat-open');
   document.title = 'СКАМ';
   S.visibleChat = () => null;

@@ -1,4 +1,4 @@
-// Типы схемы из supabase/migrations/20260924000000_init.sql.
+// Типы схемы из supabase/migrations.
 // Формат совместим с `supabase gen types typescript` — при желании файл можно перегенерировать:
 //   npx supabase gen types typescript --project-id <ref> > src/lib/database.types.ts
 
@@ -24,15 +24,23 @@ export type Database = {
       profiles: {
         Row: {
           id: string;
+          /** Вычисляется из имени и фамилии. */
           name: string | null;
+          first_name: string | null;
+          last_name: string | null;
+          username: string | null;
           avatar_path: string | null;
           color: string;
+          last_seen_at: string | null;
+          online_until: string | null;
           created_at: string;
           updated_at: string;
         };
         Insert: never;
         Update: {
-          name?: string | null;
+          first_name?: string | null;
+          last_name?: string | null;
+          username?: string | null;
           avatar_path?: string | null;
         };
         Relationships: [];
@@ -128,6 +136,12 @@ export type Database = {
       delete_message: { Args: { p_id: string }; Returns: undefined };
       mark_read: { Args: { p_chat: string; p_at?: string }; Returns: undefined };
       leave_chat: { Args: { p_chat: string }; Returns: undefined };
+      ping: { Args: { p_online?: boolean }; Returns: undefined };
+      find_user: {
+        Args: { p_username: string };
+        Returns: { id: string; name: string | null; username: string | null; avatar_path: string | null; color: string }[];
+      };
+      username_available: { Args: { p_username: string }; Returns: boolean };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };

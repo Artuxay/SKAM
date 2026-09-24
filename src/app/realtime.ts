@@ -1,6 +1,6 @@
-// Supabase Realtime: изменения в базе, «кто в сети» (presence) и «печатает…» (broadcast).
+// Supabase Realtime: изменения в базе, «печатает…» (broadcast), а также пульс «в сети» (ping).
 import type { RealtimeChannel, RealtimeChannelOptions } from '@supabase/supabase-js';
-import { sb } from '../lib/supabase';
+import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
 import type { Member, Message, Profile, Reaction } from '../lib/database.types';
 import {
   S, addReaction, bumpChat, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId,
@@ -10,14 +10,18 @@ import {
 const TYPING_TTL = 6000;
 /** Если WebSocket недоступен (корпоративная сеть, прокси) — подтягиваем изменения опросом. */
 const POLL_MS = 8000;
+/** Как часто сообщаем «я в сети» (сервер держит статус 75 секунд). */
+const PING_MS = 45_000;
 
 let dbChannel: RealtimeChannel | null = null;
-let onlineChannel: RealtimeChannel | null = null;
 let chatChannel: RealtimeChannel | null = null;
 let chatTopicId: string | null = null;
 let everConnected = false;
 let hiddenAt = 0;
 let typingSweep: number | undefined;
+let pingTimer: number | undefined;
+let statusTick: number | undefined;
+let lastToken: string | null = null;
 let statusCb: (ok: boolean) => void = () => {};
 let pollTimer: number | undefined;
 let connectTimer: number | undefined;
@@ -38,24 +42,12 @@ function setConnected(ok: boolean): void {
   }
 }
 
-/** Приватный канал (доступ проверяют RLS-политики на realtime.messages); если проект их не поддерживает — публичный. */
+/** Приватный канал: слушать и писать в него могут только участники чата (RLS-политики на realtime.messages). */
 function channel(topic: string, config: NonNullable<RealtimeChannelOptions['config']>, setup: (ch: RealtimeChannel) => void,
-  onJoin: (ch: RealtimeChannel) => void, isPrivate = true): RealtimeChannel {
-  const ch = sb.channel(topic, { config: { ...config, private: isPrivate } });
+  onJoin: (ch: RealtimeChannel) => void): RealtimeChannel {
+  const ch = sb.channel(topic, { config: { ...config, private: true } });
   setup(ch);
-  let joined = false;
-  ch.subscribe((status) => {
-    if (status === 'SUBSCRIBED') {
-      joined = true;
-      onJoin(ch);
-    } else if (status === 'CHANNEL_ERROR' && isPrivate && !joined) {
-      // Нет политик Realtime Authorization — пробуем открытый канал.
-      void sb.removeChannel(ch);
-      const again = channel(topic, config, setup, onJoin, false);
-      if (onlineChannel === ch) onlineChannel = again;
-      if (chatChannel === ch) chatChannel = again;
-    }
-  });
+  ch.subscribe((status) => { if (status === 'SUBSCRIBED') onJoin(ch); });
   return ch;
 }
 
@@ -170,14 +162,40 @@ async function resync(withProfiles = false): Promise<void> {
 // Присутствие
 // ---------------------------------------------------------------------------
 
-function trackOnline(): void {
-  if (!onlineChannel || document.visibilityState !== 'visible') return;
-  void onlineChannel.track({ user_id: meId(), at: Date.now() });
+// «Я в сети»: пульс раз в 45 секунд, пока вкладка видна; при уходе — сразу «был(а) в сети».
+function ping(online: boolean): void {
+  sb.rpc('ping', { p_online: online }).then(() => {}, () => {});
+  sb.auth.getSession().then(({ data }) => { lastToken = data.session?.access_token ?? null; }, () => {});
+  const me = S.me;
+  if (me) {
+    const now = Date.now();
+    me.last_seen_at = new Date(now).toISOString();
+    me.online_until = new Date(online ? now + 75_000 : now).toISOString();
+    emit('me');
+  }
+}
+
+/** Перед выходом из аккаунта: сразу «был(а) в сети». */
+export async function goOffline(): Promise<void> {
+  try { await sb.rpc('ping', { p_online: false }); } catch { /* не страшно */ }
+}
+
+/** Закрытие вкладки: обычный запрос может не успеть — отправляем keepalive-запрос. */
+function onPageHide(): void {
+  if (!lastToken) return;
+  try {
+    void fetch(`${SUPABASE_URL}/rest/v1/rpc/ping`, {
+      method: 'POST',
+      keepalive: true,
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${lastToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_online: false }),
+    });
+  } catch { /* браузер мог не дать отправить — статус истечёт сам через 75 секунд */ }
 }
 
 function onVisibility(): void {
   if (document.visibilityState === 'visible') {
-    trackOnline();
+    ping(true);
     if (chatChannel) void chatChannel.track({ user_id: meId() });
     // Телефон мог «усыпить» сокет — догоняем пропущенное.
     if (hiddenAt && Date.now() - hiddenAt > 30_000) void resync();
@@ -185,7 +203,7 @@ function onVisibility(): void {
   } else {
     hiddenAt = Date.now();
     sendTyping(false);
-    void onlineChannel?.untrack();
+    ping(false);
     void chatChannel?.untrack();
   }
 }
@@ -219,17 +237,11 @@ export async function startRealtime(onStatus: (ok: boolean) => void): Promise<vo
       }
     });
 
-  onlineChannel = channel(
-    'online',
-    { presence: { key: meId() } },
-    (ch) => ch.on('presence', { event: 'sync' }, () => {
-      S.online = new Set(Object.keys(ch.presenceState()));
-      void ensureProfiles([...S.online]);
-      emit('online', 'head', 'chats', 'members');
-    }),
-    () => trackOnline(),
-  );
-
+  if (document.visibilityState === 'visible') ping(true);
+  pingTimer = window.setInterval(() => { if (document.visibilityState === 'visible') ping(true); }, PING_MS);
+  // Статусы «в сети» истекают и «N минут назад» растёт — перерисовываем раз в 30 секунд.
+  statusTick = window.setInterval(() => emit('online', 'head', 'chats', 'members'), 30_000);
+  window.addEventListener('pagehide', onPageHide);
   document.addEventListener('visibilitychange', onVisibility);
   typingSweep = window.setInterval(() => {
     const now = Date.now();
@@ -241,13 +253,16 @@ export async function startRealtime(onStatus: (ok: boolean) => void): Promise<vo
 
 export async function stopRealtime(): Promise<void> {
   document.removeEventListener('visibilitychange', onVisibility);
+  window.removeEventListener('pagehide', onPageHide);
   clearInterval(typingSweep);
+  clearInterval(pingTimer);
+  clearInterval(statusTick);
   clearInterval(pollTimer);
   clearTimeout(connectTimer);
   pollTimer = undefined;
   connected = null;
-  const all = [dbChannel, onlineChannel, chatChannel];
-  dbChannel = onlineChannel = chatChannel = null;
+  const all = [dbChannel, chatChannel];
+  dbChannel = chatChannel = null;
   chatTopicId = null;
   await Promise.all(all.map((ch) => (ch ? sb.removeChannel(ch) : null)));
   await sb.removeAllChannels();

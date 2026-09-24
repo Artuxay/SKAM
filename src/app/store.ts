@@ -22,7 +22,6 @@ export const S = {
   feeds: new Map<string, Feed>(),
   reactions: new Map<string, Reaction[]>(),
   members: new Map<string, Member[]>(),
-  online: new Set<string>(),
   inChat: new Set<string>(),
   typing: new Map<string, number>(),
   /** UI сообщает, какой чат сейчас реально виден пользователю (для непрочитанных). */
@@ -71,7 +70,6 @@ export function resetState(): void {
   S.feeds.clear();
   S.reactions.clear();
   S.members.clear();
-  S.online.clear();
   S.inChat.clear();
   S.typing.clear();
   listeners.clear();
@@ -113,28 +111,50 @@ export async function ensureProfiles(ids: (string | null | undefined)[]): Promis
 /** Перечитать уже известные профили (когда нет Realtime и изменения имён не приходят сами). */
 export async function refreshProfiles(): Promise<void> {
   const ids = [...S.profiles.keys()];
-  let changed = false;
   for (let i = 0; i < ids.length; i += 100) {
     const { data } = await sb.from('profiles').select('*').in('id', ids.slice(i, i + 100));
     data?.forEach((p) => {
       const old = S.profiles.get(p.id);
-      if (!old || old.updated_at !== p.updated_at) { changed = true; S.profiles.set(p.id, p); if (p.id === meId()) S.me = p; }
+      if (!old || old.updated_at !== p.updated_at) putProfile(p);
     });
   }
-  if (changed) emit('chats', 'feed', 'head', 'online', 'members', 'me');
 }
 
 export function putProfile(p: Profile): void {
+  const old = S.profiles.get(p.id);
   S.profiles.set(p.id, p);
   if (p.id === meId()) S.me = p;
-  emit('chats', 'feed', 'head', 'online', 'members', 'me');
+  // Пульс «в сети» меняет только время — ленту сообщений в этом случае не перерисовываем.
+  const onlyPresence = !!old && (['name', 'username', 'avatar_path', 'color'] as const).every((k) => old[k] === p[k]);
+  if (onlyPresence) emit('online', 'head', 'chats', 'members', ...(p.id === meId() ? (['me'] as const) : []));
+  else emit('chats', 'feed', 'head', 'online', 'members', 'me');
 }
 
-export async function updateMyName(name: string): Promise<void> {
-  const { data, error } = await sb.from('profiles').update({ name }).eq('id', meId()).select().single();
+export type ProfileFields = { first_name: string; last_name: string | null; username: string | null };
+
+export async function updateMyProfile(fields: ProfileFields): Promise<void> {
+  const { data, error } = await sb.from('profiles').update(fields).eq('id', meId()).select().single();
   if (error) throw error;
   putProfile(data);
 }
+
+export async function usernameAvailable(username: string): Promise<boolean> {
+  const { data, error } = await sb.rpc('username_available', { p_username: username });
+  if (error) throw error;
+  return !!data;
+}
+
+export async function findUser(username: string) {
+  const { data, error } = await sb.rpc('find_user', { p_username: username });
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+/** Нормализация @username: без @, в нижнем регистре. */
+export function normUsername(v: string): string {
+  return v.trim().replace(/^@+/, '').toLowerCase();
+}
+export const USERNAME_RE = /^[a-z][a-z0-9_]{4,31}$/;
 
 async function toSquare(file: Blob, size = 256): Promise<Blob> {
   const url = URL.createObjectURL(file);
@@ -208,6 +228,7 @@ export async function loadChats(): Promise<void> {
   S.chats = next;
   S.chatsLoaded = true;
   for (const id of [...S.feeds.keys()]) if (!next.has(id)) S.feeds.delete(id);
+  emit('chats');
   await ensureProfiles((data ?? []).flatMap((c) => [c.peer_id, c.last_user_id]));
   emit('chats', 'head', 'feed');
 }
