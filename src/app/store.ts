@@ -1,7 +1,7 @@
 // Состояние приложения и работа с данными Supabase.
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
-import type { Member, Message, MyChat, Profile, Reaction, ReactionKey } from '../lib/database.types';
+import type { Database, Member, Message, MyChat, Profile, Reaction, ReactionKey } from '../lib/database.types';
 import { uuid } from '../lib/dom';
 
 export type Msg = Message & { pending?: boolean; failed?: boolean };
@@ -144,10 +144,24 @@ export async function usernameAvailable(username: string): Promise<boolean> {
   return !!data;
 }
 
-export async function findUser(username: string) {
-  const { data, error } = await sb.rpc('find_user', { p_username: username });
+export type FoundUser = Database['public']['Functions']['search_users']['Returns'][number];
+
+/** Минимум символов в запросе поиска людей (как в search_users на сервере). */
+export const SEARCH_MIN = 2;
+
+/**
+ * Поиск людей по имени, фамилии или @username.
+ * «@ivan» — только по @username; «иван пет» — каждое слово совпадает с началом имени, фамилии или @username.
+ */
+export async function searchUsers(query: string, limit = 20): Promise<FoundUser[]> {
+  const { data, error } = await sb.rpc('search_users', { p_query: query, p_limit: limit });
   if (error) throw error;
-  return data?.[0] ?? null;
+  return data ?? [];
+}
+
+/** Нормализация для поиска — как private.search_norm на сервере: нижний регистр, «ё» → «е». */
+export function searchNorm(v: string): string {
+  return v.trim().toLowerCase().replace(/ё/g, 'е');
 }
 
 /** Нормализация @username: без @, в нижнем регистре. */

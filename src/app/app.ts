@@ -11,9 +11,9 @@ import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
 import {
   NoProfileError, REACTIONS, S, USERNAME_RE, createChat, deleteMessage, discardMessage, emit, ensureProfiles,
-  feedOf, findUser, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
+  feedOf, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
   normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
-  sendMessage, sortedChats, toggleReaction, totalUnread, ts, updateMyProfile, uploadAvatar, usernameAvailable, type Msg,
+  SEARCH_MIN, searchNorm, searchUsers, sendMessage, sortedChats, toggleReaction, totalUnread, ts, updateMyProfile, uploadAvatar, usernameAvailable, type FoundUser, type Msg,
 } from './store';
 import { goOffline, joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
 
@@ -74,7 +74,8 @@ const SHELL = `
   <form class="find-form" id="findForm" novalidate>
     <label class="fld" for="findUser">Написать человеку</label>
     <div class="invite">
-      <input class="txt" id="findUser" maxlength="33" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="@username">
+      <input class="txt" id="findUser" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false"
+        enterkeyhint="search" placeholder="Имя или @username">
       <button class="btn ghost small" id="findBtn" type="submit">Найти</button>
     </div>
     <div id="findResult"></div>
@@ -686,40 +687,70 @@ function openNew(): void {
   $<HTMLInputElement>('chatName').value = '';
   $('chatErr').textContent = '';
   $<HTMLInputElement>('findUser').value = '';
-  $('findResult').replaceChildren();
+  findSeq++;
+  clearTimeout(findTimer);
+  showFindHint();
   picked = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
   renderEmojiGrid($('emojiGrid'), picked, (e) => { picked = e; });
   openDialog($<HTMLDialogElement>('newDlg'));
   $('findUser').focus();
 }
 
-/** Поиск человека по точному @username — как в Telegram. */
+// Поиск людей: по имени, фамилии или @username — прямо во время набора.
+const FIND_HINT = 'Имя, фамилия или @username — от 2 символов.';
 let findSeq = 0;
-async function submitFind(): Promise<void> {
-  const out = $('findResult');
-  const v = normUsername($<HTMLInputElement>('findUser').value);
-  if (!v) { out.replaceChildren(el('p', 'err', 'Введите имя пользователя, например @ivan_petrov.')); return; }
-  if (!USERNAME_RE.test(v)) { out.replaceChildren(el('p', 'err', 'Такого имени пользователя не бывает: латиница, цифры и _, от 5 символов.')); return; }
-  const my = ++findSeq;
-  const btn = $<HTMLButtonElement>('findBtn');
-  btn.disabled = true;
-  out.replaceChildren(el('p', 'hint', 'Ищем…'));
-  let found: Awaited<ReturnType<typeof findUser>> | null = null;
-  try {
-    found = await findUser(v);
-  } catch (e) {
-    if (my === findSeq) out.replaceChildren(el('p', 'err', errText(e, 'Не получилось найти. Попробуйте ещё раз.')));
-    return;
-  } finally {
-    btn.disabled = false;
+let findTimer = 0;
+
+function showFindHint(): void {
+  $('findResult').replaceChildren(el('p', 'hint', FIND_HINT));
+}
+
+/** Разбор запроса так же, как на сервере: «@» — только по @username, дальше слова. */
+function parseQuery(raw: string): { at: boolean; s: string; toks: string[] } {
+  const n = searchNorm(raw);
+  const s = n.replace(/^@+/, '').replace(/\s+/g, ' ').trim();
+  return { at: n.startsWith('@'), s, toks: s ? s.split(' ') : [] };
+}
+
+/** Подсветка совпавших начал слов (регистр и «ё/е» не важны). */
+function highlight(text: string, toks: string[], wholeOnly = false): Node {
+  const n = searchNorm(text);
+  if (!toks.length || n.length !== text.length) return document.createTextNode(text);
+  const on = new Array<boolean>(text.length).fill(false);
+  for (let i = 0; i < n.length; i++) {
+    if (i > 0 && (wholeOnly || !/[\s-]/.test(n[i - 1]))) continue;
+    for (const t of toks) if (n.startsWith(t, i)) on.fill(true, i, i + t.length);
   }
-  if (my !== findSeq) return;
-  if (!found) { out.replaceChildren(el('p', 'err', `Пользователь @${v} не найден.`)); return; }
-  const person = found;
+  const frag = document.createDocumentFragment();
+  let i = 0;
+  while (i < text.length) {
+    let j = i;
+    while (j < text.length && on[j] === on[i]) j++;
+    const part = text.slice(i, j);
+    frag.append(on[i] ? el('mark', null, part) : document.createTextNode(part));
+    i = j;
+  }
+  return frag;
+}
+
+function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[] }): HTMLElement {
   const row = el('div', 'found');
   const w: Who = { id: person.id, name: person.name ?? 'Участник', avatar: avatarUrl(person.avatar_path), color: person.color };
   const text = el('span', 'found-text');
-  text.append(el('span', 'nm', w.name), el('span', 'uname', `@${person.username}`));
+  const nm = el('span', 'nm');
+  nm.append(q.at ? document.createTextNode(w.name) : highlight(w.name, q.toks));
+  const sub = el('span', 'uname');
+  if (person.username) {
+    sub.append('@', highlight(person.username, q.at ? [q.s] : q.toks, true));
+  }
+  if (person.is_contact) {
+    const tag = el('span', 'found-tag');
+    if (person.username) tag.append(el('span', 'sep', ' · '));
+    tag.append('есть общий чат');
+    sub.append(tag);
+  }
+  text.append(nm);
+  if (sub.childNodes.length) text.append(sub);
   const isMe = person.id === meId();
   const action = isMe
     ? button('btn ghost small', 'Это вы', () => { closeDialog($<HTMLDialogElement>('newDlg')); openProfile(); })
@@ -734,8 +765,53 @@ async function submitFind(): Promise<void> {
         action.disabled = false;
       }
     });
+  if (!isMe) action.setAttribute('aria-label', `Написать: ${w.name}`);
   row.append(avatarEl(w), text, action);
-  out.replaceChildren(row);
+  return row;
+}
+
+/** Найти людей по введённому запросу. now = true — по кнопке «Найти»/Enter, иначе во время набора. */
+async function runFind(now: boolean): Promise<void> {
+  const out = $('findResult');
+  const raw = $<HTMLInputElement>('findUser').value;
+  const q = parseQuery(raw);
+  const my = ++findSeq;
+  clearTimeout(findTimer);
+  if (!q.s) { showFindHint(); return; }
+  if (q.s.length < SEARCH_MIN) {
+    out.replaceChildren(el('p', now ? 'err' : 'hint', 'Введите хотя бы 2 символа.'));
+    return;
+  }
+  if (q.at && !/^[a-z0-9_]+$/.test(q.s)) {
+    out.replaceChildren(el('p', 'err', 'В @username бывают только латиница, цифры и _.'));
+    return;
+  }
+  if (!now) {
+    findTimer = window.setTimeout(() => { if (my === findSeq) void search(); }, 300);
+    return;
+  }
+  await search();
+
+  async function search(): Promise<void> {
+    // Пока ищем, старые результаты остаются на месте — без мигания при наборе.
+    if (!out.querySelector('.found')) out.replaceChildren(el('p', 'hint', 'Ищем…'));
+    let found: FoundUser[];
+    try {
+      found = await searchUsers(raw);
+    } catch (e) {
+      if (my === findSeq) out.replaceChildren(el('p', 'err', errText(e, 'Не получилось найти. Попробуйте ещё раз.')));
+      return;
+    }
+    if (my !== findSeq) return;
+    if (!found.length) {
+      out.replaceChildren(el('p', 'err', q.at ? `Пользователь @${q.s} не найден.` : `Никого не нашли по запросу «${raw.trim()}».`));
+      return;
+    }
+    const list = el('div', 'found-list');
+    list.setAttribute('role', 'list');
+    found.forEach((p) => { const r = foundRow(p, q); r.setAttribute('role', 'listitem'); list.append(r); });
+    out.replaceChildren(list);
+  }
 }
 
 async function submitNew(): Promise<void> {
@@ -1232,8 +1308,8 @@ function wire(): void {
   unsubs.push(() => wideMQ.removeEventListener('change', onWide));
   listen(window, 'online', renderMe);
   listen(window, 'offline', renderMe);
-  listen($('findForm'), 'submit', (e: Event) => { e.preventDefault(); void submitFind(); });
-  listen($('findUser'), 'input', () => { findSeq++; $('findResult').replaceChildren(); });
+  listen($('findForm'), 'submit', (e: Event) => { e.preventDefault(); void runFind(true); });
+  listen($('findUser'), 'input', () => void runFind(false));
   listen($('themeBtn'), 'click', () => {
     setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark');
     renderThemeBtn();

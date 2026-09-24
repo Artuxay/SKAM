@@ -324,5 +324,12 @@ dialog .dlg-head h2{margin:0}
 .found .av{width:42px;height:42px;font-size:17px}
 .found-text{display:flex;flex-direction:column;min-width:0;flex:1}
 .found-text .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.found-text .uname{font-size:13px;margin:0}
+.found-text .uname{font-size:13px;margin:0;overflow-wrap:anywhere}
+.found-list{display:flex;flex-direction:column;gap:6px;max-height:min(320px,42dvh);overflow-y:auto;overscroll-behavior:contain;margin:0 -2px;padding:0 2px}
+.found-list .found{flex:none}
+.found > .btn{flex:none}
+.found mark{background:var(--accent-soft);color:inherit;border-radius:3px;padding:0 1px;margin:0 -1px}
+.found-tag{color:var(--muted);font-weight:400;white-space:nowrap}
+@media (max-width:480px){.found-tag{display:block}.found-tag .sep{display:none}}
+.find-form .invite .txt{color:var(--text);font-size:15px}
 .conv-sub.online{color:var(--online-text)}

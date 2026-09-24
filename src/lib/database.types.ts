@@ -141,6 +141,13 @@ export type Database = {
         Args: { p_username: string };
         Returns: { id: string; name: string | null; username: string | null; avatar_path: string | null; color: string }[];
       };
+      search_users: {
+        Args: { p_query: string; p_limit?: number };
+        Returns: {
+          id: string; name: string | null; username: string | null; avatar_path: string | null; color: string;
+          is_contact: boolean;
+        }[];
+      };
       username_available: { Args: { p_username: string }; Returns: boolean };
     };
     Enums: { [_ in never]: never };
