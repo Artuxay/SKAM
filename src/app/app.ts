@@ -6,6 +6,7 @@ import {
   $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, el, fillText, html,
   listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ,
 } from '../lib/dom';
+import { PACKS, findSticker, recentStickers, rememberSticker, stickerUrl, stickersForEmoji, type Sticker } from '../lib/stickers';
 import { isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
@@ -13,9 +14,12 @@ import {
   NoProfileError, REACTIONS, S, USERNAME_RE, createChat, deleteMessage, discardMessage, emit, ensureProfiles,
   feedOf, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
   normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
-  SEARCH_MIN, searchNorm, searchUsers, sendMessage, sortedChats, toggleReaction, totalUnread, ts, updateMyProfile, uploadAvatar, usernameAvailable, type FoundUser, type Msg,
+  SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, toggleReaction, totalUnread, ts,
+  updateMyProfile, uploadAvatar, usernameAvailable, type FoundUser, type Msg,
 } from './store';
 import { goOffline, joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
+import { dropNotes, setLocalMedia, setVoiceQueue, stopVoice, videoNoteEl, voiceEl } from './media';
+import { mountRecorder, type RecordUI } from './record-ui';
 
 const EMOJIS = ['💬', '🕵️', '💸', '🎲', '🍕', '🐈', '🚀', '🎧', '📦', '🤡'];
 const MAX_LEN = 4000;
@@ -58,11 +62,17 @@ const SHELL = `
       </header>
       <div class="feed" id="feed" role="log" aria-label="Сообщения"></div>
       <button class="jump" id="jumpBtn" type="button" hidden>Новые сообщения ↓</button>
+      <div class="rec-stage" id="recStage" hidden></div>
       <div class="composer" id="composer">
         <p class="composer-note" id="composerNote" hidden>Это канал: писать могут только авторы. А реакции — пожалуйста 🔥</p>
+        <div class="sticker-panel" id="stickerPanel" role="dialog" aria-label="Стикеры" hidden></div>
+        <div class="sticker-suggest" id="stickerSuggest" role="listbox" aria-label="Стикеры к эмодзи" hidden></div>
         <div class="composer-inner">
+          <button class="cbtn" id="stickerBtn" type="button" aria-label="Стикеры" title="Стикеры" aria-expanded="false" aria-controls="stickerPanel">${ICONS.sticker}</button>
           <textarea class="input" id="input" rows="1" maxlength="${MAX_LEN}" placeholder="Сообщение" aria-label="Сообщение"></textarea>
-          <button class="send" id="sendBtn" type="button" aria-label="Отправить" disabled>${ICONS.send}</button>
+          <div class="rec-bar" id="recBar" hidden></div>
+          <button class="send" id="sendBtn" type="button" aria-label="Отправить" disabled hidden>${ICONS.send}</button>
+          <button class="rec-btn" id="recBtn" type="button"></button>
         </div>
       </div>
     </section>
@@ -106,9 +116,12 @@ const U = {
   armedDelete: null as string | null,
   drafts: new Map<string, string>(),
   restoreScroll: null as { height: number; top: number } | null,
+  /** Картинки стикеров открытого чата: не пересоздаём при каждой перерисовке (без мигания). */
+  stickerImgs: new Map<string, HTMLImageElement>(),
 };
 let unsubs: (() => void)[] = [];
 let mounted = false;
+let recUI: RecordUI | null = null;
 
 // ---------------------------------------------------------------------------
 // Кто есть кто
@@ -213,13 +226,25 @@ function setBanner(text: string | null): void {
 // Боковая панель
 // ---------------------------------------------------------------------------
 
+/** Как сообщение выглядит в списке чатов: текст, «👋 Стикер», «Голосовое сообщение»… */
+function kindText(kind: string | null, body: string | null): string {
+  switch (kind) {
+    case 'sticker': return `${body ? `${body} ` : ''}Стикер`;
+    case 'voice': return 'Голосовое сообщение';
+    case 'video_note': return 'Кружочек';
+    case 'e2e': return '🔒 Зашифрованное сообщение';
+    case 'media': return body ? `📎 ${body}` : '📎 Вложение';
+    default: return body || '…';
+  }
+}
+
 function previewText(c: MyChat): string {
   if (!c.last_id) return c.kind === 'direct' ? 'Напишите первым' : 'Пока пусто';
   if (c.last_deleted) return 'Сообщение удалено';
-  const t = (c.last_body || '…').replace(/\s+/g, ' ');
+  const t = kindText(c.last_kind, c.last_body).replace(/\s+/g, ' ');
   if (c.kind === 'channel') return t;
   if (c.last_user_id === meId()) return `Вы: ${t}`;
-  if (c.kind === 'group' && c.last_kind === 'text') return `${who(c.last_user_id).name}: ${t}`;
+  if (c.kind === 'group' && c.last_kind !== 'system') return `${who(c.last_user_id).name}: ${t}`;
   return t;
 }
 
@@ -317,6 +342,7 @@ function renderConv(): void {
   const ro = !!c && !canPost(c);
   $('composer').classList.toggle('readonly', ro);
   $('composerNote').hidden = !ro;
+  if (ro) { closeStickers(); recUI?.cancel(); }
   updateSendBtn();
 }
 
@@ -339,9 +365,13 @@ function renderHead(): void {
   const typers = [...S.typing.keys()].filter((k) => k !== meId());
   if (typers.length) {
     const names = typers.map((k) => who(k).name);
+    const doing = (uid: string) => {
+      const a = S.typingWhat.get(uid);
+      return a === 'voice' ? 'записывает голосовое…' : a === 'video_note' ? 'записывает кружочек…' : 'печатает…';
+    };
     let t: string;
-    if (c.kind === 'direct') t = 'печатает…';
-    else if (names.length === 1) t = `${names[0]} печатает…`;
+    if (c.kind === 'direct') t = doing(typers[0]);
+    else if (names.length === 1) t = `${names[0]} ${doing(typers[0])}`;
     else if (names.length === 2) t = `${names[0]} и ${names[1]} печатают…`;
     else t = 'Несколько человек печатают…';
     sub.textContent = t;
@@ -378,12 +408,78 @@ function reactionCounts(m: Msg) {
   }).filter((x) => x.n > 0);
 }
 
+/** Только что пришедший стикер «подпрыгивает», старые — нет. */
+function fresh(m: Msg): boolean {
+  return !!m.pending || Date.now() - ts(m.created_at) < 15_000;
+}
+
+function stickerEl(m: Msg): HTMLElement {
+  const s = findSticker(m.sticker);
+  if (!s) return el('span', 'sticker-missing', kindText('sticker', m.body));
+  let img = U.stickerImgs.get(m.id);
+  if (!img || img.dataset.ref !== s.ref) {
+    img = el('img', `sticker-img${fresh(m) ? ' pop' : ''}`);
+    img.dataset.ref = s.ref;
+    img.src = stickerUrl(s.ref);
+    img.alt = `Стикер «${s.label}» ${s.emoji}`;
+    img.title = s.label;
+    img.width = img.height = 256;
+    img.draggable = false;
+    img.decoding = 'async';
+    U.stickerImgs.set(m.id, img);
+  }
+  return img;
+}
+
+/** Содержимое сообщения по его виду. */
+function messageBody(b: HTMLElement, m: Msg): void {
+  switch (m.kind) {
+    case 'sticker': b.append(stickerEl(m)); break;
+    case 'voice': b.append(voiceEl(m)); break;
+    case 'video_note': b.append(videoNoteEl(m)); break;
+    case 'e2e':
+      b.append(el('span', 'unsupported', '🔒 Зашифрованное сообщение. Эта версия СКАМ пока не умеет его показать.'));
+      break;
+    case 'media':
+      if (m.body) { fillText(b, m.body); b.append(el('br')); }
+      b.append(el('span', 'unsupported', '📎 Вложение. Эта версия СКАМ пока не умеет его показать.'));
+      break;
+    default: fillText(b, m.body);
+  }
+}
+
+/** Долгое нажатие на телефоне открывает реакции и «Удалить» (обычное касание кружочка его включает). */
+function longPress(target: HTMLElement, open: () => void): void {
+  let timer = 0;
+  let fired = false;
+  let at = { x: 0, y: 0 };
+  const stop = () => clearTimeout(timer);
+  target.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    fired = false;
+    at = { x: e.clientX, y: e.clientY };
+    timer = window.setTimeout(() => { fired = true; open(); navigator.vibrate?.(8); }, 450);
+  });
+  target.addEventListener('pointermove', (e) => { if (Math.hypot(e.clientX - at.x, e.clientY - at.y) > 10) stop(); });
+  target.addEventListener('pointerup', stop);
+  target.addEventListener('pointercancel', stop);
+  target.addEventListener('click', (e) => {
+    if (!fired) return;
+    fired = false;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+}
+
 function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTMLElement {
   const channel = chat.kind === 'channel';
-  const own = m.user_id === meId() && m.kind === 'text';
+  const own = m.user_id === meId() && m.kind !== 'system';
   // В канале посты публикуются от имени канала и стоят слева.
   const mine = own && !channel;
-  const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}`);
+  const deleted = !!m.deleted_at;
+  // Стикер и кружочек — без «пузыря», время поверх картинки.
+  const bare = !deleted && (m.kind === 'sticker' || m.kind === 'video_note');
+  const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}${bare ? ' bare' : ''}`);
   row.dataset.id = m.id;
   if (U.openMsg === m.id) row.classList.add('open');
   const w: Who = channel ? { id: null, name: chat.name ?? 'Канал', avatar: null, color: null, brand: true } : who(m.user_id, m.kind);
@@ -392,8 +488,8 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   row.append(slot);
 
   const wrap = el('div', 'bwrap');
-  const deleted = !!m.deleted_at;
-  const b = el('div', `bubble${deleted ? ' deleted' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}`);
+  const kindCls = deleted ? '' : m.kind === 'voice' ? ' voice-msg' : bare ? ` media ${m.kind}` : '';
+  const b = el('div', `bubble${kindCls}${deleted ? ' deleted' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}`);
   if (first && !mine) {
     const a = el(w.id ? 'button' : 'span', 'author', w.name);
     if (a instanceof HTMLButtonElement) {
@@ -405,8 +501,8 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     b.append(a);
   }
   if (deleted) b.append('Сообщение удалено');
-  else fillText(b, m.body);
-  const meta = el('span', 'meta', timeLabel(ts(m.created_at)));
+  else messageBody(b, m);
+  const meta = el('span', `meta${bare ? ' pill' : ''}`, timeLabel(ts(m.created_at)));
   meta.title = new Date(ts(m.created_at)).toLocaleString('ru-RU');
   if (mine && !deleted && !m.failed) {
     const read = !m.pending && readUpTo >= ts(m.created_at);
@@ -468,12 +564,16 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
       act.append(del);
     }
     row.append(act);
-    b.addEventListener('click', (ev) => {
-      if ((ev.target as HTMLElement).closest('a,button') || !touchMQ.matches) return;
-      U.openMsg = U.openMsg === m.id ? null : m.id;
+    const toggleActions = (force?: boolean) => {
+      U.openMsg = (force ?? U.openMsg !== m.id) ? m.id : null;
       document.querySelectorAll('.row.open').forEach((r) => r.classList.remove('open'));
       if (U.openMsg) row.classList.add('open');
+    };
+    b.addEventListener('click', (ev) => {
+      if ((ev.target as HTMLElement).closest('a,button,.wave') || !touchMQ.matches) return;
+      toggleActions();
     });
+    longPress(b, () => toggleActions(true));
   }
   row.append(wrap);
   return row;
@@ -521,7 +621,7 @@ function renderFeed(): void {
       inner.append(el('div', 'day', dayLabel(t)));
       prev = null;
     }
-    const sameAuthor = c.kind === 'channel' || (prev?.user_id === m.user_id && prev?.kind === m.kind);
+    const sameAuthor = c.kind === 'channel' || (prev?.user_id === m.user_id && (prev.kind === 'system') === (m.kind === 'system'));
     const first = !prev || !sameAuthor || t - ts(prev.created_at) > 5 * 60 * 1000;
     inner.append(renderMsg(m, first, readUpTo, c));
     prev = m;
@@ -568,6 +668,11 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
   if (S.cur !== id) {
     if (S.cur) U.drafts.set(S.cur, inp.value);
     stopTyping();
+    recUI?.cancel();
+    closeStickers();
+    stopVoice();
+    dropNotes(id);
+    U.stickerImgs.clear();
     S.cur = id;
     U.stick = true;
     U.openMsg = null;
@@ -590,6 +695,9 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
 
 function backToList(fromHistory = false): void {
   stopTyping();
+  recUI?.cancel();
+  closeStickers();
+  stopVoice();
   document.body.classList.remove('chat-open');
   if (!wideMQ.matches) joinChatChannel(null);
   if (!fromHistory && history.state?.skamChat) history.back();
@@ -633,8 +741,14 @@ function autosize(): void {
   updateSendBtn();
 }
 
+/** Есть текст — кнопка «Отправить», пусто — микрофон/кружочек (как в Telegram). */
 function updateSendBtn(): void {
-  $<HTMLButtonElement>('sendBtn').disabled = !currentChat() || !$<HTMLTextAreaElement>('input').value.trim();
+  const has = !!$<HTMLTextAreaElement>('input').value.trim();
+  const sendBtn = $<HTMLButtonElement>('sendBtn');
+  sendBtn.disabled = !currentChat() || !has;
+  sendBtn.hidden = !has;
+  $('recBtn').hidden = has;
+  updateSuggest();
 }
 
 let typingIdle: number | undefined;
@@ -666,6 +780,140 @@ async function send(): Promise<void> {
   } catch (e) {
     toast(errText(e, 'Сообщение не отправилось. Нажмите «Повторить».'));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Стикеры, голосовые и кружочки
+// ---------------------------------------------------------------------------
+
+function stickerButton(s: Sticker, cls: string, onPick: (s: Sticker) => void): HTMLButtonElement {
+  const b = button(cls, null, () => onPick(s));
+  const img = el('img');
+  img.src = stickerUrl(s.ref);
+  img.alt = '';
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.draggable = false;
+  b.append(img);
+  b.title = `${s.label} ${s.emoji}`;
+  b.setAttribute('aria-label', `Стикер «${s.label}» ${s.emoji}`);
+  return b;
+}
+
+function renderStickerPanel(): void {
+  const panel = $('stickerPanel');
+  const tabs = el('div', 'sp-tabs');
+  tabs.setAttribute('aria-label', 'Наборы стикеров');
+  const body = el('div', 'sp-body');
+  const section = (id: string, title: string, list: Sticker[], badge?: string) => {
+    const sec = el('section', 'sp-sec');
+    sec.id = `sp-${id}`;
+    const h = el('h3', 'sp-title', title);
+    if (badge) h.append(el('span', 'sp-badge', badge));
+    const grid = el('div', 'sp-grid');
+    list.forEach((st) => grid.append(stickerButton(st, 'sp-item', (x) => void pickSticker(x))));
+    sec.append(h, grid);
+    body.append(sec);
+  };
+  const tab = (id: string, label: string, content: Node) => {
+    const t = button('sp-tab', null, () => {
+      document.getElementById(`sp-${id}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+    t.setAttribute('aria-label', label);
+    t.title = label;
+    t.append(content);
+    tabs.append(t);
+  };
+  const recent = recentStickers();
+  if (recent.length) {
+    section('recent', 'Недавние', recent);
+    tab('recent', 'Недавние', html('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'));
+  }
+  for (const p of PACKS) {
+    section(p.id, p.title, p.stickers, p.official ? 'официальные' : undefined);
+    const cover = el('img');
+    cover.src = stickerUrl(p.stickers[0].ref);
+    cover.alt = '';
+    tab(p.id, p.title, cover);
+  }
+  panel.replaceChildren(tabs, body);
+}
+
+function stickersOpen(): boolean {
+  return !$('stickerPanel').hidden;
+}
+
+function openStickers(): void {
+  if (!canPost(currentChat())) return;
+  renderStickerPanel();
+  $('stickerPanel').hidden = false;
+  $('stickerBtn').setAttribute('aria-expanded', 'true');
+  $('stickerBtn').classList.add('on');
+  hideSuggest();
+}
+
+function closeStickers(): void {
+  const p = document.getElementById('stickerPanel');
+  if (!p || p.hidden) return;
+  p.hidden = true;
+  $('stickerBtn').setAttribute('aria-expanded', 'false');
+  $('stickerBtn').classList.remove('on');
+}
+
+async function pickSticker(st: Sticker, fromSuggest = false): Promise<void> {
+  const id = S.cur;
+  if (!id || !canPost(currentChat())) return;
+  rememberSticker(st.ref);
+  closeStickers();
+  hideSuggest();
+  if (fromSuggest) {
+    const inp = $<HTMLTextAreaElement>('input');
+    inp.value = '';
+    U.drafts.delete(id);
+    autosize();
+    stopTyping();
+  }
+  U.stick = true;
+  try {
+    await sendSticker(id, st);
+  } catch (e) {
+    toast(errText(e, 'Стикер не отправился. Нажмите «Повторить».'));
+  }
+}
+
+// Подсказки: набрали одно эмодзи — предлагаем стикеры с ним.
+function hideSuggest(): void {
+  const box = document.getElementById('stickerSuggest');
+  if (box) box.hidden = true;
+}
+
+function updateSuggest(): void {
+  const box = document.getElementById('stickerSuggest');
+  const inp = document.getElementById('input') as HTMLTextAreaElement | null;
+  if (!box || !inp) return;
+  const list = canPost(currentChat()) && !stickersOpen() ? stickersForEmoji(inp.value.trim()) : [];
+  if (!list.length) { box.hidden = true; return; }
+  box.replaceChildren(...list.slice(0, 5).map((st) => {
+    const b = stickerButton(st, 'ss-item', (x) => void pickSticker(x, true));
+    b.setAttribute('role', 'option');
+    return b;
+  }));
+  box.hidden = false;
+}
+
+function sendRecording(chatId: string, kind: 'voice' | 'video_note', rec: Parameters<typeof sendRecorded>[2]): void {
+  if (chatId === S.cur) U.stick = true;
+  sendRecorded(chatId, kind, rec, setLocalMedia).catch((e) => {
+    toast(errText(e, kind === 'voice' ? 'Голосовое не отправилось. Нажмите «Повторить».' : 'Кружочек не отправился. Нажмите «Повторить».'));
+  });
+}
+
+/** Следующее голосовое после этого — играем подряд. */
+function nextVoiceAfter(cur: { id: string; chatId: string }): Msg | null {
+  const msgs = feedOf(cur.chatId).msgs;
+  const i = msgs.findIndex((x) => x.id === cur.id);
+  if (i < 0) return null;
+  return msgs.slice(i + 1).find((x) => x.kind === 'voice' && !x.deleted_at && x.media_path) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -908,8 +1156,9 @@ function renderProfile(): void {
   };
   const first = mk('profFirst', 'Имя', { maxLength: 40, autocomplete: 'given-name', value: keep('profFirst') ?? S.me.first_name ?? '' });
   const last = mk('profLast', 'Фамилия', { maxLength: 40, autocomplete: 'family-name', placeholder: 'необязательно', value: keep('profLast') ?? S.me.last_name ?? '' });
-  const user = mk('profUser', 'Имя пользователя', { maxLength: 33, autocomplete: 'username', placeholder: '@username', value: keep('profUser') ?? (S.me.username ? `@${S.me.username}` : '') });
-  const unHint = el('p', 'hint', 'По нему вас смогут найти и написать вам. Латиница, цифры и _, от 5 символов.');
+  const user = mk('profUser', 'Имя пользователя', { maxLength: 33, autocomplete: 'username', placeholder: '@username', required: true, value: keep('profUser') ?? (S.me.username ? `@${S.me.username}` : '') });
+  const UN_HINT = 'Обязательно. По нему вас находят и пишут вам. Латиница, цифры и _, от 5 символов.';
+  const unHint = el('p', 'hint', UN_HINT);
   user.f.append(unHint);
   const err = el('p', 'err');
   const save = button('btn primary', 'Сохранить', () => void saveProfile());
@@ -922,7 +1171,8 @@ function renderProfile(): void {
     clearTimeout(unTimer);
     const v = normUsername(user.i.value);
     unHint.classList.remove('ok', 'bad');
-    if (!v || v === S.me?.username) { unOk = true; unHint.textContent = 'По нему вас смогут найти и написать вам. Латиница, цифры и _, от 5 символов.'; return; }
+    if (!v) { unOk = false; unHint.textContent = 'Имя пользователя обязательно.'; unHint.classList.add('bad'); return; }
+    if (v === S.me?.username) { unOk = true; unHint.textContent = UN_HINT; return; }
     if (!USERNAME_RE.test(v)) { unOk = false; unHint.textContent = 'Только латиница, цифры и _, от 5 до 32 символов, первая — буква.'; unHint.classList.add('bad'); return; }
     unOk = false;
     unHint.textContent = 'Проверяем…';
@@ -941,10 +1191,11 @@ function renderProfile(): void {
     const ln = last.i.value.trim();
     const un = normUsername(user.i.value);
     if (!fn) { err.textContent = 'Введите имя — так вас увидят в чатах.'; first.i.focus(); return; }
-    if (un && (!USERNAME_RE.test(un) || !unOk)) { err.textContent = 'Выберите другое имя пользователя.'; user.i.focus(); return; }
+    if (!un) { err.textContent = 'Имя пользователя обязательно — по нему вас находят.'; user.i.focus(); return; }
+    if (!USERNAME_RE.test(un) || !unOk) { err.textContent = 'Выберите другое имя пользователя.'; user.i.focus(); return; }
     save.disabled = true;
     try {
-      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un || null });
+      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un });
       err.textContent = '';
       toast('Профиль сохранён');
     } catch (e) {
@@ -1274,6 +1525,7 @@ function wire(): void {
   listen($('headBtn'), 'click', openChatInfo);
   listen($('meBox'), 'click', () => openProfile());
   listen($('sendBtn'), 'click', () => void send());
+  listen($('stickerBtn'), 'click', () => { if (stickersOpen()) closeStickers(); else openStickers(); });
   const inp = $<HTMLTextAreaElement>('input');
   listen(inp, 'input', () => { autosize(); onType(); });
   listen(inp, 'keydown', (e: KeyboardEvent) => {
@@ -1293,6 +1545,13 @@ function wire(): void {
   });
   listen(document, 'visibilitychange', () => {
     if (document.visibilityState === 'visible') { renderSide(); markVisibleRead(); } else stopTyping();
+  });
+  listen(document, 'keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && stickersOpen()) { closeStickers(); $('stickerBtn').focus(); }
+  });
+  listen(document, 'pointerdown', (e: PointerEvent) => {
+    const t = e.target as HTMLElement;
+    if (stickersOpen() && !t.closest('#stickerPanel,#stickerBtn')) closeStickers();
   });
   listen(document, 'click', (e: MouseEvent) => {
     if (U.openMsg && !(e.target as HTMLElement).closest('.row')) {
@@ -1363,9 +1622,10 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
     return;
   }
   if (!mounted) return;
-  // Новый аккаунт (или старый без имени) — сначала «Создание аккаунта», как в Telegram.
-  if (!S.me?.first_name) {
-    mountRegister(root, () => { if (mounted) void mountShell(root); });
+  // Новый аккаунт (или старый без имени или @username) — сначала «Создание аккаунта», как в Telegram.
+  // @username обязателен: без него база не даст писать сообщения.
+  if (!S.me?.first_name || !S.me?.username) {
+    mountRegister(root, () => { if (mounted) void mountShell(root); }, { existing: !!S.me?.first_name });
     return;
   }
   await mountShell(root);
@@ -1374,6 +1634,21 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
 async function mountShell(root: HTMLElement): Promise<void> {
   root.replaceChildren(html(SHELL));
   wire();
+  setVoiceQueue(nextVoiceAfter);
+  recUI = mountRecorder({
+    btn: $<HTMLButtonElement>('recBtn'),
+    composer: $('composer'),
+    bar: $('recBar'),
+    stage: $('recStage'),
+    chat: () => (S.cur && canPost(currentChat()) ? S.cur : null),
+    send: sendRecording,
+    activity: (kind) => {
+      if (!isConversation(currentChat())) return;
+      if (kind) sendTyping(true, kind);
+      else sendTyping(false);
+    },
+  });
+  unsubs.push(() => { recUI?.destroy(); recUI = null; });
   S.visibleChat = () => (S.cur && convVisible() && document.visibilityState === 'visible' ? S.cur : null);
   unsubs.push(
     on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
@@ -1402,6 +1677,9 @@ async function mountShell(root: HTMLElement): Promise<void> {
 export function unmountApp(): void {
   mounted = false;
   stopTyping();
+  stopVoice();
+  dropNotes(null);
+  U.stickerImgs.clear();
   void stopRealtime();
   unsubs.forEach((f) => f());
   unsubs = [];

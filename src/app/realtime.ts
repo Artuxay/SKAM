@@ -67,7 +67,7 @@ function onMessageInsert(m: Message): void {
     c.unread += 1;
   }
   bumpChat(m);
-  if (m.user_id && S.typing.delete(m.user_id)) emit('head');
+  if (m.user_id && S.typing.delete(m.user_id)) { S.typingWhat.delete(m.user_id); emit('head'); }
   void ensureProfiles([m.user_id]);
   emit('chats', 'feed');
 }
@@ -246,7 +246,7 @@ export async function startRealtime(onStatus: (ok: boolean) => void): Promise<vo
   typingSweep = window.setInterval(() => {
     const now = Date.now();
     let changed = false;
-    S.typing.forEach((until, uid) => { if (until < now) { S.typing.delete(uid); changed = true; } });
+    S.typing.forEach((until, uid) => { if (until < now) { S.typing.delete(uid); S.typingWhat.delete(uid); changed = true; } });
     if (changed) emit('head');
   }, 1500);
 }
@@ -279,6 +279,7 @@ export function joinChatChannel(chatId: string | null): void {
   chatTopicId = chatId;
   S.inChat.clear();
   S.typing.clear();
+  S.typingWhat.clear();
   emit('head');
   if (!chatId) return;
   chatChannel = channel(
@@ -293,8 +294,15 @@ export function joinChatChannel(chatId: string | null): void {
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         const uid = typeof payload?.user_id === 'string' ? payload.user_id : null;
         if (chatTopicId !== chatId || !uid || uid === meId()) return;
-        if (payload.typing) S.typing.set(uid, Date.now() + TYPING_TTL);
-        else S.typing.delete(uid);
+        if (payload.typing) {
+          S.typing.set(uid, Date.now() + TYPING_TTL);
+          // Старые клиенты action не присылают — тогда это обычное «печатает…».
+          if (payload.action === 'voice' || payload.action === 'video_note') S.typingWhat.set(uid, payload.action);
+          else S.typingWhat.delete(uid);
+        } else {
+          S.typing.delete(uid);
+          S.typingWhat.delete(uid);
+        }
         void ensureProfiles([uid]);
         emit('head');
       }),
@@ -304,13 +312,19 @@ export function joinChatChannel(chatId: string | null): void {
 
 let typingOn = false;
 let typingSentAt = 0;
-export function sendTyping(on: boolean): void {
+let typingAction: TypingAction = 'text';
+export type TypingAction = 'text' | 'voice' | 'video_note';
+/** «печатает…», «записывает голосовое…» или «записывает кружочек…». */
+export function sendTyping(on: boolean, action: TypingAction = 'text'): void {
   if (!chatChannel) { typingOn = false; return; }
   const now = Date.now();
-  // Повторяем «печатает» раз в 3 секунды, пока человек набирает текст.
-  if (on && typingOn && now - typingSentAt < 3000) return;
+  // Повторяем раз в 3 секунды, пока человек набирает текст или записывает.
+  if (on && typingOn && action === typingAction && now - typingSentAt < 3000) return;
   if (!on && !typingOn) return;
   typingOn = on;
+  typingAction = action;
   typingSentAt = now;
-  void chatChannel.send({ type: 'broadcast', event: 'typing', payload: { user_id: meId(), typing: on } });
+  const payload: Record<string, unknown> = { user_id: meId(), typing: on };
+  if (on && action !== 'text') payload.action = action;
+  void chatChannel.send({ type: 'broadcast', event: 'typing', payload });
 }

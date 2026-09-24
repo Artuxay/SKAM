@@ -71,15 +71,34 @@ export type Database = {
           id: string;
           chat_id: string;
           user_id: string | null;
-          kind: 'text' | 'system';
+          kind: MessageKind;
+          /** Текст; у стикера — его эмодзи; у голосового и кружочка — пусто. */
           body: string;
           created_at: string;
           deleted_at: string | null;
+          /** Стикер: «набор/стикер», например dove/hi. */
+          sticker: string | null;
+          /** Голосовое или кружочек: путь в приватном бакете media — <чат>/<автор>/<uuid>.<расширение>. */
+          media_path: string | null;
+          media_mime: string | null;
+          duration_ms: number | null;
+          /** Громкость голосового: до 100 значений 0–100. */
+          waveform: number[] | null;
+          /** Поля шифрованных сообщений и вложений (миграция e2e_attachments) — этот клиент их пока не создаёт. */
+          enc: string | null;
+          key_id: string | null;
+          files: Json | null;
         };
         Insert: {
           id?: string;
           chat_id: string;
           body: string;
+          kind?: 'text' | 'sticker' | 'voice' | 'video_note';
+          sticker?: string | null;
+          media_path?: string | null;
+          media_mime?: string | null;
+          duration_ms?: number | null;
+          waveform?: number[] | null;
         };
         Update: never;
         Relationships: [];
@@ -120,9 +139,12 @@ export type Database = {
           last_id: string | null;
           last_body: string | null;
           last_user_id: string | null;
-          last_kind: 'text' | 'system' | null;
+          last_kind: MessageKind | null;
           last_at: string | null;
           last_deleted: boolean | null;
+          last_enc?: string | null;
+          last_key_id?: string | null;
+          last_files?: Json | null;
         }[];
       };
       create_chat: { Args: { p_name: string; p_emoji?: string }; Returns: ChatRow };
@@ -156,6 +178,8 @@ export type Database = {
 };
 
 export type ReactionKey = 'like' | 'lol' | 'fire' | 'wow' | 'clown';
+/** text/system — текст; sticker, voice (голосовое), video_note (кружочек); e2e и media — из миграции шифрования. */
+export type MessageKind = 'text' | 'system' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media';
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
 export type Profile = Tables<'profiles'>;
 export type Chat = Tables<'chats'>;

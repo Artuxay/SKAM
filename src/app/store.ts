@@ -3,8 +3,15 @@ import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type { Database, Member, Message, MyChat, Profile, Reaction, ReactionKey } from '../lib/database.types';
 import { uuid } from '../lib/dom';
+import type { Sticker } from '../lib/stickers';
 
-export type Msg = Message & { pending?: boolean; failed?: boolean };
+export type Msg = Message & {
+  pending?: boolean;
+  failed?: boolean;
+  /** Голосовое или кружочек, записанные здесь: файл, пока он не загружен в хранилище. */
+  blob?: Blob;
+  uploaded?: boolean;
+};
 export type Feed = { msgs: Msg[]; loaded: boolean; hasMore: boolean; loadingOlder: boolean; error: boolean };
 
 export const PAGE = 50;
@@ -24,6 +31,8 @@ export const S = {
   members: new Map<string, Member[]>(),
   inChat: new Set<string>(),
   typing: new Map<string, number>(),
+  /** Кто сейчас записывает голосовое или кружочек (вместо «печатает…»). */
+  typingWhat: new Map<string, 'voice' | 'video_note'>(),
   /** UI сообщает, какой чат сейчас реально виден пользователю (для непрочитанных). */
   visibleChat: (): string | null => null,
 };
@@ -72,6 +81,7 @@ export function resetState(): void {
   S.members.clear();
   S.inChat.clear();
   S.typing.clear();
+  S.typingWhat.clear();
   listeners.clear();
   pending.clear();
 }
@@ -130,7 +140,7 @@ export function putProfile(p: Profile): void {
   else emit('chats', 'feed', 'head', 'online', 'members', 'me');
 }
 
-export type ProfileFields = { first_name: string; last_name: string | null; username: string | null };
+export type ProfileFields = { first_name: string; last_name: string | null; username: string };
 
 export async function updateMyProfile(fields: ProfileFields): Promise<void> {
   const { data, error } = await sb.from('profiles').update(fields).eq('id', meId()).select().single();
@@ -465,14 +475,59 @@ export async function loadOlder(chatId: string): Promise<void> {
   }
 }
 
-async function pushMessage(m: Msg): Promise<void> {
-  const { data, error } = await sb.from('messages').insert({ id: m.id, chat_id: m.chat_id, body: m.body }).select().single();
-  if (error && error.code !== '23505') {
-    m.pending = false;
-    m.failed = true;
-    emit('feed');
-    throw error;
+/** Черновик сообщения со всеми колонками (для мгновенного показа до ответа сервера). */
+function draftMessage(chatId: string, fields: Partial<Msg> & Pick<Message, 'kind' | 'body'>): Msg {
+  return {
+    id: uuid(),
+    chat_id: chatId,
+    user_id: meId(),
+    created_at: new Date().toISOString(),
+    deleted_at: null,
+    sticker: null,
+    media_path: null,
+    media_mime: null,
+    duration_ms: null,
+    waveform: null,
+    enc: null,
+    key_id: null,
+    files: null,
+    pending: true,
+    ...fields,
+  };
+}
+
+type Insert = Database['public']['Tables']['messages']['Insert'];
+
+function insertRow(m: Msg): Insert {
+  const row: Insert = { id: m.id, chat_id: m.chat_id, body: m.body };
+  if (m.kind === 'sticker') Object.assign(row, { kind: 'sticker', sticker: m.sticker });
+  if (m.kind === 'voice' || m.kind === 'video_note') {
+    Object.assign(row, {
+      kind: m.kind, media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform,
+    });
   }
+  return row;
+}
+
+function failed(m: Msg): void {
+  m.pending = false;
+  m.failed = true;
+  emit('feed');
+}
+
+async function pushMessage(m: Msg): Promise<void> {
+  // Голосовое и кружочек: сначала файл в хранилище, потом сообщение со ссылкой на него.
+  if (m.blob && m.media_path && !m.uploaded) {
+    const up = await sb.storage.from('media').upload(m.media_path, m.blob, {
+      contentType: m.media_mime ?? undefined, cacheControl: '31536000', upsert: false,
+    });
+    // «Уже существует» — файл загрузился при прошлой попытке.
+    const dup = up.error && /exists|duplicate/i.test(up.error.message);
+    if (up.error && !dup) { failed(m); throw up.error; }
+    m.uploaded = true;
+  }
+  const { data, error } = await sb.from('messages').insert(insertRow(m)).select().single();
+  if (error && error.code !== '23505') { failed(m); throw error; }
   if (data) {
     upsertMessage(data);
     bumpChat(data);
@@ -482,21 +537,37 @@ async function pushMessage(m: Msg): Promise<void> {
   emit('feed', 'chats');
 }
 
-export async function sendMessage(chatId: string, text: string): Promise<void> {
-  const m: Msg = {
-    id: uuid(),
-    chat_id: chatId,
-    user_id: meId(),
-    kind: 'text',
-    body: text,
-    created_at: new Date().toISOString(),
-    deleted_at: null,
-    pending: true,
-  };
+async function post(m: Msg): Promise<void> {
   upsertMessage(m);
   bumpChat(m);
   emit('feed', 'chats');
   await pushMessage(m);
+}
+
+export async function sendMessage(chatId: string, text: string): Promise<void> {
+  await post(draftMessage(chatId, { kind: 'text', body: text }));
+}
+
+export async function sendSticker(chatId: string, s: Sticker): Promise<void> {
+  await post(draftMessage(chatId, { kind: 'sticker', body: s.emoji, sticker: s.ref }));
+}
+
+export type Recorded = { blob: Blob; mime: string; ext: string; durationMs: number; waveform: number[] | null };
+
+/** Отправить голосовое или кружочек. onLocal получает путь файла — чтобы сразу играть его локальную копию. */
+export async function sendRecorded(chatId: string, kind: 'voice' | 'video_note', rec: Recorded,
+  onLocal?: (path: string, blob: Blob) => void): Promise<void> {
+  const path = `${chatId}/${meId()}/${uuid()}.${rec.ext}`;
+  onLocal?.(path, rec.blob);
+  await post(draftMessage(chatId, {
+    kind,
+    body: '',
+    media_path: path,
+    media_mime: rec.mime,
+    duration_ms: Math.round(rec.durationMs),
+    waveform: rec.waveform,
+    blob: rec.blob,
+  }));
 }
 
 export async function retryMessage(m: Msg): Promise<void> {
@@ -509,15 +580,22 @@ export async function retryMessage(m: Msg): Promise<void> {
 export function discardMessage(m: Msg): void {
   const f = feedOf(m.chat_id);
   f.msgs = f.msgs.filter((x) => x.id !== m.id);
+  // Файл успел загрузиться, а сообщение — нет: не оставляем его в хранилище.
+  if (m.uploaded && m.media_path) void sb.storage.from('media').remove([m.media_path]).catch(() => {});
   emit('feed');
   reloadChatsSoon();
 }
 
 export async function deleteMessage(m: Msg): Promise<void> {
-  const before = { body: m.body, deleted_at: m.deleted_at };
+  const before = {
+    body: m.body, deleted_at: m.deleted_at, sticker: m.sticker, media_path: m.media_path, media_mime: m.media_mime,
+    duration_ms: m.duration_ms, waveform: m.waveform,
+  };
   const reacts = S.reactions.get(m.id);
-  m.body = '';
-  m.deleted_at = new Date().toISOString();
+  Object.assign(m, {
+    body: '', deleted_at: new Date().toISOString(), sticker: null, media_path: null, media_mime: null,
+    duration_ms: null, waveform: null,
+  });
   S.reactions.delete(m.id);
   bumpChat(m);
   emit('feed', 'chats');
@@ -529,6 +607,8 @@ export async function deleteMessage(m: Msg): Promise<void> {
     emit('feed', 'chats');
     throw error;
   }
+  // Файл голосового или кружочка удаляет автор (база хранит только ссылку на него).
+  if (before.media_path) void sb.storage.from('media').remove([before.media_path]).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
