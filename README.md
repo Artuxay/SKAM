@@ -26,6 +26,10 @@ cp .env.example .env      # впишите URL проекта и publishable key
 npm run dev               # http://localhost:5173
 ```
 
+### Без Node.js (Windows)
+
+Если сайт уже собран и в проекте есть папка `dist`, дважды щёлкните `start-skam.cmd`. Запустится маленький сервер на PowerShell (`scripts/serve.ps1`) и откроется http://localhost:5173. Окно не закрывайте, пока пользуетесь мессенджером. Ключи Supabase при этом уже вшиты в сборку, поэтому `.env` не нужен.
+
 | Команда | Что делает |
 | --- | --- |
 | `npm run dev` | dev-сервер с горячей перезагрузкой |
@@ -102,3 +106,7 @@ public/                     манифест, иконки, service worker
 ```
 
 Прототип, из которого вырос дизайн, — `skam.html`.
+
+## Лицензия
+
+GPL-3.0 — см. [LICENSE](LICENSE).
