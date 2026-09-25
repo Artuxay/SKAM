@@ -7,6 +7,13 @@ interface ImportMetaEnv {
   readonly VITE_EMAIL_OTP_LENGTH?: string;
   /** Длина кода из SMS, по умолчанию 6. */
   readonly VITE_SMS_OTP_LENGTH?: string;
+  /**
+   * Необязательный TURN-сервер для звонков (через запятую, например turn:turn.example.com:3478,turns:turn.example.com:5349).
+   * Без него звонки идут напрямую; в сетях, где напрямую не пробиться (некоторые мобильные операторы), нужен TURN.
+   */
+  readonly VITE_TURN_URL?: string;
+  readonly VITE_TURN_USERNAME?: string;
+  readonly VITE_TURN_CREDENTIAL?: string;
 }
 
 interface ImportMeta {

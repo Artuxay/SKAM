@@ -1,12 +1,14 @@
 // Состояние приложения и работа с данными Supabase.
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
-import type { Attachment, Database, Member, Message, MessageKind, MyChat, Profile, Reaction, ReactionKey } from '../lib/database.types';
+import type {
+  Attachment, Database, Forward, Member, Message, MessageKind, MyChat, Profile, Reaction, ReactionKey,
+} from '../lib/database.types';
 import { uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
 import * as e2e from './e2e';
 import {
-  type Prepared, type Sealed, registerSealed, removeFiles, sealBlob, sealPrepared, seedUrl, uploadPart,
+  type Prepared, type Sealed, cachedUrl, registerSealed, removeFiles, sealBlob, sealPrepared, seedUrl, uploadPart,
 } from './attach';
 
 /** Что показывать в пузыре: текст и вложения (для зашифрованных — после расшифровки). */
@@ -30,7 +32,15 @@ export type Msg = Message & {
   upload?: Upload;
   /** Локальные превью вложений, пока сообщение отправляется. */
   local?: Map<string, string>;
+  /** Слепок сообщения, на которое ответили (у зашифрованных — из шифротекста). */
+  replySnap?: ReplySnap | null;
 };
+
+/** Как выглядело сообщение, на которое ответили: автор, вид и коротко текст. */
+export type ReplySnap = { uid: string | null; k: MessageKind; text: string };
+
+/** Ответить или переслать при отправке. */
+export type SendOpts = { reply?: Msg | null; fwd?: Forward | null };
 
 /** Вид сообщения для показа: у зашифрованного — то, что внутри. */
 export function viewKind(m: Msg): MessageKind {
@@ -62,6 +72,10 @@ export const S = {
   typingWhat: new Map<string, 'voice' | 'video_note'>(),
   /** Расшифрованные последние сообщения для списка чатов (по id сообщения); 'locked' — ключа нет. */
   previews: new Map<string, Preview | 'locked'>(),
+  /** Есть ли живое соединение Realtime (иначе всё подтягивается опросом). */
+  live: false,
+    /** Сообщения, на которые отвечают, но которых нет в загруженной ленте (для цитат). */
+  quoted: new Map<string, Msg | 'missing'>(),
   /** UI сообщает, какой чат сейчас реально виден пользователю (для непрочитанных). */
   visibleChat: (): string | null => null,
 };
@@ -74,7 +88,7 @@ export function meId(): string {
 // События → перерисовка (склеиваем несколько изменений за один тик)
 // ---------------------------------------------------------------------------
 
-export type Evt = 'chats' | 'feed' | 'head' | 'online' | 'me' | 'members';
+export type Evt = 'chats' | 'feed' | 'head' | 'online' | 'me' | 'members' | 'call';
 const listeners = new Map<Evt, Set<() => void>>();
 const pending = new Set<Evt>();
 let scheduled = false;
@@ -112,6 +126,7 @@ export function resetState(): void {
   S.typing.clear();
   S.typingWhat.clear();
   S.previews.clear();
+  S.quoted.clear();
   e2e.reset();
   listeners.clear();
   pending.clear();
@@ -523,10 +538,49 @@ function cleanFiles(list: unknown): Attachment[] {
   return out;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SNAP_KINDS = new Set<MessageKind>(['text', 'system', 'sticker', 'voice', 'video_note', 'e2e', 'media']);
+
+/** «Переслано от …» из чужого сообщения: только имя, id и время, остальное отбрасываем. */
+export function cleanFwd(raw: unknown): Forward | null {
+  const f = raw as Record<string, unknown> | null;
+  if (!f || typeof f !== 'object' || typeof f.name !== 'string' || !f.name.trim()) return null;
+  const out: Forward = { name: f.name.trim().slice(0, 128) };
+  if (typeof f.from === 'string' && UUID_RE.test(f.from)) out.from = f.from;
+  if (f.kind === 'channel' || f.kind === 'bot') out.kind = f.kind;
+  if (typeof f.at === 'string' && !Number.isNaN(Date.parse(f.at))) out.at = f.at;
+  return out;
+}
+
+function cleanReply(raw: unknown): { id: string; snap: ReplySnap | null } | null {
+  const r = raw as Record<string, unknown> | null;
+  if (!r || typeof r !== 'object' || typeof r.id !== 'string' || !UUID_RE.test(r.id)) return null;
+  const k = SNAP_KINDS.has(r.k as MessageKind) ? (r.k as MessageKind) : 'text';
+  const snap: ReplySnap = {
+    uid: typeof r.uid === 'string' && UUID_RE.test(r.uid) ? r.uid : null,
+    k,
+    text: typeof r.text === 'string' ? r.text.slice(0, 200) : '',
+  };
+  return { id: r.id, snap };
+}
+
+/** Короткий слепок сообщения для цитаты в ответе. */
+export function snapOf(m: Msg): ReplySnap {
+  const view = viewKind(m);
+  const text = view === 'sticker' ? m.body : (m.content?.text ?? m.body);
+  const files = m.content?.files ?? [];
+  const k: MessageKind = view === 'e2e' ? (files.length ? 'media' : 'text') : view;
+  return { uid: m.user_id, k, text: (text || files[0]?.name || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+}
+
 /** Разложить расшифрованное содержимое по полям сообщения (только в памяти). */
 function applyPayload(m: Msg, p: e2e.Payload): void {
   m.content = { text: typeof p.text === 'string' ? p.text.slice(0, 4000) : '', files: cleanFiles(p.files) };
   m.view = 'e2e';
+  const reply = cleanReply(p.reply);
+  m.reply_to = reply?.id ?? null;
+  m.replySnap = reply?.snap ?? null;
+  m.fwd = cleanFwd(p.fwd);
   if (typeof p.sticker === 'string' && STICKER_RE.test(p.sticker)) {
     m.view = 'sticker';
     m.sticker = p.sticker;
@@ -561,6 +615,7 @@ export async function prepareMsg(m: Msg): Promise<Msg> {
   } else {
     m.content = { text: m.body, files: [] };
   }
+  if (m.kind !== 'e2e') m.fwd = cleanFwd(m.fwd);
   return m;
 }
 
@@ -652,6 +707,9 @@ function draftMessage(chatId: string, fields: Partial<Msg> & Pick<Message, 'kind
     enc: null,
     key_id: null,
     files: null,
+    reply_to: null,
+    fwd: null,
+    call_id: null,
     pending: true,
     ...fields,
   };
@@ -673,6 +731,11 @@ async function insertRow(m: Msg): Promise<Insert> {
   const content = m.content ?? { text: m.body, files: [] };
   if (m.kind === 'e2e') {
     const payload: e2e.Payload = { v: 1 };
+    if (m.reply_to) {
+      const snap = m.replySnap ?? { uid: null, k: 'text' as MessageKind, text: '' };
+      payload.reply = { id: m.reply_to, uid: snap.uid ?? undefined, k: snap.k, text: snap.text };
+    }
+    if (m.fwd) payload.fwd = m.fwd;
     if (view === 'sticker') {
       payload.sticker = m.sticker ?? undefined;
       if (m.body) payload.text = m.body;
@@ -687,15 +750,19 @@ async function insertRow(m: Msg): Promise<Insert> {
     const { enc, key_id } = await e2e.encryptMessage(m.chat_id, m.id, payload);
     return { id: m.id, chat_id: m.chat_id, body: '', kind: 'e2e', enc, key_id };
   }
-  if (view === 'sticker') return { id: m.id, chat_id: m.chat_id, body: m.body, kind: 'sticker', sticker: m.sticker };
+  // Открытые чаты (канал, бот): ответ и пересылка — в отдельных колонках.
+  const extra: Pick<Insert, 'reply_to' | 'fwd'> = {};
+  if (m.reply_to) extra.reply_to = m.reply_to;
+  if (m.fwd) extra.fwd = m.fwd;
+  if (view === 'sticker') return { id: m.id, chat_id: m.chat_id, body: m.body, kind: 'sticker', sticker: m.sticker, ...extra };
   if (view === 'voice' || view === 'video_note') {
     return {
       id: m.id, chat_id: m.chat_id, body: '', kind: view,
-      media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform,
+      media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform, ...extra,
     };
   }
-  if (content.files.length) return { id: m.id, chat_id: m.chat_id, body: content.text, kind: 'media', files: content.files };
-  return { id: m.id, chat_id: m.chat_id, body: content.text };
+  if (content.files.length) return { id: m.id, chat_id: m.chat_id, body: content.text, kind: 'media', files: content.files, ...extra };
+  return { id: m.id, chat_id: m.chat_id, body: content.text, ...extra };
 }
 
 let progressHook: (m: Msg) => void = () => {};
@@ -755,6 +822,7 @@ async function pushMessage(m: Msg): Promise<void> {
         content: m.content ?? null, view: m.view, locked: null,
         sticker: m.sticker, media_path: m.media_path, media_mime: m.media_mime, duration_ms: m.duration_ms, waveform: m.waveform,
         body: m.kind === 'e2e' ? m.body : data.body,
+        reply_to: m.reply_to, replySnap: m.replySnap ?? null, fwd: m.fwd,
       });
       upsertMessage(saved);
       bumpChat(saved);
@@ -781,7 +849,11 @@ async function post(m: Msg): Promise<void> {
 }
 
 /** Черновик: зашифрованное сообщение имеет вид e2e, а что внутри — в view. */
-function draftFor(chatId: string, view: MessageKind, fields: Partial<Msg> & { body: string }): Msg {
+function draftFor(chatId: string, view: MessageKind, fields: Partial<Msg> & { body: string }, opts: SendOpts = {}): Msg {
+  // Отвечать можно только на сообщение этого же чата.
+  const reply = opts.reply && opts.reply.chat_id === chatId && !opts.reply.pending ? opts.reply : null;
+  if (reply) Object.assign(fields, { reply_to: reply.id, replySnap: snapOf(reply) });
+  if (opts.fwd) fields.fwd = opts.fwd;
   if (!secretFor(chatId)) return draftMessage(chatId, { ...fields, kind: view, view });
   // Текст и вложения внутри шифротекста показываются как «e2e» — так же, как после расшифровки.
   return draftMessage(chatId, { ...fields, kind: 'e2e', view: view === 'text' || view === 'media' ? 'e2e' : view });
@@ -791,8 +863,8 @@ function draftFor(chatId: string, view: MessageKind, fields: Partial<Msg> & { bo
  * Отправить сообщение. В личных чатах и группах оно шифруется, вложения — всегда.
  * files — подготовленные вложения (одно сообщение — до 10 штук, как альбом в Telegram).
  */
-export async function sendMessage(chatId: string, text: string, files: Prepared[] = []): Promise<void> {
-  const m = draftFor(chatId, files.length ? 'media' : 'text', { body: text, content: { text, files: [] } });
+export async function sendMessage(chatId: string, text: string, files: Prepared[] = [], opts: SendOpts = {}): Promise<void> {
+  const m = draftFor(chatId, files.length ? 'media' : 'text', { body: text, content: { text, files: [] } }, opts);
   if (files.length) {
     m.local = new Map(files.filter((p) => p.preview).map((p) => [p.id, p.preview!]));
     // Сначала показываем сообщение с локальными превью, потом шифруем и грузим.
@@ -821,15 +893,15 @@ export async function sendMessage(chatId: string, text: string, files: Prepared[
   await post(m);
 }
 
-export async function sendSticker(chatId: string, s: Sticker): Promise<void> {
-  await post(draftFor(chatId, 'sticker', { body: s.emoji, sticker: s.ref, content: { text: s.emoji, files: [] } }));
+export async function sendSticker(chatId: string, s: Sticker, opts: SendOpts = {}): Promise<void> {
+  await post(draftFor(chatId, 'sticker', { body: s.emoji, sticker: s.ref, content: { text: s.emoji, files: [] } }, opts));
 }
 
 export type Recorded = { blob: Blob; mime: string; ext: string; durationMs: number; waveform: number[] | null };
 
 /** Отправить голосовое или кружочек. onLocal получает путь файла — чтобы сразу играть его локальную копию. */
 export async function sendRecorded(chatId: string, kind: 'voice' | 'video_note', rec: Recorded,
-  onLocal?: (path: string, blob: Blob) => void): Promise<void> {
+  onLocal?: (path: string, blob: Blob) => void, opts: SendOpts = {}): Promise<void> {
   // В зашифрованных чатах файл хранится как .bin — снаружи не видно даже его формата.
   const path = `${chatId}/${meId()}/${uuid()}.${secretFor(chatId) ? 'bin' : rec.ext}`;
   onLocal?.(path, rec.blob);
@@ -841,7 +913,7 @@ export async function sendRecorded(chatId: string, kind: 'voice' | 'video_note',
     waveform: rec.waveform,
     blob: rec.blob,
     content: { text: '', files: [] },
-  }));
+  }, opts));
 }
 
 export async function retryMessage(m: Msg): Promise<void> {
@@ -868,12 +940,14 @@ export async function deleteMessage(m: Msg): Promise<void> {
   const before = {
     body: m.body, deleted_at: m.deleted_at, sticker: m.sticker, media_path: m.media_path, media_mime: m.media_mime,
     duration_ms: m.duration_ms, waveform: m.waveform, content: m.content, view: m.view, enc: m.enc, key_id: m.key_id, files: m.files,
+    reply_to: m.reply_to, replySnap: m.replySnap, fwd: m.fwd,
   };
   const files = m.content?.files ?? [];
   const reacts = S.reactions.get(m.id);
   Object.assign(m, {
     body: '', deleted_at: new Date().toISOString(), sticker: null, media_path: null, media_mime: null,
     duration_ms: null, waveform: null, content: null, view: undefined, enc: null, key_id: null, files: null,
+    reply_to: null, replySnap: null, fwd: null,
   });
   S.reactions.delete(m.id);
   bumpChat(m);
@@ -929,6 +1003,127 @@ export async function toggleReaction(m: Msg, key: ReactionKey): Promise<void> {
       removeReaction(m.id, me, key);
       emit('feed');
       throw error;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ответы: сообщения, на которые ответили, но которых нет в загруженной ленте
+// ---------------------------------------------------------------------------
+
+const quoting = new Set<string>();
+
+/** Найти сообщение для цитаты: в ленте, среди догруженных или null (тогда догрузим). */
+export function quotedMsg(chatId: string, id: string): Msg | 'missing' | null {
+  const inFeed = S.feeds.get(chatId)?.msgs.find((x) => x.id === id);
+  if (inFeed) return inFeed;
+  return S.quoted.get(id) ?? null;
+}
+
+/** Догрузить (и расшифровать) сообщения, на которые отвечают, — чтобы показать цитату. */
+export async function loadQuoted(chatId: string, ids: string[]): Promise<void> {
+  const need = [...new Set(ids)].filter((id) => !S.quoted.has(id) && !quoting.has(id)
+    && !S.feeds.get(chatId)?.msgs.some((x) => x.id === id));
+  if (!need.length) return;
+  need.forEach((id) => quoting.add(id));
+  try {
+    const { data, error } = await sb.from('messages').select('*').eq('chat_id', chatId).in('id', need);
+    if (error) return;
+    const rows = data as Msg[];
+    await Promise.all(rows.map(prepareMsg));
+    rows.forEach((r) => S.quoted.set(r.id, r));
+    need.filter((id) => !rows.some((r) => r.id === id)).forEach((id) => S.quoted.set(id, 'missing'));
+    await ensureProfiles(rows.map((r) => r.user_id));
+  } finally {
+    need.forEach((id) => quoting.delete(id));
+  }
+  emit('feed');
+}
+
+/** Догружать историю, пока не найдётся сообщение (для перехода к оригиналу по цитате). */
+export async function loadUntil(chatId: string, id: string, maxPages = 40): Promise<boolean> {
+  const f = feedOf(chatId);
+  for (let i = 0; i < maxPages; i++) {
+    if (f.msgs.some((x) => x.id === id)) return true;
+    if (!f.hasMore) return false;
+    await loadOlder(chatId);
+  }
+  return f.msgs.some((x) => x.id === id);
+}
+
+// ---------------------------------------------------------------------------
+// Пересылка
+// ---------------------------------------------------------------------------
+
+/** Можно ли переслать сообщение: не удалено, расшифровано, не служебная запись о звонке. */
+export function canForward(m: Msg): boolean {
+  if (m.deleted_at || m.locked || m.pending || m.failed || m.kind === 'call') return false;
+  const view = viewKind(m);
+  if (view === 'voice' || view === 'video_note') return !!m.media_path;
+  return true;
+}
+
+/** «Переслано от …» для сообщения: сохраняем исходного автора, если его уже пересылали. */
+export function forwardOf(m: Msg): Forward {
+  if (m.fwd) return m.fwd;
+  const chat = S.chats.get(m.chat_id);
+  if (chat?.kind === 'channel') return { name: chat.name ?? 'Канал', kind: 'channel', at: m.created_at };
+  if (m.kind === 'system' || !m.user_id) return { name: 'СКАМ', kind: 'bot', at: m.created_at };
+  const p = S.profiles.get(m.user_id);
+  return { name: p?.name || 'Участник', from: m.user_id, kind: 'user', at: m.created_at };
+}
+
+const REC_EXT: Record<string, string> = {
+  'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'video/webm': 'webm', 'video/mp4': 'mp4',
+};
+
+/**
+ * Скопировать зашифрованный файл вложения в папку другого чата. Файл тот же, ключ тот же —
+ * он переезжает внутри нового сообщения. Скачивать и заново загружать ничего не нужно.
+ */
+async function copyAttachment(a: Attachment, chatId: string): Promise<Attachment> {
+  const move = async (from: string) => {
+    const to = `${chatId}/${meId()}/${uuid()}.bin`;
+    const { error } = await sb.storage.from('media').copy(from, to);
+    if (error) throw new Error('Не получилось скопировать файл — возможно, его удалили.');
+    const have = cachedUrl(from);
+    if (have) seedUrl(to, have);
+    return to;
+  };
+  const out: Attachment = { ...a, id: uuid(), path: await move(a.path) };
+  if (a.thumb) out.thumb = { ...a.thumb, path: await move(a.thumb.path) };
+  return out;
+}
+
+/**
+ * Переслать сообщения в чат (по порядку, как в Telegram). hideSender — без пометки «Переслано от …».
+ * getBlob отдаёт файл голосового или кружочка (расшифрованный): его отправляем заново — в чате-получателе
+ * он может шифроваться по-другому (или не шифроваться, если это канал).
+ */
+export async function forwardMessages(chatId: string, list: Msg[], hideSender: boolean,
+  io: { getBlob: (m: Msg) => Promise<Blob>; onLocal?: (path: string, blob: Blob) => void }): Promise<void> {
+  const msgs = list.filter(canForward).sort(cmp);
+  for (const src of msgs) {
+    const opts: SendOpts = { fwd: hideSender ? null : forwardOf(src) };
+    const view = viewKind(src);
+    if (view === 'sticker') {
+      await post(draftFor(chatId, 'sticker', { body: src.body, sticker: src.sticker, content: { text: src.body, files: [] } }, opts));
+    } else if (view === 'voice' || view === 'video_note') {
+      const blob = await io.getBlob(src);
+      const mime = src.media_mime ?? (view === 'voice' ? 'audio/webm' : 'video/webm');
+      await sendRecorded(chatId, view, {
+        blob, mime, ext: REC_EXT[mime] ?? 'webm', durationMs: Math.max(300, src.duration_ms ?? 0), waveform: src.waveform,
+      }, io.onLocal, opts);
+    } else {
+      const text = src.content?.text ?? src.body;
+      const files = src.content?.files ?? [];
+      if (files.length) {
+        const copied = await Promise.all(files.map((a) => copyAttachment(a, chatId)));
+        const m = draftFor(chatId, 'media', { body: text, content: { text, files: copied } }, opts);
+        await post(m);
+      } else if (text.trim()) {
+        await post(draftFor(chatId, 'text', { body: text, content: { text, files: [] } }, opts));
+      }
     }
   }
 }

@@ -28,6 +28,34 @@ export type Attachment = {
   thumb?: { path: string; w: number; h: number };
 };
 
+/** «Переслано от …»: имя автора оригинала, его id (если это человек) и время оригинала. */
+export type Forward = { name: string; from?: string; kind?: 'user' | 'channel' | 'bot'; at?: string };
+
+export type CallStatus = 'active' | 'ended' | 'missed' | 'declined' | 'cancelled';
+
+type CallRow = {
+  id: string;
+  chat_id: string;
+  started_by: string | null;
+  video: boolean;
+  created_at: string;
+  rung_at: string;
+  answered_at: string | null;
+  ended_at: string | null;
+  status: CallStatus;
+};
+
+export type CallMemberInfo = {
+  user_id: string;
+  state: 'in' | 'left' | 'declined';
+  device: string | null;
+  joined_at: string | null;
+  muted: boolean;
+  deafened: boolean;
+  camera: boolean;
+  screen: boolean;
+};
+
 type ChatRow = {
   id: string;
   kind: ChatKind;
@@ -114,6 +142,12 @@ export type Database = {
           key_id: string | null;
           /** Вложения для kind = 'media'. */
           files: Attachment[] | null;
+          /** Ответ на сообщение (только в чатах без E2E; в зашифрованных — внутри enc). */
+          reply_to: string | null;
+          /** «Переслано от …» (только в чатах без E2E). */
+          fwd: Forward | null;
+          /** Запись о звонке (kind = 'call'). */
+          call_id: string | null;
         };
         Insert: {
           id?: string;
@@ -128,7 +162,47 @@ export type Database = {
           enc?: string | null;
           key_id?: string | null;
           files?: Attachment[] | null;
+          reply_to?: string | null;
+          fwd?: Forward | null;
         };
+        Update: never;
+        Relationships: [];
+      };
+      calls: {
+        Row: CallRow;
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      call_members: {
+        Row: {
+          call_id: string;
+          user_id: string;
+          chat_id: string;
+          state: 'in' | 'left' | 'declined';
+          device: string | null;
+          joined_at: string | null;
+          left_at: string | null;
+          seen_at: string;
+          muted: boolean;
+          deafened: boolean;
+          camera: boolean;
+          screen: boolean;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      call_signals: {
+        Row: {
+          id: number;
+          call_id: string;
+          from_user: string;
+          to_user: string;
+          payload: string;
+          created_at: string;
+        };
+        Insert: { call_id: string; to_user: string; payload: string };
         Update: never;
         Relationships: [];
       };
@@ -211,6 +285,8 @@ export type Database = {
           last_enc: string | null;
           last_key_id: string | null;
           last_files: Attachment[] | null;
+          /** Итог звонка, если последнее сообщение — запись о звонке. */
+          last_call: { status: CallStatus; video: boolean; dur: number | null } | null;
         }[];
       };
       create_chat: { Args: { p_name: string; p_emoji?: string }; Returns: ChatRow };
@@ -246,6 +322,22 @@ export type Database = {
         Returns: { public_key: string; backup: string; salt: string; iterations: number }[];
       };
       update_key_backup: { Args: { p_backup: string; p_salt: string; p_iterations: number }; Returns: undefined };
+      call_start: { Args: { p_chat: string; p_video?: boolean; p_device?: string }; Returns: string };
+      call_join: { Args: { p_call: string; p_device?: string }; Returns: { user_id: string; joined_at: string }[] };
+      call_leave: { Args: { p_call: string; p_device?: string }; Returns: undefined };
+      call_decline: { Args: { p_call: string }; Returns: undefined };
+      call_ring: { Args: { p_call: string }; Returns: undefined };
+      call_ping: {
+        Args: { p_call: string; p_device?: string; p_muted?: boolean; p_deafened?: boolean; p_camera?: boolean; p_screen?: boolean };
+        Returns: 'ok' | 'ended' | 'replaced' | 'gone';
+      };
+      my_calls: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          id: string; chat_id: string; started_by: string | null; video: boolean; created_at: string; rung_at: string;
+          answered_at: string | null; ringing: boolean; server_now: string; members: CallMemberInfo[];
+        }[];
+      };
       e2e_pending: {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];
@@ -259,9 +351,10 @@ export type Database = {
 export type ReactionKey = 'like' | 'lol' | 'fire' | 'wow' | 'clown';
 /**
  * Вид сообщения: text/system — текст; sticker, voice (голосовое), video_note (кружочек);
- * e2e — зашифрованное (содержимое внутри enc); media — вложения там, где E2E нет (канал, бот).
+ * e2e — зашифрованное (содержимое внутри enc); media — вложения там, где E2E нет (канал, бот);
+ * call — запись о звонке (что со звонком — в calls).
  */
-export type MessageKind = 'text' | 'system' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media';
+export type MessageKind = 'text' | 'system' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media' | 'call';
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
 export type Profile = Tables<'profiles'>;
 export type Chat = Tables<'chats'>;
@@ -271,3 +364,7 @@ export type Reaction = Tables<'reactions'>;
 export type KeyShare = Tables<'chat_key_shares'>;
 export type UserKey = Tables<'user_keys'>;
 export type MyChat = Database['public']['Functions']['my_chats']['Returns'][number];
+export type Call = Tables<'calls'>;
+export type CallMember = Tables<'call_members'>;
+export type CallSignal = Tables<'call_signals'>;
+export type ActiveCall = Database['public']['Functions']['my_calls']['Returns'][number];

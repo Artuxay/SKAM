@@ -1,12 +1,18 @@
-<!-- Supabase → Authentication → Emails → Templates → «Magic Link». Тема письма: Код для входа в СКАМ: {{ .Token }} -->
+<!-- Supabase → Authentication → Emails → Templates → «Magic link or OTP». Тема письма: Код для входа в СКАМ / SKAM sign-in code: {{ .Token }} -->
 <div style="font-family:Arial,Helvetica,sans-serif;max-width:440px;margin:0 auto;padding:28px 24px;color:#0E0E10;background:#F4EFE6;border-radius:20px">
   <p style="margin:0 0 4px;font-size:13px;font-weight:bold;letter-spacing:2px;color:#B5400C">СКАМ</p>
   <h2 style="margin:0 0 14px;font-size:22px">Код для входа</h2>
   <p style="margin:0 0 10px;line-height:1.5">Введите этот код в СКАМ:</p>
   <p style="margin:0 0 22px;font-size:34px;font-weight:bold;letter-spacing:8px;font-family:'Courier New',monospace">{{ .Token }}</p>
   <p style="margin:0 0 12px;line-height:1.5">Или просто нажмите кнопку:</p>
-  <p style="margin:0 0 24px">
+  <p style="margin:0 0 20px">
     <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#0E0E10;color:#F4EFE6;text-decoration:none;font-weight:bold;padding:12px 22px;border-radius:999px">Войти в СКАМ</a>
   </p>
-  <p style="margin:0;color:#6E685E;font-size:13px;line-height:1.5">Никому не сообщайте этот код — даже если человек представляется сотрудником СКАМ. Если вы не пытались войти, просто проигнорируйте письмо.</p>
+  <p style="margin:0 0 22px;color:#6E685E;font-size:13px;line-height:1.5">Никому не сообщайте этот код — даже если человек представляется сотрудником СКАМ. Если вы не пытались войти, просто проигнорируйте письмо.</p>
+  <hr style="border:0;border-top:1px solid #DDD5C6;margin:0 0 18px">
+  <p style="margin:0 0 4px;font-size:13px;font-weight:bold;letter-spacing:2px;color:#B5400C">SKAM</p>
+  <h3 style="margin:0 0 10px;font-size:18px">Sign-in code</h3>
+  <p style="margin:0 0 10px;line-height:1.5">Enter the code above in SKAM: <b style="font-family:'Courier New',monospace;letter-spacing:2px">{{ .Token }}</b></p>
+  <p style="margin:0 0 12px;line-height:1.5">Or just <a href="{{ .ConfirmationURL }}" style="color:#B5400C;font-weight:bold">sign in with this link</a>.</p>
+  <p style="margin:0;color:#6E685E;font-size:13px;line-height:1.5">Never share this code — not even with someone who claims to work for SKAM. If you didn't try to sign in, just ignore this email.</p>
 </div>

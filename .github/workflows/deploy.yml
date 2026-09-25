@@ -41,6 +41,10 @@ jobs:
           # в Settings → Secrets and variables → Actions → Variables.
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || 'https://fsqbxvufqhghiwwzplpn.supabase.co' }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_2eHigjlaIAEiwjrgkL2xzg__mEZYBxW' }}
+          # Необязательно: TURN-сервер для звонков (см. README → «Настройка Supabase», п. 7).
+          VITE_TURN_URL: ${{ vars.VITE_TURN_URL }}
+          VITE_TURN_USERNAME: ${{ vars.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ vars.VITE_TURN_CREDENTIAL }}
 
       - uses: actions/upload-pages-artifact@v5
         with:

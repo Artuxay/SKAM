@@ -360,6 +360,10 @@ export type Payload = {
   files?: unknown[];
   sticker?: string;
   rec?: { kind: 'voice' | 'video_note'; path: unknown; key: unknown; mime: unknown; dur: unknown; wave: unknown };
+  /** Ответ: id сообщения, его автор и короткий слепок (цитата видна, даже если оригинал не загружен). */
+  reply?: { id: unknown; uid?: unknown; text?: unknown; k?: unknown };
+  /** «Переслано от …» — внутри шифротекста, сервер не знает, откуда переслали. */
+  fwd?: { name: unknown; from?: unknown; kind?: unknown; at?: unknown };
 };
 
 const msgAad = (chatId: string, msgId: string, userId: string) => `skam/msg/v1|${chatId}|${msgId}|${userId}`;
@@ -378,4 +382,37 @@ export async function decryptMessage(m: { id: string; chat_id: string; user_id: 
   const k = await chatKey(m.key_id);
   if (!k) throw new NoKeyError('no key');
   return openJson<Payload>(k.key, m.enc, msgAad(m.chat_id, m.id, m.user_id ?? ''));
+}
+
+// ---------------------------------------------------------------------------
+// Звонки: служебные сообщения WebRTC шифруются ключом чата
+// ---------------------------------------------------------------------------
+
+/**
+ * Ключ, которым участник звонка шифрует свои служебные сообщения (offer/answer/ICE).
+ * Сервер не знает ключа чата, поэтому не может подменить отпечатки DTLS и встать посередине.
+ */
+export type SignalKey = { id: string; chatId: string; key: CryptoKey };
+
+export async function signalKey(chatId: string): Promise<SignalKey> {
+  const k = await sendKey(chatId);
+  return { id: k.id, chatId, key: k.key };
+}
+
+const sigAad = (callId: string, from: string, to: string) => `skam/call/v1|${callId}|${from}|${to}`;
+
+export async function sealSignal(k: SignalKey, callId: string, to: string, value: unknown): Promise<string> {
+  if (!me) throw new Error('Шифрование не настроено');
+  return JSON.stringify({ k: k.id, e: await sealJson(k.key, value, sigAad(callId, me.userId, to)) });
+}
+
+/** Расшифровать служебное сообщение от участника звонка. Ключ должен быть ключом этого же чата. */
+export async function openSignal(payload: string, chatId: string, callId: string, from: string): Promise<unknown> {
+  if (!me) throw new Error('Шифрование не настроено');
+  const box = JSON.parse(payload) as { k?: unknown; e?: unknown };
+  if (typeof box.k !== 'string' || typeof box.e !== 'string') throw new Error('bad signal');
+  const k = await chatKey(box.k);
+  if (!k) throw new NoKeyError('no key');
+  if (k.chatId !== chatId) throw new Error('foreign key');
+  return openJson<unknown>(k.key, box.e, sigAad(callId, from, me.userId));
 }

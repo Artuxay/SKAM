@@ -1,7 +1,7 @@
 // Интерфейс мессенджера: список чатов, лента, композер и диалоги.
 import type { User } from '@supabase/supabase-js';
 import { avatarUrl, sb } from '../lib/supabase';
-import type { MyChat, ReactionKey } from '../lib/database.types';
+import type { Forward, MyChat, ReactionKey } from '../lib/database.types';
 import {
   $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, el, fillText, html,
   listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ,
@@ -16,13 +16,16 @@ import {
   normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
   SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, toggleReaction, totalUnread, ts,
   updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
+  canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
 } from './store';
 import { goOffline, joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
-import { dropNotes, setLocalMedia, setVoiceQueue, stopVoice, videoNoteEl, voiceEl } from './media';
+import { dropNotes, mediaBlob, setLocalMedia, setVoiceQueue, stopVoice, videoNoteEl, voiceEl } from './media';
 import { mountRecorder, type RecordUI } from './record-ui';
 import * as e2e from './e2e';
 import { MIN_PASSWORD, mountKeySetup, mountKeyUnlock, mountNoCrypto } from './keysetup';
-import { MAX_ALBUM, dropMediaUrls, type Prepared } from './attach';
+import { MAX_ALBUM, cachedUrl, dropMediaUrls, thumbUrl, type Prepared } from './attach';
+import * as calls from './calls';
+import { call, callPreview, callRow, mountCallUI, renderCallBtns, renderCalls } from './callui';
 import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
 } from './attachui';
@@ -39,6 +42,7 @@ const SHELL = `
     </header>
     <div class="banner" id="banner" role="status" hidden></div>
     <nav class="chat-list" id="chatList"></nav>
+    <div class="voice-panel" id="voicePanel" hidden></div>
     <footer class="side-foot">
       <button class="me" id="meBox" type="button" aria-label="Профиль и настройки"></button>
       <button class="icon-btn theme-btn" id="themeBtn" type="button"></button>
@@ -65,7 +69,10 @@ const SHELL = `
             <span class="conv-sub" id="convSub" aria-live="polite"></span>
           </span>
         </button>
+        <div class="call-btns" id="callBtns" hidden></div>
       </header>
+      <div class="call-return" id="callReturn" hidden></div>
+      <section class="call-stage" id="callStage" aria-label="Звонок" hidden></section>
       <div class="feed" id="feed" role="log" aria-label="Сообщения"></div>
       <button class="jump" id="jumpBtn" type="button" hidden>Новые сообщения ↓</button>
       <div class="rec-stage" id="recStage" hidden></div>
@@ -73,6 +80,8 @@ const SHELL = `
         <p class="composer-note" id="composerNote" hidden>Это канал: писать могут только авторы. А реакции — пожалуйста 🔥</p>
         <div class="sticker-panel" id="stickerPanel" role="dialog" aria-label="Стикеры" hidden></div>
         <div class="sticker-suggest" id="stickerSuggest" role="listbox" aria-label="Стикеры к эмодзи" hidden></div>
+        <div class="select-bar" id="selectBar" hidden></div>
+        <div class="reply-bar" id="replyBar" hidden></div>
         <div class="composer-inner">
           <button class="cbtn attach" id="attachBtn" type="button" aria-label="Прикрепить фото, видео или файл" title="Фото, видео или файл">${ICONS.clip}</button>
           <input type="file" id="fileInput" multiple hidden>
@@ -120,6 +129,11 @@ const SHELL = `
 <dialog id="keyDlg" aria-label="Ключ шифрования"></dialog>
 <dialog id="mediaDlg" class="media-dlg" aria-label="Отправка файлов"></dialog>
 <dialog id="viewer" class="viewer" aria-label="Просмотр"></dialog>
+<dialog id="fwdDlg" class="fwd-dlg" aria-label="Переслать"></dialog>
+<dialog id="callDlg" aria-label="Настройки звонка"></dialog>
+<div class="ctx-menu" id="ctxMenu" role="menu" hidden></div>
+<div class="vol-pop" id="volPop" hidden></div>
+<div class="ring-box" id="ringBox" role="alertdialog" aria-live="assertive" hidden></div>
 `;
 
 // Локальное состояние интерфейса
@@ -132,6 +146,15 @@ const U = {
   restoreScroll: null as { height: number; top: number } | null,
   /** Картинки стикеров открытого чата: не пересоздаём при каждой перерисовке (без мигания). */
   stickerImgs: new Map<string, HTMLImageElement>(),
+  /** Ответ, который готовится в чате (как в Telegram — у каждого чата свой). */
+  reply: new Map<string, Msg>(),
+  /** Что переслать в чат: сообщения ждут отправки вместе с комментарием. */
+  fwd: new Map<string, { msgs: Msg[]; hide: boolean }>(),
+  /** Выбор нескольких сообщений. */
+  sel: null as { chatId: string; ids: Set<string> } | null,
+  armedSel: false,
+  /** Подсветить сообщение после перехода к нему по цитате. */
+  flash: null as string | null,
 };
 let unsubs: (() => void)[] = [];
 let mounted = false;
@@ -261,6 +284,7 @@ function kindText(kind: string | null, body: string | null, files: { kind?: unkn
     case 'video_note': return 'Кружочек';
     case 'e2e': return '🔒 Зашифрованное сообщение';
     case 'media': return contentPreview(body ?? '', files);
+    case 'call': return '📞 Звонок';
     default: return body || '…';
   }
 }
@@ -269,6 +293,7 @@ function previewText(c: MyChat): string {
   if (!c.last_id) return c.kind === 'direct' ? 'Напишите первым' : 'Пока пусто';
   if (c.last_deleted) return 'Сообщение удалено';
   let t: string;
+  if (c.last_kind === 'call') return callPreview(c);
   if (c.last_kind === 'e2e') {
     // Зашифрованное: показываем то, что внутри, после расшифровки.
     const p = S.previews.get(c.last_id);
@@ -299,22 +324,20 @@ function renderSide(): void {
   for (const c of chats) {
     const b = el('button', 'chat');
     b.type = 'button';
+    b.dataset.chat = c.id;
     const active = c.id === S.cur && convVisible();
     if (active) b.setAttribute('aria-current', 'true');
-    let tile: HTMLElement;
-    if (c.kind === 'direct') {
-      tile = el('span', 'tile person');
-      tile.append(avatarEl(who(c.peer_id)));
-      if (c.peer_id && isOnline(S.profiles.get(c.peer_id))) tile.append(el('span', 'on-dot'));
-    } else if (c.kind === 'bot') {
-      tile = el('span', 'tile person');
-      tile.append(brandAvatar());
-    } else {
-      tile = el('span', 'tile', c.emoji);
+    const name = el('span', 'name', chatTitle(c));
+    const live = calls.callInChat(c.id);
+    if (live) {
+      const ic = el('span', `live-call${calls.C.session?.callId === live.id ? ' mine' : ''}`);
+      ic.append(html(live.video ? ICONS.video : ICONS.phone));
+      ic.title = 'Идёт звонок';
+      name.append(ic);
     }
     b.append(
-      tile,
-      el('span', 'name', chatTitle(c)),
+      chatTileEl(c),
+      name,
       el('span', 'time', c.last_at ? listTime(ts(c.last_at)) : ''),
       el('span', 'preview', previewText(c)),
     );
@@ -328,6 +351,22 @@ function renderSide(): void {
     frag.append(b);
   }
   list.replaceChildren(frag);
+}
+
+/** Значок чата: аватар собеседника, бот или эмодзи группы. */
+function chatTileEl(c: MyChat, cls = ''): HTMLElement {
+  let tile: HTMLElement;
+  if (c.kind === 'direct') {
+    tile = el('span', `tile person ${cls}`);
+    tile.append(avatarEl(who(c.peer_id)));
+    if (c.peer_id && isOnline(S.profiles.get(c.peer_id))) tile.append(el('span', 'on-dot'));
+  } else if (c.kind === 'bot') {
+    tile = el('span', `tile person ${cls}`);
+    tile.append(brandAvatar());
+  } else {
+    tile = el('span', `tile ${cls}`, c.emoji);
+  }
+  return tile;
 }
 
 /** Внизу слева — только я: имя и мой статус. Списка «кто ещё в сети» нет. */
@@ -361,7 +400,7 @@ function renderThemeBtn(): void {
 
 function updateTitle(): void {
   const n = totalUnread();
-  document.title = n ? `(${n}) СКАМ` : 'СКАМ';
+  document.title = calls.ringing().length ? '📞 Входящий звонок — СКАМ' : n ? `(${n}) СКАМ` : 'СКАМ';
   const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
   if (n) nav.setAppBadge?.(n).catch(() => {});
   else nav.clearAppBadge?.().catch(() => {});
@@ -379,12 +418,15 @@ function renderConv(): void {
   $('composer').classList.toggle('readonly', ro);
   $('composerNote').hidden = !ro;
   if (ro) { closeStickers(); recUI?.cancel(); }
+  renderSelectBar();
+  renderComposerBar();
   updateSendBtn();
 }
 
 function renderHead(): void {
   const c = currentChat();
   if (!c) return;
+  renderCallBtns();
   const emoji = $('convEmoji');
   if (c.kind === 'direct' || c.kind === 'bot') {
     emoji.replaceChildren(c.kind === 'bot' ? brandAvatar() : personAvatar(c.peer_id));
@@ -506,7 +548,7 @@ function messageBody(b: HTMLElement, m: Msg, author: string): HTMLElement {
   }
 }
 
-/** Долгое нажатие на телефоне открывает реакции и «Удалить» (обычное касание кружочка его включает). */
+/** Долгое нажатие на телефоне открывает меню сообщения (обычное касание кружочка его включает). */
 function longPress(target: HTMLElement, open: () => void): void {
   let timer = 0;
   let fired = false;
@@ -529,7 +571,164 @@ function longPress(target: HTMLElement, open: () => void): void {
   }, true);
 }
 
+/** Смахнуть сообщение влево — ответить на него (как в Telegram на телефоне). */
+function swipeToReply(row: HTMLElement, target: HTMLElement, onReply: () => void): void {
+  let x0 = 0;
+  let y0 = 0;
+  let dx = 0;
+  let id = -1;
+  let active = false;
+  let decided = false;
+  let horizontal = false;
+  target.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch' || (e.target as HTMLElement).closest('.wave,.vnote,.vplay,input,a')) return;
+    x0 = e.clientX; y0 = e.clientY; dx = 0; id = e.pointerId;
+    active = true; decided = false; horizontal = false;
+  });
+  target.addEventListener('pointermove', (e) => {
+    if (!active || e.pointerId !== id) return;
+    const ddx = e.clientX - x0;
+    const ddy = e.clientY - y0;
+    if (!decided) {
+      if (Math.hypot(ddx, ddy) < 10) return;
+      decided = true;
+      horizontal = ddx < 0 && Math.abs(ddx) > Math.abs(ddy) * 1.3;
+      if (!horizontal) { active = false; return; }
+    }
+    dx = Math.max(-96, Math.min(0, ddx));
+    row.style.transform = `translateX(${dx}px)`;
+    row.classList.add('swiping');
+    row.classList.toggle('swipe-ready', dx < -60);
+  });
+  const end = () => {
+    if (!active) return;
+    active = false;
+    row.style.transform = '';
+    row.classList.remove('swiping', 'swipe-ready');
+    if (horizontal && dx < -60) { navigator.vibrate?.(8); onReply(); }
+  };
+  target.addEventListener('pointerup', end);
+  target.addEventListener('pointercancel', end);
+}
+
+/** Имя автора сообщения для цитаты и «Переслано от …». */
+function authorOf(m: { user_id: string | null; kind?: string }, chat: MyChat): Who {
+  if (chat.kind === 'channel') return { id: null, name: chat.name ?? 'Канал', avatar: null, color: null, brand: true };
+  return who(m.user_id, m.kind ?? 'text');
+}
+
+/** Как выглядит сообщение одной строкой: «🖼 Фото», «Голосовое сообщение», текст… */
+function oneLine(k: string, text: string, files: { kind?: unknown; name?: unknown }[] = []): string {
+  switch (k) {
+    case 'sticker': return `${text ? `${text} ` : ''}Стикер`;
+    case 'voice': return '🎤 Голосовое сообщение';
+    case 'video_note': return '⚪ Кружочек';
+    case 'media': case 'e2e': return files.length ? contentPreview(text, files) : text || '…';
+    default: return text || '…';
+  }
+}
+
+const quoteWanted = new Map<string, Set<string>>();
+let quoteTimer = 0;
+function wantQuoted(chatId: string, id: string): void {
+  const set = quoteWanted.get(chatId) ?? new Set<string>();
+  set.add(id);
+  quoteWanted.set(chatId, set);
+  if (quoteTimer) return;
+  quoteTimer = window.setTimeout(() => {
+    quoteTimer = 0;
+    const all = [...quoteWanted];
+    quoteWanted.clear();
+    all.forEach(([chat, ids]) => { void loadQuoted(chat, [...ids]); });
+  }, 50);
+}
+
+/** Цитата в ответе: автор и коротко, что было в сообщении; нажатие — перейти к нему. */
+function quoteEl(m: Msg, chat: MyChat): HTMLElement {
+  const id = m.reply_to!;
+  const q = button('quote', null, (ev) => { ev.stopPropagation(); void jumpTo(id); });
+  const target = quotedMsg(chat.id, id);
+  let uid: string | null = null;
+  let line: string;
+  let author: Who | null = null;
+  let thumb: HTMLElement | null = null;
+  if (target && target !== 'missing') {
+    author = authorOf(target, chat);
+    if (target.deleted_at) line = 'Сообщение удалено';
+    else if (target.locked) line = '🔒 Зашифрованное сообщение';
+    else {
+      const view = viewKind(target);
+      const files = target.content?.files ?? [];
+      line = oneLine(view, view === 'sticker' ? target.body : target.content?.text ?? target.body, files);
+      const pic = files.find((f) => f.kind === 'photo' || f.kind === 'video');
+      if (pic) {
+        const img = el('img', 'quote-thumb');
+        img.alt = '';
+        const path = pic.thumb?.path ?? pic.path;
+        const have = cachedUrl(path);
+        if (have) img.src = have;
+        else void thumbUrl(pic).then((u) => { img.src = u; }, () => img.remove());
+        thumb = img;
+      } else if (view === 'sticker' && target.sticker) {
+        const st = findSticker(target.sticker);
+        if (st) {
+          const img = el('img', 'quote-thumb sticker');
+          img.src = stickerUrl(st.ref);
+          img.alt = '';
+          thumb = img;
+        }
+      }
+    }
+  } else if (m.replySnap) {
+    uid = m.replySnap.uid;
+    author = authorOf({ user_id: uid, kind: m.replySnap.k }, chat);
+    line = oneLine(m.replySnap.k, m.replySnap.text);
+    if (!target) wantQuoted(chat.id, id);
+  } else if (target === 'missing') {
+    line = 'Сообщение не найдено';
+  } else {
+    wantQuoted(chat.id, id);
+    line = '…';
+  }
+  const name = el('span', 'quote-name', author?.name ?? 'Сообщение');
+  if (author?.color) name.style.color = author.color;
+  if (author?.color) q.style.setProperty('--q', author.color);
+  const text = el('span', 'quote-text', line.replace(/\s+/g, ' '));
+  const body = el('span', 'quote-body');
+  body.append(name, text);
+  if (thumb) q.append(thumb);
+  q.append(body);
+  q.title = 'Перейти к сообщению';
+  return q;
+}
+
+/** «Переслано от …»: нажатие на имя открывает профиль. */
+function fwdEl(f: Forward): HTMLElement {
+  const d = el('div', 'fwd');
+  const ic = el('span', 'fwd-ic');
+  ic.append(html(ICONS.forward));
+  d.append(ic, f.kind === 'channel' ? 'Переслано из ' : 'Переслано от ');
+  if (f.from) {
+    const known = S.profiles.get(f.from);
+    const b = button('fwd-name', known?.name || f.name, (ev) => { ev.stopPropagation(); openPerson(f.from!); });
+    d.append(b);
+  } else {
+    d.append(el('b', 'fwd-name', f.name));
+  }
+  if (f.at) d.title = `Отправлено ${new Date(ts(f.at)).toLocaleString('ru-RU')}`;
+  return d;
+}
+
+function iconAction(name: keyof typeof ICONS, label: string, fn: () => void): HTMLButtonElement {
+  const b = button('act-ic', null, (ev) => { ev.stopPropagation(); U.openMsg = null; fn(); });
+  b.append(html(ICONS[name]));
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  return b;
+}
+
 function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTMLElement {
+  if (m.kind === 'call') return callRow(m, chat);
   const channel = chat.kind === 'channel';
   const own = m.user_id === meId() && m.kind !== 'system';
   // В канале посты публикуются от имени канала и стоят слева.
@@ -540,12 +739,21 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   const bare = !deleted && !m.locked && (view === 'sticker' || view === 'video_note');
   const files = !deleted && !m.locked && (view === 'e2e' || view === 'media') ? m.content?.files ?? [] : [];
   const mediaOnly = files.length > 0 && !m.content?.text && files.every((f) => f.kind !== 'file');
-  const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}${bare ? ' bare' : ''}`);
+  const selecting = U.sel?.chatId === chat.id;
+  const selectable = selecting && !deleted && !m.pending && !m.failed;
+  const selected = selectable && U.sel!.ids.has(m.id);
+  const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}${bare ? ' bare' : ''}`
+    + `${selecting ? ' selecting' : ''}${selected ? ' selected' : ''}${U.flash === m.id ? ' flash' : ''}`);
   row.dataset.id = m.id;
   if (U.openMsg === m.id) row.classList.add('open');
   const w: Who = channel ? { id: null, name: chat.name ?? 'Канал', avatar: null, color: null, brand: true } : who(m.user_id, m.kind);
+  if (selecting) {
+    const mark = el('span', `sel-mark${selectable ? '' : ' off'}`);
+    mark.setAttribute('aria-hidden', 'true');
+    row.append(mark);
+  }
   const slot = el('div', 'avslot');
-  if (first && !mine) slot.append(avatarEl(w, '', true));
+  if (first && !mine) slot.append(avatarEl(w, '', !selecting));
   row.append(slot);
 
   const wrap = el('div', 'bwrap');
@@ -562,6 +770,8 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     else if (w.color) a.style.color = w.color;
     b.append(a);
   }
+  if (!deleted && !m.locked && m.fwd) b.append(fwdEl(m.fwd));
+  if (!deleted && !m.locked && m.reply_to) b.append(quoteEl(m, chat));
   let textBox: HTMLElement = b;
   if (deleted) b.append('Сообщение удалено');
   else textBox = messageBody(b, m, w.name);
@@ -604,39 +814,60 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
       wrap.append(rs);
     }
     b.tabIndex = 0;
-    const act = el('div', 'actions');
-    REACTIONS.forEach((R) => {
-      const btn = button(null, R.e, (ev) => { ev.stopPropagation(); U.openMsg = null; react(m, R.k); });
-      btn.setAttribute('aria-label', `Реакция ${R.e}`);
-      act.append(btn);
-    });
-    if (own) {
-      const armed = U.armedDelete === m.id;
-      const del = button('del', armed ? 'Точно?' : 'Удалить', (ev) => {
-        ev.stopPropagation();
-        if (U.armedDelete !== m.id) {
-          U.armedDelete = m.id;
-          del.textContent = 'Точно?';
-          setTimeout(() => { if (U.armedDelete === m.id) { U.armedDelete = null; emit('feed'); } }, 3000);
-          return;
-        }
-        U.armedDelete = null;
-        U.openMsg = null;
-        deleteMessage(m).catch((e) => toast(errText(e, 'Не получилось удалить сообщение.')));
+    if (!selecting) {
+      // Над сообщением (при наведении): реакции, «Ответить», «Переслать», «Удалить».
+      const act = el('div', 'actions');
+      REACTIONS.forEach((R) => {
+        const btn = button(null, R.e, (ev) => { ev.stopPropagation(); U.openMsg = null; react(m, R.k); });
+        btn.setAttribute('aria-label', `Реакция ${R.e}`);
+        act.append(btn);
       });
-      act.append(del);
+      act.append(el('span', 'act-sep'));
+      if (canPost(chat)) act.append(iconAction('reply', 'Ответить', () => setReply(m)));
+      if (canForward(m)) act.append(iconAction('forward', 'Переслать', () => openForward([m])));
+      act.append(iconAction('check', 'Выбрать', () => startSelect(m)));
+      if (own) {
+        const armed = U.armedDelete === m.id;
+        const del = button('del', armed ? 'Точно?' : 'Удалить', (ev) => {
+          ev.stopPropagation();
+          if (U.armedDelete !== m.id) {
+            U.armedDelete = m.id;
+            del.textContent = 'Точно?';
+            setTimeout(() => { if (U.armedDelete === m.id) { U.armedDelete = null; emit('feed'); } }, 3000);
+            return;
+          }
+          U.armedDelete = null;
+          U.openMsg = null;
+          deleteMessage(m).catch((e) => toast(errText(e, 'Не получилось удалить сообщение.')));
+        });
+        act.append(del);
+      }
+      row.append(act);
+      // Правая кнопка мыши — меню сообщения, как в Telegram Desktop.
+      b.addEventListener('contextmenu', (ev) => {
+        if ((ev.target as HTMLElement).closest('a')) return;
+        ev.preventDefault();
+        openMenu(m, chat, ev.clientX, ev.clientY);
+      });
+      // На телефоне — касание или долгое нажатие открывает то же меню.
+      const menuAtBubble = () => {
+        const r = b.getBoundingClientRect();
+        openMenu(m, chat, mine ? r.right : r.left, r.bottom, true);
+      };
+      b.addEventListener('click', (ev) => {
+        if ((ev.target as HTMLElement).closest('a,button,.wave,.vnote') || !touchMQ.matches) return;
+        menuAtBubble();
+      });
+      longPress(b, menuAtBubble);
+      if (canPost(chat)) swipeToReply(row, b, () => setReply(m));
     }
-    row.append(act);
-    const toggleActions = (force?: boolean) => {
-      U.openMsg = (force ?? U.openMsg !== m.id) ? m.id : null;
-      document.querySelectorAll('.row.open').forEach((r) => r.classList.remove('open'));
-      if (U.openMsg) row.classList.add('open');
-    };
-    b.addEventListener('click', (ev) => {
-      if ((ev.target as HTMLElement).closest('a,button,.wave') || !touchMQ.matches) return;
-      toggleActions();
-    });
-    longPress(b, () => toggleActions(true));
+  }
+  if (selecting) {
+    row.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (selectable) toggleSelect(m);
+    }, true);
   }
   row.append(wrap);
   return row;
@@ -684,7 +915,7 @@ function renderFeed(): void {
   let noteEnd = false;
   if (isE2E(c) && f.loaded) {
     const firstEnc = f.msgs.find((m) => m.kind === 'e2e');
-    const isPlain = (m: Msg) => m.kind !== 'e2e' && m.kind !== 'system' && !!m.user_id;
+    const isPlain = (m: Msg) => m.kind !== 'e2e' && m.kind !== 'system' && m.kind !== 'call' && !!m.user_id;
     const plainBefore = firstEnc
       ? f.msgs.some((m) => isPlain(m) && ts(m.created_at) < ts(firstEnc.created_at))
       : f.msgs.some(isPlain);
@@ -694,13 +925,17 @@ function renderFeed(): void {
   }
 
   let prev: Msg | null = null;
+  let day: string | null = null;
   for (const m of f.msgs) {
     const t = ts(m.created_at);
-    if (m.id === noteBefore) { inner.append(e2eNote(c, 'from')); prev = null; }
-    if (!prev || dayKey(ts(prev.created_at)) !== dayKey(t)) {
+    if (m.id === noteBefore) { inner.append(e2eNote(c, 'from')); prev = null; day = null; }
+    if (day !== dayKey(t)) {
       inner.append(el('div', 'day', dayLabel(t)));
+      day = dayKey(t);
       prev = null;
     }
+    // Запись о звонке — посередине ленты, как в Discord; после неё автор показывается заново.
+    if (m.kind === 'call') { inner.append(renderMsg(m, false, readUpTo, c)); prev = null; continue; }
     const sameAuthor = c.kind === 'channel' || (prev?.user_id === m.user_id && (prev.kind === 'system') === (m.kind === 'system'));
     const first = !prev || !sameAuthor || t - ts(prev.created_at) > 5 * 60 * 1000;
     inner.append(renderMsg(m, first, readUpTo, c));
@@ -767,6 +1002,8 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
     stopVoice();
     dropNotes(id);
     U.stickerImgs.clear();
+    closeMenu();
+    if (U.sel && U.sel.chatId !== id) { U.sel = null; U.armedSel = false; }
     S.cur = id;
     U.stick = true;
     U.openMsg = null;
@@ -783,6 +1020,7 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
   }
   document.body.classList.add('chat-open');
   renderAll();
+  renderCalls();
   autosize();
   if (!opts.silent && !touchMQ.matches && canPost(currentChat())) inp.focus();
 }
@@ -815,6 +1053,17 @@ function closeMissingChat(): void {
   }
 }
 
+/** Записи о звонках в открытой ленте: «Идёт звонок» → «Входящий звонок · 5 мин» без перерисовки всей ленты. */
+function refreshCallRows(): void {
+  const c = currentChat();
+  if (!c) return;
+  const msgs = feedOf(c.id).msgs;
+  document.querySelectorAll<HTMLElement>('#feed .call-row').forEach((row) => {
+    const m = msgs.find((x) => x.id === row.dataset.id);
+    if (m) row.replaceWith(callRow(m, c));
+  });
+}
+
 function renderAll(): void {
   renderSide();
   renderMe();
@@ -822,6 +1071,7 @@ function renderAll(): void {
   renderConv();
   renderHead();
   renderFeed();
+  renderCalls();
 }
 
 // ---------------------------------------------------------------------------
@@ -837,7 +1087,8 @@ function autosize(): void {
 
 /** Есть текст — кнопка «Отправить», пусто — микрофон/кружочек (как в Telegram). */
 function updateSendBtn(): void {
-  const has = !!$<HTMLTextAreaElement>('input').value.trim();
+  // Пересылка ждёт отправки — «Отправить» доступна и без текста.
+  const has = !!$<HTMLTextAreaElement>('input').value.trim() || (!!S.cur && U.fwd.has(S.cur));
   const sendBtn = $<HTMLButtonElement>('sendBtn');
   sendBtn.disabled = !currentChat() || !has;
   sendBtn.hidden = !has;
@@ -862,18 +1113,341 @@ async function send(): Promise<void> {
   const inp = $<HTMLTextAreaElement>('input');
   const text = inp.value.trim();
   const id = S.cur;
-  if (!text || !id) return;
+  const fw = id ? U.fwd.get(id) : undefined;
+  if (!id || (!text && !fw)) return;
   if (text.length > MAX_LEN) { toast(`Слишком длинное сообщение — до ${MAX_LEN} символов.`); return; }
   inp.value = '';
   U.drafts.delete(id);
+  const reply = takeReply(id);
+  if (fw) U.fwd.delete(id);
+  renderComposerBar();
   autosize();
   stopTyping();
   U.stick = true;
   try {
-    await sendMessage(id, text);
+    // Как в Telegram: сначала комментарий, потом пересланные сообщения.
+    if (text) await sendMessage(id, text, [], { reply });
+    if (fw) await forwardMessages(id, fw.msgs, fw.hide, { getBlob: (m) => mediaBlob(m.media_path!), onLocal: setLocalMedia });
   } catch (e) {
-    toast(errText(e, 'Сообщение не отправилось. Нажмите «Повторить».'));
+    toast(errText(e, fw ? 'Не получилось переслать.' : 'Сообщение не отправилось. Нажмите «Повторить».'));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Ответить, переслать, выбрать несколько — как в Telegram
+// ---------------------------------------------------------------------------
+
+function setReply(m: Msg): void {
+  const c = S.chats.get(m.chat_id);
+  if (!c || !canPost(c) || m.pending || m.failed || m.deleted_at || m.kind === 'call') return;
+  closeMenu();
+  if (U.sel) exitSelect();
+  U.reply.set(m.chat_id, m);
+  U.fwd.delete(m.chat_id);
+  renderComposerBar();
+  updateSendBtn();
+  if (S.cur === m.chat_id && canPost(c)) $('input').focus({ preventScroll: true });
+}
+
+/** Забрать ответ для отправки (он одноразовый). */
+function takeReply(chatId: string): Msg | null {
+  const r = U.reply.get(chatId) ?? null;
+  if (r) {
+    U.reply.delete(chatId);
+    if (chatId === S.cur) renderComposerBar();
+  }
+  return r;
+}
+
+function cancelComposerBar(): void {
+  const id = S.cur;
+  if (!id) return;
+  U.reply.delete(id);
+  U.fwd.delete(id);
+  renderComposerBar();
+  updateSendBtn();
+}
+
+/** Полоска над полем ввода: «ответ на …» или «переслать …» с крестиком. */
+function renderComposerBar(): void {
+  const bar = document.getElementById('replyBar');
+  if (!bar) return;
+  const c = currentChat();
+  const fw = c ? U.fwd.get(c.id) : undefined;
+  const r = c && !fw ? U.reply.get(c.id) : undefined;
+  if (!c || (!fw && !r) || !canPost(c) || U.sel) { bar.hidden = true; bar.replaceChildren(); return; }
+  bar.hidden = false;
+  const ic = el('span', 'cb-ic');
+  ic.append(html(fw ? ICONS.forward : ICONS.reply));
+  ic.title = fw ? 'Переслать' : 'Ответ';
+  const body = el('button', 'cb-body');
+  body.type = 'button';
+  const title = el('span', 'cb-title');
+  const sub = el('span', 'cb-sub');
+  if (fw) {
+    const n = fw.msgs.length;
+    title.textContent = n === 1 ? 'Переслать сообщение' : `Переслать ${plural(n, 'сообщение', 'сообщения', 'сообщений')}`;
+    if (fw.hide) sub.textContent = 'без имени отправителя';
+    else if (n === 1) {
+      const m = fw.msgs[0];
+      const snap = snapOf(m);
+      sub.textContent = `${forwardOf(m).name}: ${oneLine(snap.k, snap.text, m.content?.files ?? [])}`;
+    } else {
+      sub.textContent = `от ${[...new Set(fw.msgs.map((m) => forwardOf(m).name))].join(', ')}`;
+    }
+    body.title = 'Добавьте комментарий или просто нажмите «Отправить»';
+    body.addEventListener('click', () => $('input').focus());
+  } else if (r) {
+    const src = S.chats.get(r.chat_id) ?? c;
+    const author = authorOf(r, src);
+    title.textContent = author.name;
+    if (author.color) title.style.color = author.color;
+    const snap = snapOf(r);
+    sub.textContent = r.locked ? '🔒 Зашифрованное сообщение' : oneLine(snap.k, snap.text, r.content?.files ?? []);
+    body.title = 'Перейти к сообщению';
+    body.addEventListener('click', () => void jumpTo(r.id));
+  }
+  body.append(title, sub);
+  const x = button('icon-btn cb-x', null, cancelComposerBar);
+  x.append(html(ICONS.close));
+  x.setAttribute('aria-label', fw ? 'Не пересылать' : 'Отменить ответ');
+  bar.replaceChildren(ic, body, x);
+}
+
+/** Ctrl+↑ / Ctrl+↓ в пустом поле — выбрать, на какое сообщение ответить (как в Telegram Desktop). */
+function replyStep(dir: -1 | 1): void {
+  const c = currentChat();
+  if (!c || !canPost(c)) return;
+  const list = feedOf(c.id).msgs.filter((m) => !m.deleted_at && !m.pending && !m.failed && m.kind !== 'call');
+  const cur = U.reply.get(c.id);
+  const i = (cur ? list.findIndex((m) => m.id === cur.id) : list.length) + dir;
+  if (i < 0 || i >= list.length) { cancelComposerBar(); return; }
+  setReply(list[i]);
+  document.querySelector(`#feed .row[data-id="${CSS.escape(list[i].id)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+
+/** Перейти к сообщению по цитате: догружаем историю, если нужно, и подсвечиваем. */
+async function jumpTo(id: string): Promise<void> {
+  const c = currentChat();
+  if (!c) return;
+  closeMenu();
+  let found = feedOf(c.id).msgs.some((x) => x.id === id);
+  if (!found) {
+    toast('Ищем сообщение…');
+    found = await loadUntil(c.id, id).catch(() => false);
+    if (S.cur !== c.id) return;
+    if (!found) { toast('Сообщение не найдено — возможно, его удалили.'); return; }
+  }
+  U.flash = id;
+  U.stick = false;
+  renderFeed();
+  document.querySelector(`#feed .row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  window.setTimeout(() => {
+    if (U.flash !== id) return;
+    U.flash = null;
+    document.querySelectorAll('#feed .row.flash').forEach((r) => r.classList.remove('flash'));
+  }, 1800);
+}
+
+// Выбор нескольких сообщений.
+
+function startSelect(m: Msg): void {
+  closeMenu();
+  if (m.pending || m.failed || m.deleted_at) return;
+  U.sel = { chatId: m.chat_id, ids: new Set([m.id]) };
+  U.armedSel = false;
+  U.openMsg = null;
+  renderSelection();
+}
+
+function toggleSelect(m: Msg): void {
+  if (!U.sel) return;
+  if (U.sel.ids.has(m.id)) U.sel.ids.delete(m.id);
+  else U.sel.ids.add(m.id);
+  U.armedSel = false;
+  if (!U.sel.ids.size) { exitSelect(); return; }
+  renderSelection();
+}
+
+function exitSelect(): void {
+  if (!U.sel) return;
+  U.sel = null;
+  U.armedSel = false;
+  renderSelection();
+}
+
+function selectedMsgs(): Msg[] {
+  const sel = U.sel;
+  if (!sel) return [];
+  return feedOf(sel.chatId).msgs.filter((m) => sel.ids.has(m.id) && !m.deleted_at);
+}
+
+function renderSelection(): void {
+  renderSelectBar();
+  renderComposerBar();
+  renderFeed();
+}
+
+function renderSelectBar(): void {
+  const bar = document.getElementById('selectBar');
+  if (!bar) return;
+  const c = currentChat();
+  const on = !!c && U.sel?.chatId === c.id;
+  $('composer').classList.toggle('selecting', on);
+  if (!on) { bar.hidden = true; bar.replaceChildren(); return; }
+  bar.hidden = false;
+  const list = selectedMsgs();
+  const cancel = button('icon-btn sb-x', null, exitSelect);
+  cancel.append(html(ICONS.close));
+  cancel.setAttribute('aria-label', 'Отменить выбор');
+  cancel.title = 'Отменить (Esc)';
+  const count = el('span', 'sb-count', `Выбрано: ${list.length}`);
+  const fwd = button('btn primary small sb-btn', null, () => openForward(list));
+  fwd.append(html(ICONS.forward), el('span', null, 'Переслать'));
+  fwd.disabled = !list.length || !list.every(canForward);
+  bar.replaceChildren(cancel, count, el('span', 'sb-spacer'), fwd);
+  const own = list.length > 0 && list.every((m) => m.user_id === meId() && m.kind !== 'system');
+  if (own) {
+    const del = button('btn danger small sb-btn', U.armedSel ? 'Точно удалить?' : 'Удалить', () => {
+      if (!U.armedSel) {
+        U.armedSel = true;
+        renderSelectBar();
+        setTimeout(() => { if (U.armedSel) { U.armedSel = false; renderSelectBar(); } }, 3000);
+        return;
+      }
+      const all = selectedMsgs();
+      exitSelect();
+      void Promise.all(all.map((m) => deleteMessage(m))).catch((e) => toast(errText(e, 'Не получилось удалить сообщения.')));
+    });
+    bar.append(del);
+  }
+}
+
+// Окно «Переслать»: выбрать чат, как в Telegram.
+
+function chatKindLabel(c: MyChat): string {
+  if (c.kind === 'direct') return 'личный чат';
+  if (c.kind === 'bot') return 'бот';
+  if (c.kind === 'channel') return 'канал';
+  return plural(c.member_count, 'участник', 'участника', 'участников');
+}
+
+function openForward(msgs: Msg[]): void {
+  closeMenu();
+  const list = msgs.filter(canForward);
+  if (!list.length) { toast('Эти сообщения нельзя переслать.'); return; }
+  const dlg = $<HTMLDialogElement>('fwdDlg');
+  const head = dlgHead(list.length === 1 ? 'Переслать' : `Переслать ${plural(list.length, 'сообщение', 'сообщения', 'сообщений')}`, dlg);
+  const q = el('input', 'txt fwd-q');
+  q.placeholder = 'Кому переслать…';
+  q.setAttribute('aria-label', 'Поиск чата');
+  q.autocomplete = 'off';
+  const box = el('div', 'fwd-list');
+  box.setAttribute('role', 'list');
+  const hideRow = el('label', 'check-row');
+  const hide = el('input');
+  hide.type = 'checkbox';
+  hideRow.append(hide, el('span', null, 'Скрыть имя отправителя'));
+  const fill = () => {
+    const needle = searchNorm(q.value);
+    const chats = sortedChats().filter((c) => canPost(c) && (!needle || searchNorm(chatTitle(c)).includes(needle)));
+    if (!chats.length) { box.replaceChildren(el('p', 'list-empty', 'Такого чата нет')); return; }
+    box.replaceChildren(...chats.map((c) => {
+      const b = button('fwd-chat', null, () => pickForward(c, list, hide.checked));
+      b.setAttribute('role', 'listitem');
+      const text = el('span', 'fwd-text');
+      text.append(el('span', 'name', chatTitle(c)), el('span', 'sub', chatKindLabel(c)));
+      b.append(chatTileEl(c, 'small'), text);
+      return b;
+    }));
+  };
+  q.addEventListener('input', fill);
+  q.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    box.querySelector<HTMLButtonElement>('.fwd-chat')?.click();
+  });
+  fill();
+  dlg.replaceChildren(head, q, box, hideRow);
+  openDialog(dlg);
+  if (!touchMQ.matches) q.focus();
+}
+
+function pickForward(c: MyChat, list: Msg[], hide: boolean): void {
+  closeDialog($<HTMLDialogElement>('fwdDlg'));
+  exitSelect();
+  U.fwd.set(c.id, { msgs: list, hide });
+  U.reply.delete(c.id);
+  openChat(c.id);
+  renderComposerBar();
+  updateSendBtn();
+}
+
+// Меню сообщения: правая кнопка мыши, касание или долгое нажатие на телефоне.
+
+function copyText(m: Msg): string {
+  if (m.deleted_at || m.locked) return '';
+  const view = viewKind(m);
+  if (view === 'sticker' || view === 'voice' || view === 'video_note') return '';
+  return (m.content?.text ?? m.body ?? '').trim();
+}
+
+function closeMenu(): void {
+  const menu = document.getElementById('ctxMenu');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  menu.replaceChildren();
+  document.body.classList.remove('menu-open');
+}
+
+function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false): void {
+  if (m.pending || m.failed || m.deleted_at) return;
+  const menu = $('ctxMenu');
+  const own = m.user_id === meId() && m.kind !== 'system';
+  const rs = el('div', 'cm-reacts');
+  REACTIONS.forEach((R) => {
+    const b = button(null, R.e, () => { closeMenu(); react(m, R.k); });
+    b.setAttribute('aria-label', `Реакция ${R.e}`);
+    rs.append(b);
+  });
+  const items = el('div', 'cm-items');
+  const item = (ic: keyof typeof ICONS, label: string, fn: () => void, cls = '') => {
+    const b = button(`cm-item${cls ? ` ${cls}` : ''}`, null, fn);
+    b.setAttribute('role', 'menuitem');
+    b.append(html(ICONS[ic]), el('span', null, label));
+    items.append(b);
+    return b;
+  };
+  if (canPost(chat)) item('reply', 'Ответить', () => setReply(m));
+  const text = copyText(m);
+  if (text) {
+    item('copy', 'Копировать текст', () => {
+      closeMenu();
+      navigator.clipboard.writeText(text).then(() => toast('Текст скопирован'), () => toast('Не получилось скопировать'));
+    });
+  }
+  if (canForward(m)) item('forward', 'Переслать', () => openForward([m]));
+  item('check', 'Выбрать', () => startSelect(m));
+  if (own) {
+    let armed = false;
+    const del = item('trash', 'Удалить', () => {
+      if (!armed) { armed = true; del.querySelector('span')!.textContent = 'Точно удалить?'; return; }
+      closeMenu();
+      deleteMessage(m).catch((e) => toast(errText(e, 'Не получилось удалить сообщение.')));
+    }, 'danger');
+  }
+  menu.replaceChildren(rs, items);
+  menu.hidden = false;
+  document.body.classList.add('menu-open');
+  const r = menu.getBoundingClientRect();
+  const mine = own && chat.kind !== 'channel';
+  let left = fromBubble && mine ? x - r.width : x;
+  left = Math.max(8, Math.min(window.innerWidth - r.width - 8, left));
+  let top = y + (fromBubble ? 6 : 0);
+  if (top + r.height > window.innerHeight - 8) top = Math.max(8, y - r.height - (fromBubble ? 12 : 0));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  (items.querySelector('button') as HTMLButtonElement | null)?.focus({ preventScroll: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -903,10 +1477,11 @@ function startSendFiles(files: File[]): void {
 async function sendFiles(chatId: string, caption: string, prepared: Prepared[]): Promise<void> {
   U.stick = true;
   U.drafts.delete(chatId);
+  const reply = takeReply(chatId);
   for (let i = 0; i < prepared.length; i += MAX_ALBUM) {
     const chunk = prepared.slice(i, i + MAX_ALBUM);
     try {
-      await sendMessage(chatId, i === 0 ? caption : '', chunk);
+      await sendMessage(chatId, i === 0 ? caption : '', chunk, i === 0 ? { reply } : {});
     } catch (e) {
       toast(errText(e, 'Не получилось отправить. Нажмите «Повторить».'));
     }
@@ -1071,7 +1646,7 @@ async function pickSticker(st: Sticker, fromSuggest = false): Promise<void> {
   }
   U.stick = true;
   try {
-    await sendSticker(id, st);
+    await sendSticker(id, st, { reply: takeReply(id) });
   } catch (e) {
     toast(errText(e, 'Стикер не отправился. Нажмите «Повторить».'));
   }
@@ -1099,7 +1674,7 @@ function updateSuggest(): void {
 
 function sendRecording(chatId: string, kind: 'voice' | 'video_note', rec: Parameters<typeof sendRecorded>[2]): void {
   if (chatId === S.cur) U.stick = true;
-  sendRecorded(chatId, kind, rec, setLocalMedia).catch((e) => {
+  sendRecorded(chatId, kind, rec, setLocalMedia, { reply: takeReply(chatId) }).catch((e) => {
     toast(errText(e, kind === 'voice' ? 'Голосовое не отправилось. Нажмите «Повторить».' : 'Кружочек не отправился. Нажмите «Повторить».'));
   });
 }
@@ -1443,6 +2018,7 @@ function renderProfile(): void {
   out.append(
     button('btn danger', 'Выйти из аккаунта', async () => {
       closeDialog(dlg);
+      await calls.hangup(true);
       await goOffline();
       await e2e.forgetDevice(meId());
       dropMediaUrls();
@@ -1505,6 +2081,26 @@ function openPerson(uid: string): void {
       }
     });
     actions.append(write);
+    if (calls.canCall()) {
+      const ring = button('btn ghost icon-only', null, async () => {
+        ring.disabled = true;
+        try {
+          const id = await openDirect(uid);
+          closeDialog(dlg);
+          closeDialog($<HTMLDialogElement>('chatDlg'));
+          closeDialog($<HTMLDialogElement>('newDlg'));
+          openChat(id);
+          call(id, false);
+        } catch (e) {
+          toast(errText(e, 'Не получилось позвонить.'));
+          ring.disabled = false;
+        }
+      });
+      ring.append(html(ICONS.phone));
+      ring.title = 'Позвонить';
+      ring.setAttribute('aria-label', 'Позвонить');
+      actions.append(ring);
+    }
   }
   card.append(actions);
   dlg.replaceChildren(card);
@@ -1755,6 +2351,14 @@ function wire(): void {
   listen(inp, 'input', () => { autosize(); onType(); });
   listen(inp, 'keydown', (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touchMQ.matches) { e.preventDefault(); void send(); }
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (e.ctrlKey || e.metaKey) && !inp.value) {
+      e.preventDefault();
+      replyStep(e.key === 'ArrowUp' ? -1 : 1);
+    }
+    if (e.key === 'Escape' && S.cur && (U.reply.has(S.cur) || U.fwd.has(S.cur)) && !stickersOpen()) {
+      e.preventDefault();
+      cancelComposerBar();
+    }
   });
   listen(inp, 'blur', () => { setTimeout(stopTyping, 800); });
   listen(inp, 'paste', (e: ClipboardEvent) => {
@@ -1799,6 +2403,9 @@ function wire(): void {
   listen(window, 'drop', (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); });
   unsubs.push(wireViewer(), wireSendDialog());
   const feed = $('feed');
+  // Меню сообщения закрываем, когда листают сами (лента прокручивается и при перерисовке — это не повод).
+  listen(feed, 'wheel', closeMenu);
+  listen(feed, 'touchmove', closeMenu);
   listen(feed, 'scroll', () => {
     U.stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
     if (U.stick) { $('jumpBtn').hidden = true; markVisibleRead(); }
@@ -1813,12 +2420,18 @@ function wire(): void {
     if (document.visibilityState === 'visible') { renderSide(); markVisibleRead(); } else stopTyping();
   });
   listen(document, 'keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && stickersOpen()) { closeStickers(); $('stickerBtn').focus(); }
+    if (e.key !== 'Escape') return;
+    const menu = document.getElementById('ctxMenu');
+    if (menu && !menu.hidden) { closeMenu(); return; }
+    if (stickersOpen()) { closeStickers(); $('stickerBtn').focus(); return; }
+    if (U.sel && !document.querySelector('dialog[open]')) exitSelect();
   });
   listen(document, 'pointerdown', (e: PointerEvent) => {
     const t = e.target as HTMLElement;
     if (stickersOpen() && !t.closest('#stickerPanel,#stickerBtn')) closeStickers();
+    if (!t.closest('#ctxMenu')) closeMenu();
   });
+  listen(window, 'resize', closeMenu);
   listen(document, 'click', (e: MouseEvent) => {
     if (U.openMsg && !(e.target as HTMLElement).closest('.row')) {
       U.openMsg = null;
@@ -1844,7 +2457,7 @@ function wire(): void {
   const onSys = () => renderThemeBtn();
   sysDark.addEventListener('change', onSys);
   unsubs.push(() => sysDark.removeEventListener('change', onSys));
-  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg']) {
+  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg']) {
     const d = $<HTMLDialogElement>(id);
     listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
@@ -1939,8 +2552,17 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     },
   });
   unsubs.push(() => { recUI?.destroy(); recUI = null; });
+  unsubs.push(mountCallUI({
+    who: (uid) => who(uid),
+    avatar: (uid, cls) => avatarEl(who(uid), cls),
+    chatTile: (c, cls) => chatTileEl(c, cls),
+    chatTitle,
+    openChat: (id) => openChat(id),
+    currentChat,
+  }));
   S.visibleChat = () => (S.cur && convVisible() && document.visibilityState === 'visible' ? S.cur : null);
   unsubs.push(
+    on('call', () => { renderCalls(); renderSide(); updateTitle(); refreshCallRows(); }),
     on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
     on('feed', renderFeed),
     on('head', renderHead),
@@ -1961,6 +2583,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   if (!mounted) return;
   autoOpen();
   renderAll();
+  calls.startCalls();
 
   startRealtime(
     (ok) => setBanner(ok ? null : 'Нет живого соединения — новые сообщения подтягиваются раз в несколько секунд.'),
@@ -1976,6 +2599,8 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
 
 export function unmountApp(): void {
   mounted = false;
+  calls.stopCalls();
+  closeMenu();
   stopTyping();
   stopVoice();
   dropNotes(null);
@@ -1986,10 +2611,13 @@ export function unmountApp(): void {
   resetState();
   dropMediaUrls();
   U.drafts.clear();
-  document.body.classList.remove('chat-open');
+  U.reply.clear();
+  U.fwd.clear();
+  U.sel = null;
+  document.body.classList.remove('chat-open', 'ringing');
   document.title = 'СКАМ';
   S.visibleChat = () => null;
 }
 
 // Для отладки в консоли разработчика.
-if (import.meta.env.DEV) Object.assign(window, { skam: { S, sb, sendRecorded, sendSticker } });
+if (import.meta.env.DEV) Object.assign(window, { skam: { S, sb, sendRecorded, sendSticker, calls: calls.C } });

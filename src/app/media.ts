@@ -52,6 +52,14 @@ export function mediaUrl(path: string): Promise<string> {
   });
 }
 
+/** Файл голосового или кружочка целиком (расшифрованный) — например, чтобы переслать. */
+export async function mediaBlob(path: string): Promise<Blob> {
+  const url = await mediaUrl(path);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Не получилось скачать запись — возможно, её удалили.');
+  return res.blob();
+}
+
 async function flushQueue(): Promise<void> {
   const batch = queue;
   queue = new Map();

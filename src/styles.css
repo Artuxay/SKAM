@@ -607,3 +607,265 @@ dialog.media-dlg{width:min(460px,calc(100% - 24px))}
 .enc-ic svg{width:17px;height:17px}
 .enc-text{display:flex;flex-direction:column}
 .enc-text .hint{margin:2px 0 0}
+
+/* ======================================================================
+   Ответить и переслать — как в Telegram
+   ====================================================================== */
+.bubble .quote{display:flex;align-items:center;gap:8px;width:100%;min-width:0;max-width:100%;margin:2px 0 6px;padding:5px 10px 5px 9px;border:0;border-left:3px solid var(--q,var(--accent));
+  border-radius:8px;background:color-mix(in srgb,var(--q,var(--accent)) 12%,transparent);text-align:left;cursor:pointer;white-space:normal;color:inherit}
+.bubble .quote:hover{background:color-mix(in srgb,var(--q,var(--accent)) 20%,transparent)}
+.row.mine .bubble .quote{--q:#0E0E10;background:rgba(14,14,16,.1)}
+.row.mine .bubble .quote:hover{background:rgba(14,14,16,.16)}
+.quote-body{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.quote-name{font-size:13px;font-weight:700;color:var(--q,var(--accent-text));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.mine .quote-name{color:#0E0E10}
+.quote-text{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.85}
+.quote-thumb{width:34px;height:34px;border-radius:6px;object-fit:cover;flex:none;background:var(--raised)}
+.quote-thumb.sticker{object-fit:contain;background:transparent}
+.fwd{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:13px;color:var(--accent-text);margin:0 0 3px;white-space:normal;line-height:1.3}
+.row.mine .fwd{color:rgba(14,14,16,.75)}
+.fwd-ic{display:inline-grid}
+.fwd-ic svg{width:14px;height:14px}
+.fwd-name{border:0;background:transparent;padding:0;font-weight:700;color:inherit;font-size:inherit}
+button.fwd-name:hover{text-decoration:underline}
+/* у стикеров и кружочков — плашки, как у имени автора */
+.bubble.media .quote,.bubble.media .fwd{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--q,var(--accent));border-radius:10px;padding:4px 9px;width:auto;max-width:240px;color:var(--text)}
+.bubble.media .fwd{display:inline-flex;border-left-width:1px;color:var(--accent-text)}
+.row.mine .bubble.media .quote{--q:var(--accent)}
+.row.mine .bubble.media .quote-name{color:var(--accent-text)}
+
+/* действия над сообщением: реакции | ответить, переслать, выбрать | удалить */
+.actions .act-sep{width:1px;align-self:stretch;margin:5px 3px;background:var(--line)}
+.actions .act-ic{color:var(--muted);font-family:var(--font)}
+.actions .act-ic:hover{color:var(--text)}
+.actions .act-ic svg{width:18px;height:18px}
+
+/* меню сообщения (правая кнопка, касание) */
+.ctx-menu{position:fixed;z-index:30;min-width:220px;max-width:calc(100vw - 16px);background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:6px;animation:panelIn .12s ease-out}
+.cm-reacts{display:flex;gap:2px;padding:2px 2px 6px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.cm-reacts button{flex:1;min-width:36px;height:40px;border:0;background:transparent;border-radius:12px;font-size:21px;font-family:var(--emoji)}
+.cm-reacts button:hover{background:var(--raised)}
+.cm-items{display:flex;flex-direction:column}
+.cm-item{display:flex;align-items:center;gap:12px;border:0;background:transparent;border-radius:11px;padding:9px 12px;text-align:left;font-size:15px;font-weight:500;color:var(--text)}
+.cm-item:hover,.cm-item:focus-visible{background:var(--raised);outline:none}
+.cm-item svg{width:19px;height:19px;color:var(--muted);flex:none}
+.cm-item.danger,.cm-item.danger svg{color:var(--danger)}
+body.menu-open .actions{display:none !important}
+
+/* полоска «Ответ …» / «Переслать …» над полем ввода */
+.reply-bar{display:flex;align-items:center;gap:10px;max-width:780px;margin:-2px auto 8px;padding:0 2px 0 6px}
+.cb-ic{color:var(--accent-text);display:grid;place-items:center;flex:none;width:32px}
+.cb-body{flex:1;min-width:0;display:flex;flex-direction:column;border:0;border-left:3px solid var(--accent);background:transparent;padding:2px 0 2px 10px;text-align:left;line-height:1.3}
+.cb-title{font-size:13.5px;font-weight:700;color:var(--accent-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb-sub{font-size:13.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb-x{width:36px;height:36px;color:var(--muted)}
+
+/* выбор нескольких сообщений */
+.select-bar{display:flex;align-items:center;gap:10px;max-width:780px;margin:0 auto;min-height:44px}
+.sb-count{font-weight:600}
+.sb-spacer{flex:1}
+.sb-btn{display:inline-flex;align-items:center;gap:6px}
+.sb-btn svg{width:16px;height:16px}
+.composer.selecting .composer-inner,.composer.selecting .composer-note,.composer.selecting .reply-bar{display:none}
+.row.selecting{cursor:pointer;padding-left:30px;border-radius:14px}
+.row.selecting .actions{display:none !important}
+.sel-mark{position:absolute;left:4px;top:50%;width:20px;height:20px;margin-top:-10px;border-radius:50%;border:2px solid var(--line);background:var(--card)}
+.sel-mark.off{opacity:.35}
+.row.selected{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.row.selected .sel-mark{border-color:var(--accent);background:var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 12.5l4 4 8-9' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/14px no-repeat}
+.row.flash .bubble{animation:msgFlash 1.6s ease-out}
+@keyframes msgFlash{0%,40%{box-shadow:0 0 0 3px var(--accent)}100%{box-shadow:0 0 0 0 transparent}}
+.row.swiping{transition:none}
+.row:not(.swiping){transition:transform .18s ease-out}
+.row.swipe-ready::after{content:'';position:absolute;right:-40px;top:50%;width:30px;height:30px;margin-top:-15px;border-radius:50%;background:var(--accent-soft) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23B5400C' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 14L4 9l5-5'/%3E%3Cpath d='M4 9h10.5a5.5 5.5 0 0 1 0 11H11'/%3E%3C/svg%3E") center/18px no-repeat}
+@media (hover:none){.bubble{touch-action:pan-y}}
+
+/* окно «Переслать» */
+.fwd-dlg{width:min(440px,calc(100% - 32px))}
+.fwd-dlg .fwd-q{margin-bottom:10px}
+.fwd-list{display:flex;flex-direction:column;max-height:min(420px,55dvh);overflow-y:auto;margin:0 -8px 12px;padding:0 4px}
+.fwd-chat{display:flex;align-items:center;gap:12px;border:0;background:transparent;border-radius:14px;padding:8px;text-align:left}
+.fwd-chat:hover,.fwd-chat:focus-visible{background:var(--raised);outline:none}
+.fwd-text{display:flex;flex-direction:column;min-width:0}
+.fwd-text .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fwd-text .sub{font-size:13px;color:var(--muted)}
+.fwd-chat .tile,.rb-av .tile{width:42px;height:42px;border-radius:13px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:21px;font-family:var(--emoji);flex:none;position:relative}
+.fwd-chat .tile .av{width:42px;height:42px;font-size:17px}
+.fwd-chat .tile.person,.rb-av .tile.person{background:transparent;border:0}
+.fwd-chat .tile .on-dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;background:var(--online);box-shadow:0 0 0 2px var(--surface)}
+.check-row{display:flex;align-items:center;gap:10px;font-size:15px;cursor:pointer}
+.check-row input{width:18px;height:18px;accent-color:var(--accent)}
+.btn.icon-only{padding:0;width:46px;display:grid;place-items:center}
+select.txt{appearance:auto;padding:10px}
+
+/* ======================================================================
+   Звонки — как в Discord
+   ====================================================================== */
+:root{--call-bg:#111113;--call-tile:#202024;--call-text:#F4EFE6;--speak:#3FCB6A;--hang:#E5362B;--answer:#2FB35A}
+
+/* кнопки в шапке чата */
+.call-btns{display:flex;gap:2px;flex:none}
+.ctl{border:0;display:grid;place-items:center;cursor:pointer;flex:none}
+.ctl.head-call{width:42px;height:42px;border-radius:50%;background:transparent;color:var(--text)}
+.ctl.head-call:hover:not(:disabled){background:var(--raised);color:var(--accent-text)}
+.ctl.head-call.live{color:var(--answer)}
+.ctl:disabled{opacity:.45;cursor:default}
+.live-call{display:inline-grid;vertical-align:-2px;margin-left:6px;color:var(--answer)}
+.live-call svg{width:15px;height:15px}
+.chat[aria-current="true"] .live-call{color:#6FE08F}
+
+/* сцена звонка над перепиской */
+.call-stage{flex:none;position:relative}
+.call-stage.live{--stage-h:min(46vh,440px);height:var(--stage-h);min-height:200px;display:flex;flex-direction:column;background:var(--call-bg);color:var(--call-text);padding:10px 14px 12px}
+.call-stage.live.full{height:auto;flex:1;min-height:0}
+.conv-main.call-full .feed,.conv-main.call-full .composer,.conv-main.call-full .jump,.conv-main.call-full .rec-stage{display:none !important}
+.cs-top{display:flex;align-items:center;gap:8px;min-height:32px;flex:none}
+.cs-status{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.cs-lock{display:inline-grid;color:#9FD7A8}
+.cs-lock svg{width:14px;height:14px}
+.cs-spacer{flex:1}
+.cs-top-btn{display:inline-flex;align-items:center;gap:6px;border:0;background:rgba(255,255,255,.08);color:var(--call-text);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600}
+.cs-top-btn:hover{background:rgba(255,255,255,.16)}
+.cs-top-btn.icon{padding:0;width:32px;height:32px;justify-content:center}
+.cs-top-btn svg{width:16px;height:16px}
+.cs-grid{flex:1;min-height:0;display:grid;gap:8px;padding:8px 0;grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr));grid-auto-rows:minmax(0,1fr);align-content:center}
+.cs-grid.n1{grid-template-columns:minmax(0,560px);justify-content:center}
+.cs-grid.n2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.cs-grid.has-focus{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:minmax(0,1fr) minmax(0,90px)}
+.cs-grid.has-focus .ctile.focused{grid-column:1 / -1;grid-row:1}
+.cs-grid.has-focus .ctile:not(.focused){grid-row:2}
+.ctile{position:relative;min-height:0;min-width:0;border-radius:14px;background:var(--call-tile);overflow:hidden;cursor:pointer;display:grid;place-items:center;box-shadow:inset 0 0 0 0 var(--speak);transition:box-shadow .12s}
+.ctile.speaking{box-shadow:inset 0 0 0 3px var(--speak)}
+.ctile.scr{background:#000}
+.ctile.connecting{opacity:.72}
+.tile-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+.ctile.scr .tile-video,.ctile.focused .tile-video{object-fit:contain}
+.tile-video.mirror{transform:scaleX(-1)}
+.tile-bg{position:absolute;inset:0;display:grid;place-items:center;background:color-mix(in srgb,var(--c,#6E685E) 32%,var(--call-tile))}
+.tile-av.av{width:min(84px,42%);height:auto;aspect-ratio:1;font-size:clamp(20px,3vw,32px);box-shadow:0 0 0 0 var(--speak);transition:box-shadow .12s}
+.ctile.speaking .tile-av.av{box-shadow:0 0 0 3px var(--call-tile),0 0 0 6px var(--speak)}
+.ctile.has-video.speaking{box-shadow:inset 0 0 0 3px var(--speak)}
+.tile-name{position:absolute;left:8px;bottom:8px;max-width:calc(100% - 16px);display:inline-flex;align-items:center;gap:5px;background:rgba(0,0,0,.55);color:#fff;border-radius:8px;padding:3px 8px;font-size:12.5px;font-weight:600}
+.tile-name span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile-name svg{width:14px;height:14px;color:#FF8F85;flex:none}
+.tile-state{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;border-radius:8px;padding:2px 8px;font-size:12px}
+.cs-grid.has-focus .ctile:not(.focused) .tile-name{font-size:11px;padding:2px 6px;left:4px;bottom:4px}
+.cs-grid.has-focus .ctile:not(.focused) .tile-av.av{width:40px;font-size:15px}
+.cs-controls{display:flex;justify-content:center;align-items:center;gap:10px;flex:none;padding-top:4px}
+.cs-controls .ctl,.vp-btns .ctl{width:48px;height:48px;border-radius:50%;background:rgba(255,255,255,.1);color:var(--call-text);transition:background .15s}
+.cs-controls .ctl:hover{background:rgba(255,255,255,.2)}
+.cs-controls .ctl.on{background:var(--call-text);color:var(--call-bg)}
+.cs-controls .ctl.off{background:rgba(229,54,43,.18);color:#FF8F85}
+.ctl.hang{background:var(--hang) !important;color:#fff !important;width:58px;border-radius:999px}
+.ctl.hang:hover{filter:brightness(1.1)}
+.cs-grip{position:absolute;left:50%;bottom:2px;width:46px;height:6px;margin-left:-23px;border-radius:999px;background:rgba(255,255,255,.18);cursor:ns-resize;touch-action:none}
+.call-stage.full .cs-grip{display:none}
+
+/* «Идёт звонок — Присоединиться» */
+.call-stage.invite{display:flex;align-items:center;gap:12px;padding:10px 22px;background:color-mix(in srgb,var(--answer) 12%,var(--surface));border-bottom:1px solid var(--line)}
+.cs-avs{display:flex;flex:none}
+.cs-avs .cs-mini{width:30px;height:30px;font-size:12px;box-shadow:0 0 0 2px var(--surface)}
+.cs-avs .cs-mini + .cs-mini{margin-left:-8px}
+.cs-invite-text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.cs-invite-text b{font-size:14px}
+.cs-invite-text span{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.btn.call-go{background:var(--answer);color:#fff;border:0}
+.btn.call-go:hover:not(:disabled){filter:brightness(1.08)}
+.btn.call-go:disabled{opacity:.6}
+.call-stage.invite .ctl.cam{width:38px;height:38px;border-radius:50%;background:var(--card);border:1px solid var(--line);color:var(--text)}
+
+/* полоска «вернуться к звонку» (телефон, другой чат) */
+.call-return{display:flex;align-items:center;gap:8px;padding:6px 10px 6px 14px;background:var(--answer);color:#fff}
+.cr-go{flex:1;min-width:0;display:flex;align-items:center;gap:8px;border:0;background:transparent;color:inherit;font-weight:600;font-size:14px;text-align:left}
+.cr-go span:first-of-type{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cr-go svg{width:17px;height:17px}
+.call-return .ctl.hang{width:44px;height:32px}
+
+/* панель «Голосовая связь подключена» внизу слева */
+.voice-panel{border-top:1px solid var(--line);padding:10px 12px 8px;background:var(--raised)}
+.vp-row{display:flex;align-items:center;gap:8px}
+.vp-signal{color:var(--muted);display:grid}
+.vp-signal.ok{color:var(--answer)}
+.vp-text{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.3}
+.vp-title{font-size:13.5px;font-weight:700;color:var(--muted)}
+.vp-title.ok{color:var(--answer)}
+.vp-chat{border:0;background:transparent;padding:0;text-align:left;font-size:12.5px;color:var(--muted);display:flex;min-width:0}
+.vp-chat:hover .vp-chat-name{text-decoration:underline}
+.vp-chat-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.vp-time{font-variant-numeric:tabular-nums;white-space:nowrap}
+.vp-chat .vp-time{margin-left:.3em}
+.ctl.small{width:40px;height:32px}
+.vp-btns{display:flex;align-items:center;gap:6px;margin-top:8px}
+.vp-btns .ctl{width:38px;height:34px;border-radius:10px;background:var(--card);color:var(--text);border:1px solid var(--line)}
+.vp-btns .ctl:hover{border-color:var(--ink)}
+.vp-btns .ctl.off{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--line))}
+.vp-btns .ctl.on{background:var(--ink);color:var(--on-ink);border-color:var(--ink)}
+.vp-btns .ctl svg{width:18px;height:18px}
+.vp-me{margin-right:auto;display:grid;border-radius:50%;box-shadow:0 0 0 0 var(--speak);transition:box-shadow .12s}
+.vp-me.speaking{box-shadow:0 0 0 2px var(--raised),0 0 0 4px var(--speak)}
+.vp-av.av{width:30px;height:30px;font-size:12px}
+
+/* входящий звонок */
+.ring-box{position:fixed;right:24px;bottom:24px;z-index:40;width:300px;padding:22px 20px 16px;border-radius:26px;background:var(--call-bg);color:var(--call-text);box-shadow:0 18px 50px rgba(0,0,0,.45);text-align:center;animation:ringIn .3s cubic-bezier(.2,.9,.25,1.2)}
+@keyframes ringIn{from{opacity:0;transform:translateY(20px) scale(.96)}}
+.rb-x{position:absolute;right:10px;top:10px;width:32px;height:32px;border:0;border-radius:50%;background:transparent;color:rgba(244,239,230,.7);display:grid;place-items:center}
+.rb-x:hover{background:rgba(255,255,255,.1)}
+.rb-x svg{width:18px;height:18px}
+.rb-av{width:88px;height:88px;margin:4px auto 12px;border-radius:50%;display:grid;place-items:center;animation:ringPulse 1.6s ease-out infinite}
+@keyframes ringPulse{0%{box-shadow:0 0 0 0 rgba(63,203,106,.55)}100%{box-shadow:0 0 0 22px rgba(63,203,106,0)}}
+.rb-av .rb-avatar.av{width:88px;height:88px;font-size:34px}
+.rb-av .tile.rb-tile{width:88px;height:88px;border-radius:50%;font-size:42px;background:var(--call-tile);border:0}
+.rb-name{font-size:18px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rb-sub{font-size:13.5px;color:rgba(244,239,230,.7);margin:2px 0 16px}
+.rb-actions{display:flex;justify-content:center;gap:18px}
+.rb-btn{width:56px;height:56px;border-radius:50%;border:0;display:grid;place-items:center;color:#fff}
+.rb-btn svg{width:24px;height:24px}
+.rb-btn.decline{background:var(--hang)}
+.rb-btn.video{background:rgba(255,255,255,.14)}
+.rb-btn.accept{background:var(--answer);animation:acceptWiggle 1.6s ease-in-out infinite}
+@keyframes acceptWiggle{0%,60%,100%{transform:none}70%{transform:rotate(-12deg)}80%{transform:rotate(12deg)}90%{transform:rotate(-6deg)}}
+.rb-btn:hover:not(:disabled){filter:brightness(1.1)}
+.rb-btn:disabled{opacity:.5}
+.rb-labels{display:flex;justify-content:center;gap:18px;margin-top:6px}
+.rb-labels span{width:56px;font-size:11.5px;color:rgba(244,239,230,.72);white-space:nowrap;display:flex;justify-content:center}
+.rb-open{margin-top:12px;border:0;background:transparent;color:rgba(244,239,230,.8);font-size:13px;text-decoration:underline;text-underline-offset:2px}
+@media (prefers-reduced-motion: reduce){.rb-av,.rb-btn.accept{animation:none}}
+
+/* громкость участника */
+.vol-pop{position:fixed;z-index:35;width:230px;background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+.vol-head{display:flex;justify-content:space-between;gap:8px;font-size:14px}
+.vol-head b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vol-val{font-variant-numeric:tabular-nums;color:var(--muted)}
+.vol-pop input[type=range]{width:100%;accent-color:var(--accent)}
+.vol-hint{font-size:12px;color:var(--muted)}
+
+/* записи о звонках в ленте */
+.call-row{display:flex;justify-content:center;margin:10px 0}
+.cr-pill{display:flex;align-items:center;gap:10px;max-width:100%;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:8px 10px 8px 8px}
+.cr-icon{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:color-mix(in srgb,var(--answer) 16%,transparent);color:var(--answer);flex:none}
+.cr-icon svg{width:18px;height:18px}
+.cr-pill.bad .cr-icon{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
+.cr-pill.bad .cr-text{color:var(--danger)}
+.cr-pill.live{border-color:color-mix(in srgb,var(--answer) 50%,var(--line))}
+.cr-pill.live .cr-icon{animation:ringPulse 1.6s ease-out infinite}
+.cr-body{display:flex;flex-direction:column;min-width:0;line-height:1.3;padding-right:4px}
+.cr-text{font-weight:600;font-size:14px}
+.cr-text.muted{color:var(--muted);font-style:italic;font-weight:500}
+.cr-sub{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.cr-again{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:transparent;color:var(--answer);display:grid;place-items:center;flex:none}
+.cr-again:hover{background:var(--raised)}
+.cr-again svg{width:17px;height:17px}
+.call-row .btn.small.call-go{padding:6px 14px}
+
+@media (max-width:760px){
+  .call-stage.live{--stage-h:min(42vh,360px);padding:8px 8px 10px}
+  .cs-controls{gap:8px}
+  .cs-controls .ctl{width:46px;height:46px}
+  .call-stage.invite{padding:8px 12px}
+  .ctl.head-call{width:38px;height:38px}
+  .ring-box{left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom, 0px));width:auto}
+  body.ringing .ring-box{top:auto}
+  .select-bar{gap:6px}
+  .call-stage.invite .ctl.cam{display:none}
+  .sb-count{font-size:14px}
+}

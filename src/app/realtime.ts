@@ -1,12 +1,13 @@
 // Supabase Realtime: изменения в базе, «печатает…» (broadcast), а также пульс «в сети» (ping).
 import type { RealtimeChannel, RealtimeChannelOptions } from '@supabase/supabase-js';
 import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
-import type { KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
+import type { Call, CallMember, CallSignal, KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
 import {
   S, addReaction, bumpChat, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
   putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
 } from './store';
 import * as e2e from './e2e';
+import * as calls from './calls';
 
 const TYPING_TTL = 6000;
 /** Если WebSocket недоступен (корпоративная сеть, прокси) — подтягиваем изменения опросом. */
@@ -36,6 +37,7 @@ function setConnected(ok: boolean): void {
   clearTimeout(connectTimer);
   if (connected === ok) return;
   connected = ok;
+  S.live = ok;
   statusCb(ok);
   if (ok) {
     clearInterval(pollTimer);
@@ -171,6 +173,7 @@ async function resync(withProfiles = false): Promise<void> {
     if (S.cur && S.chats.has(S.cur)) await loadFeed(S.cur, true);
     if (withProfiles) await refreshProfiles();
     e2e.sweepSoon();
+    void calls.refreshCalls();
   } catch { /* повторим при следующем переподключении */ } finally {
     resyncing = false;
   }
@@ -261,6 +264,15 @@ export async function startRealtime(onStatus: (ok: boolean) => void, onIdentityR
     .on('postgres_changes', { event: '*', schema: 'public', table: 'user_keys' }, (p) => {
       if (p.eventType !== 'DELETE') onUserKey(p.new as Partial<UserKey>);
     })
+    // Звонки: кто звонит, кто в звонке и служебные сообщения WebRTC (только адресованные мне).
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'calls' }, (p) => {
+      if (p.eventType !== 'DELETE') calls.onCallRow(p.new as Call);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'call_members' }, (p) => {
+      if (p.eventType !== 'DELETE') calls.onCallMemberRow(p.new as CallMember);
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'call_signals', filter: `to_user=eq.${meId()}` },
+      (p) => calls.onSignalRow(p.new as CallSignal))
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setConnected(true);
