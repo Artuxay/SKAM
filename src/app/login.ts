@@ -1,7 +1,9 @@
 // Вход и регистрация как в Telegram: номер телефона или почта → код → (для новых) создание аккаунта.
+// Или одной кнопкой — через Google, GitHub или Discord (те, что включены в Supabase).
 import type { AuthError } from '@supabase/supabase-js';
-import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
+import { sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, lsGet, lsSet } from '../lib/dom';
+import { OAUTH, authSettings, knownSettings, lastProvider, signInWith, type OAuthId } from '../lib/oauth';
 
 type Method = 'phone' | 'email';
 type Target = { method: Method; value: string };
@@ -13,20 +15,6 @@ const CODE_LEN: Record<Method, number> = {
   phone: Number(import.meta.env.VITE_SMS_OTP_LENGTH) || 6,
 };
 let cooldownTimer: number | undefined;
-let phoneEnabled: boolean | null = null;
-
-/** Включён ли вход по телефону в Supabase (Auth → Providers → Phone + SMS-провайдер). */
-async function detectPhone(): Promise<boolean> {
-  if (phoneEnabled !== null) return phoneEnabled;
-  try {
-    const r = await fetch(`${SUPABASE_URL}/auth/v1/settings`, { headers: { apikey: SUPABASE_KEY } });
-    const j = await r.json();
-    phoneEnabled = !!j?.external?.phone;
-  } catch {
-    phoneEnabled = false;
-  }
-  return phoneEnabled;
-}
 
 export function mountLogin(root: HTMLElement, notice?: string | null): void {
   clearInterval(cooldownTimer);
@@ -41,10 +29,18 @@ export function mountLogin(root: HTMLElement, notice?: string | null): void {
       </div>
     </main>`));
   const saved = readSaved();
+  const known = knownSettings();
   startStep(saved, notice ?? null);
-  void detectPhone().then((on) => {
-    // Вкладка «Телефон» появляется сама, как только в Supabase включат SMS.
-    if (on && document.getElementById('authStart')) startStep(readSaved(), notice ?? null);
+  void authSettings().then((st) => {
+    // Вкладка «Телефон» и кнопки Google / GitHub / Discord появляются сами, как только их включат в Supabase.
+    const changed = !known || known.phone !== st.phone || known.oauth.join() !== st.oauth.join();
+    const start = document.getElementById('authStart') as HTMLElement | null;
+    if (changed && start && (st.phone || st.oauth.length)) {
+      const typed = (document.getElementById('authId') as HTMLInputElement | null)?.value;
+      const keep = readSaved();
+      if (typed != null && keep.method === 'email') keep.value = typed;
+      startStep(keep, notice ?? null);
+    }
   });
 }
 
@@ -93,6 +89,8 @@ function prettyPhone(e164: string): string {
 function startStep(saved: Target, notice: string | null): void {
   const body = $('authBody');
   $('authLead').textContent = 'Войдите или создайте аккаунт.';
+  const st = knownSettings();
+  const phoneEnabled = !!st?.phone;
   let method: Method = phoneEnabled ? saved.method : 'email';
 
   const wrap = el('div', 'auth-form');
@@ -140,7 +138,10 @@ function startStep(saved: Target, notice: string | null): void {
     wrap.append(tabs);
   }
   wrap.append(form);
-  body.replaceChildren(wrap, el('p', 'auth-note', 'Пришлём код подтверждения. Если аккаунта ещё нет — создадим его.'));
+  const note = el('p', 'auth-note', 'Пришлём код подтверждения. Если аккаунта ещё нет — создадим его.');
+  const providers = st?.oauth ?? [];
+  if (providers.length) wrap.append(oauthBlock(providers, (msg) => { err.textContent = msg; }));
+  body.replaceChildren(wrap, note);
   applyMethod();
 
   form.addEventListener('submit', async (ev) => {
@@ -164,6 +165,37 @@ function startStep(saved: Target, notice: string | null): void {
     lsSet(LAST_KEY, JSON.stringify({ method, value }));
     codeStep({ method, value });
   });
+}
+
+/** «или» и кнопки «Войти через Google / GitHub / Discord». Тот, через кого входили в прошлый раз, — первым. */
+function oauthBlock(ids: OAuthId[], showError: (msg: string) => void): HTMLElement {
+  const box = el('div', 'oauth');
+  const sep = el('div', 'oauth-or');
+  sep.append(el('span', null, 'или'));
+  const list = el('div', 'oauth-list');
+  const last = lastProvider();
+  const order = OAUTH.filter((p) => ids.includes(p.id)).sort((a, b) => Number(b.id === last) - Number(a.id === last));
+  const btns = order.map((p) => {
+    const b = button(`btn ghost oauth-btn oauth-${p.id}`, null, async () => {
+      btns.forEach((x) => { x.disabled = true; });
+      label.textContent = `Открываем ${p.label}…`;
+      const error = await signInWith(p.id);
+      // Без ошибки браузер уже уходит на страницу входа провайдера.
+      if (error) {
+        btns.forEach((x) => { x.disabled = false; });
+        label.textContent = `Войти через ${p.label}`;
+        showError(authMessage(error));
+      }
+    });
+    const label = el('span', null, `Войти через ${p.label}`);
+    b.append(label);
+    if (p.id === last) b.append(el('span', 'oauth-last', 'в прошлый раз'));
+    b.dataset.provider = p.id;
+    return b;
+  });
+  list.append(...btns);
+  box.append(sep, list);
+  return box;
 }
 
 function sendCode(t: Target) {

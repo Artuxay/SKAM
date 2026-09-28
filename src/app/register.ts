@@ -3,6 +3,7 @@
 // с заполненными именем и фото — остаётся выбрать @username (есть готовые свободные варианты).
 import { avatarUrl, sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, toast } from '../lib/dom';
+import { providerProfile } from '../lib/oauth';
 import { S, USERNAME_RE, normUsername, removeAvatar, updateMyProfile, uploadAvatar, usernameAvailable, usernameRequired } from './store';
 
 const TRANSLIT: Record<string, string> = {
@@ -30,8 +31,19 @@ function candidates(first: string, last: string): string[] {
   return [...new Set(list)].filter((x) => USERNAME_RE.test(x));
 }
 
+/** Фото профиля у Google / GitHub / Discord → файл для uploadAvatar. */
+async function fetchAvatar(url: string): Promise<File> {
+  const r = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer' });
+  if (!r.ok) throw new Error(String(r.status));
+  const blob = await r.blob();
+  if (!blob.type.startsWith('image/') || blob.size > 5 * 1024 * 1024) throw new Error('not an image');
+  return new File([blob], 'avatar', { type: blob.type });
+}
+
 export function mountRegister(root: HTMLElement, onDone: () => void, opts: { existing?: boolean } = {}): void {
   const existing = !!opts.existing;
+  // Вошли через Google / GitHub / Discord: имя уже подставлено, фото и ник можно взять оттуда же.
+  const pp = existing ? null : providerProfile(S.user);
   root.replaceChildren(html(`
     <main class="auth">
       <div class="auth-card">
@@ -44,7 +56,9 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   root.querySelector('h1')!.textContent = existing ? 'Выберите имя пользователя' : 'Создание аккаунта';
   root.querySelector('.lead')!.textContent = existing
     ? 'Теперь у каждого в СКАМ есть @username — по нему вас находят друзья. Без него писать сообщения нельзя.'
-    : 'Так вас увидят собеседники в СКАМ.';
+    : pp
+      ? `Вы вошли через ${pp.label}. Проверьте имя и придумайте @username — так вас увидят собеседники в СКАМ.`
+      : 'Так вас увидят собеседники в СКАМ.';
   const hero = root.querySelector('.appicon.hero') as SVGElement | null;
   if (hero) hero.style.width = '72px';
 
@@ -61,6 +75,24 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   Object.assign(file, { type: 'file', accept: 'image/*', hidden: true });
   const avHint = el('span', 'hint', 'Добавить фото');
   avWrap.append(avBtn, avHint, file);
+  // «Взять фото из Google» — только по нажатию: без спроса чужое фото в профиль не ставим.
+  const fromProvider = pp?.avatar
+    ? button('reg-from', `Взять фото из ${pp.label}`, async () => {
+      fromProvider!.disabled = true;
+      avHint.textContent = 'Загружаем…';
+      try {
+        const f = await fetchAvatar(pp.avatar!);
+        if (S.me?.avatar_path) await removeAvatar();
+        await uploadAvatar(f);
+        fromProvider!.hidden = true;
+      } catch {
+        toast(`Не получилось взять фото из ${pp.label} — выберите файл.`);
+        fromProvider!.disabled = false;
+      }
+      paintAvatar();
+    })
+    : null;
+  if (fromProvider && !S.me?.avatar_path) avWrap.append(fromProvider);
 
   function paintAvatar(): void {
     const url = avatarUrl(S.me?.avatar_path);
@@ -132,6 +164,9 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   form.addEventListener('input', () => { err.textContent = ''; });
   (existing ? un.i : first).focus();
 
+  // Ник у GitHub / Discord — первый кандидат в @username.
+  const nickCandidates = pp?.nick ? [latin(pp.nick).slice(0, 32)].filter((x) => USERNAME_RE.test(x)) : [];
+
   // Проверка @username на лету
   let checkSeq = 0;
   let unOk = false;
@@ -170,7 +205,7 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
     clearTimeout(suggTimer);
     const seq = ++suggSeq;
     if (!force && normUsername(un.i.value)) { sugg.hidden = true; return; }
-    const list = candidates(first.value, ln.i.value);
+    const list = [...new Set([...nickCandidates, ...candidates(first.value, ln.i.value)])];
     if (!list.length) { sugg.hidden = true; return; }
     suggTimer = window.setTimeout(async () => {
       const checked = await Promise.all(list.slice(0, 8).map(async (c) => ((await usernameAvailable(c).catch(() => false)) ? c : null)));
@@ -194,6 +229,17 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   ln.i.addEventListener('input', () => void suggest());
   if (un.i.value) checkUsername();
   void suggest();
+  // Ник у провайдера свободен — сразу подставим его (поменять можно).
+  if (nickCandidates.length && !un.i.value) {
+    const nick = nickCandidates[0];
+    void usernameAvailable(nick).then((free) => {
+      if (free && !un.i.value && document.activeElement !== un.i) {
+        un.i.value = `@${nick}`;
+        checkUsername();
+        void suggest(); // поле уже заполнено — спрячет «Свободны» и отменит отложенный показ
+      }
+    }).catch(() => {});
+  }
 
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();

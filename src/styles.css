@@ -231,6 +231,16 @@ dialog h2{margin:0 0 18px;font-size:19px}
 .auth-sent b{overflow-wrap:anywhere}
 .code-input{letter-spacing:.3em;font-variant-numeric:tabular-nums;text-align:center;font-weight:600}
 .linkish{border:0;background:transparent;padding:0;color:var(--accent-text);font-weight:600;text-decoration:underline;text-underline-offset:2px}
+.oauth{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+.oauth-or{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}
+.oauth-or::before,.oauth-or::after{content:"";flex:1;height:1px;background:var(--line)}
+.oauth-list{display:flex;flex-direction:column;gap:8px}
+.auth-form .oauth-btn{display:flex;align-items:center;justify-content:center;gap:8px;background:var(--card);padding:11px 16px}
+.oauth-btn:disabled{opacity:.6}
+.oauth-last{font-size:11.5px;font-weight:600;color:var(--accent-text);background:var(--accent-soft);border-radius:999px;padding:2px 8px}
+.reg-from{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--card);border-radius:999px;padding:4px 12px;font-size:13px;font-weight:600;color:var(--accent-text)}
+.reg-from:hover:not(:disabled){border-color:var(--accent)}
+.reg-from:disabled{opacity:.6}
 
 /* ---------- боковая панель ---------- */
 .side-actions{display:flex;align-items:center;gap:4px}

@@ -27,6 +27,7 @@ import { MAX_ALBUM, cachedUrl, dropMediaUrls, thumbUrl, type Prepared } from './
 import * as calls from './calls';
 import { call, callPreview, callRow, mountCallUI, renderCallBtns, renderCalls } from './callui';
 import { openRate, openSupport, ratingShort, resetFeedback } from './feedback';
+import { loginMethods, providerProfile } from '../lib/oauth';
 import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
 } from './attachui';
@@ -2010,6 +2011,7 @@ function renderProfile(): void {
   aboutField.append(aboutBtns, el('p', 'hint', 'Нашли ошибку или есть идея — напишите в поддержку. Ответ придёт на почту.'));
 
   // Выход
+  const methods = loginMethods(S.user);
   const out = el('div', 'field');
   out.append(
     button('btn danger', 'Выйти из аккаунта', async () => {
@@ -2021,7 +2023,9 @@ function renderProfile(): void {
       void sb.auth.signOut();
     }),
     el('p', 'hint', contactLine()),
-    el('p', 'hint', 'После выхода ключ шифрования удалится с этого устройства: чтобы войти снова, понадобятся код и пароль шифрования.'),
+    ...(methods.length ? [el('p', 'hint', `Вход: ${methods.join(', ')}.`)] : []),
+    el('p', 'hint', `После выхода ключ шифрования удалится с этого устройства: чтобы войти снова, понадобятся ${
+      methods.some((m) => m !== 'почта' && m !== 'телефон') ? 'вход' : 'код'} и пароль шифрования.`),
   );
 
   stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), aboutField, el('div', 'hr'), out);
@@ -2502,7 +2506,9 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   // Новый аккаунт (или старый без имени или @username) — сначала «Создание аккаунта», как в Telegram.
   // @username обязателен: без него база не даст писать сообщения. Исключение — username_optional.
   if (!S.me?.first_name || (!S.me?.username && usernameRequired())) {
-    mountRegister(root, () => { if (mounted) void keyGate(root, user); }, { existing: !!S.me?.first_name });
+    // «Старый аккаунт без @username» — только если имя вводили сами; после Google/GitHub/Discord имя
+    // подставляет база, но это новый аккаунт — показываем «Создание аккаунта».
+    mountRegister(root, () => { if (mounted) void keyGate(root, user); }, { existing: !!S.me?.first_name && !providerProfile(user) });
     return;
   }
   await keyGate(root, user);

@@ -9,18 +9,34 @@ export const SUPABASE_URL = url ?? '';
 export const SUPABASE_KEY = key ?? '';
 
 /**
- * Ошибка из ссылки для входа (например, ссылка просрочена).
+ * Ошибка входа, с которой нас вернули на сайт: просроченная ссылка из письма
+ * или отказ/сбой при входе через Google, GitHub, Discord.
  * Читаем её до того, как supabase-js очистит адресную строку.
  */
 export const authLinkError: string | null = (() => {
   const raw = location.hash.startsWith('#') ? location.hash.slice(1) : '';
-  const params = new URLSearchParams(raw || location.search.slice(1));
+  const params = new URLSearchParams(raw.includes('error') ? raw : location.search.slice(1));
+  const error = params.get('error');
   const code = params.get('error_code');
-  const desc = params.get('error_description');
-  if (!code && !desc) return null;
+  const desc = (params.get('error_description') ?? '').replace(/\+/g, ' ');
+  if (!error && !code && !desc) return null;
   if (code === 'otp_expired') return 'Ссылка для входа устарела или уже использована. Запросите новую.';
-  return desc ? `Не получилось войти: ${desc.replace(/\+/g, ' ')}` : 'Не получилось войти по ссылке.';
+  if (error === 'access_denied' && !/email/i.test(desc)) return 'Вход отменён. Можно попробовать ещё раз или войти по почте.';
+  if (code === 'signup_disabled') return 'Регистрация новых пользователей сейчас закрыта.';
+  if (code === 'provider_email_needs_verification') return 'Подтвердите почту: мы отправили письмо со ссылкой. Потом войдите ещё раз.';
+  if (/email/i.test(desc) && /(provider|external)/i.test(desc)) {
+    return 'Сервис входа не передал адрес почты. Проверьте, что в аккаунте есть подтверждённая почта, или войдите по почте.';
+  }
+  return desc ? `Не получилось войти: ${desc}` : 'Не получилось войти.';
 })();
+
+// Ошибку показали — убираем её из адресной строки, чтобы она не всплывала при обновлении страницы.
+if (authLinkError) {
+  const clean = new URL(location.href);
+  clean.hash = '';
+  for (const k of ['error', 'error_code', 'error_description']) clean.searchParams.delete(k);
+  history.replaceState(history.state, '', clean.pathname + clean.search);
+}
 
 export const sb = createClient<Database>(url || 'http://localhost:54321', key || 'missing-key', {
   auth: {
