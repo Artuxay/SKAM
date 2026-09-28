@@ -1,5 +1,5 @@
 // Вход и регистрация как в Telegram: номер телефона или почта → код → (для новых) создание аккаунта.
-// Или одной кнопкой — через Google, GitHub или Discord (те, что включены в Supabase).
+// Или одной кнопкой — через GitHub или Discord (те, что включены в Supabase).
 import type { AuthError } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, lsGet, lsSet } from '../lib/dom';
@@ -32,7 +32,7 @@ export function mountLogin(root: HTMLElement, notice?: string | null): void {
   const known = knownSettings();
   startStep(saved, notice ?? null);
   void authSettings().then((st) => {
-    // Вкладка «Телефон» и кнопки Google / GitHub / Discord появляются сами, как только их включат в Supabase.
+    // Вкладка «Телефон» и кнопки GitHub / Discord появляются сами, как только их включат в Supabase.
     const changed = !known || known.phone !== st.phone || known.oauth.join() !== st.oauth.join();
     const start = document.getElementById('authStart') as HTMLElement | null;
     if (changed && start && (st.phone || st.oauth.length)) {
@@ -167,7 +167,7 @@ function startStep(saved: Target, notice: string | null): void {
   });
 }
 
-/** «или» и кнопки «Войти через Google / GitHub / Discord». Тот, через кого входили в прошлый раз, — первым. */
+/** «или» и кнопки «Войти через GitHub / Discord». Тот, через кого входили в прошлый раз, — первым. */
 function oauthBlock(ids: OAuthId[], showError: (msg: string) => void): HTMLElement {
   const box = el('div', 'oauth');
   const sep = el('div', 'oauth-or');

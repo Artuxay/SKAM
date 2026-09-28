@@ -2506,7 +2506,7 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   // Новый аккаунт (или старый без имени или @username) — сначала «Создание аккаунта», как в Telegram.
   // @username обязателен: без него база не даст писать сообщения. Исключение — username_optional.
   if (!S.me?.first_name || (!S.me?.username && usernameRequired())) {
-    // «Старый аккаунт без @username» — только если имя вводили сами; после Google/GitHub/Discord имя
+    // «Старый аккаунт без @username» — только если имя вводили сами; после GitHub/Discord имя
     // подставляет база, но это новый аккаунт — показываем «Создание аккаунта».
     mountRegister(root, () => { if (mounted) void keyGate(root, user); }, { existing: !!S.me?.first_name && !providerProfile(user) });
     return;

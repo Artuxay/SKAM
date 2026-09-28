@@ -10,7 +10,7 @@ export const SUPABASE_KEY = key ?? '';
 
 /**
  * Ошибка входа, с которой нас вернули на сайт: просроченная ссылка из письма
- * или отказ/сбой при входе через Google, GitHub, Discord.
+ * или отказ/сбой при входе через GitHub или Discord.
  * Читаем её до того, как supabase-js очистит адресную строку.
  */
 export const authLinkError: string | null = (() => {
