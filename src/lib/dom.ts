@@ -83,6 +83,10 @@ export const ICONS = {
   expand: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>',
   collapse: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>',
   signal: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3" y="14" width="4" height="7" rx="1"/><rect x="10" y="9" width="4" height="12" rx="1"/><rect x="17" y="4" width="4" height="17" rx="1"/></svg>',
+  support: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 20.5l1.4-5A8.5 8.5 0 1 1 21 11.5z"/><path d="M9.9 9.3a2.2 2.2 0 0 1 4.3.7c0 1.5-2.2 1.9-2.2 3.2"/><path d="M12 16h.01" stroke-width="2.8"/></svg>',
+  star: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.9l2.8 5.7 6.3.9-4.6 4.5 1.1 6.3L12 17.3l-5.6 3 1.1-6.3-4.6-4.5 6.3-.9z"/></svg>',
+  starFill: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" d="M12 2.9l2.8 5.7 6.3.9-4.6 4.5 1.1 6.3L12 17.3l-5.6 3 1.1-6.3-4.6-4.5 6.3-.9z"/></svg>',
+  done: '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7.5 12.5l3 3 6-6.5"/></svg>',
   bell: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>',
 };
 
@@ -131,6 +135,30 @@ export function openDialog(d: HTMLDialogElement): void {
 }
 export function closeDialog(d: HTMLDialogElement): void {
   if (d.open) d.close();
+}
+
+/** Шапка диалога: заголовок и крестик. */
+export function dlgHead(title: string, dlg: HTMLDialogElement, closable = true): HTMLElement {
+  const head = el('div', 'dlg-head');
+  head.append(el('h2', null, title));
+  if (closable) {
+    const x = button('icon-btn', null, () => closeDialog(dlg));
+    x.setAttribute('aria-label', 'Закрыть');
+    x.append(html(ICONS.close));
+    head.append(x);
+  }
+  return head;
+}
+
+/** Понятный текст ошибки для человека. */
+export function errText(e: unknown, fallback = 'Не получилось. Проверьте соединение и попробуйте ещё раз.'): string {
+  const err = e as { code?: string; message?: string } | null;
+  if (!err) return fallback;
+  if (err.message?.includes('Failed to fetch')) return 'Нет связи с сервером.';
+  if (err.code === '42501' || err.message?.includes('row-level security')) return 'Недостаточно прав для этого действия.';
+  if (err.code === 'P0002') return 'Не найдено.';
+  if (err.message && /^[А-Яа-яЁё]/.test(err.message)) return err.message;
+  return fallback;
 }
 
 /** Текст с кликабельными ссылками — без innerHTML. */

@@ -3,7 +3,7 @@ import type { User } from '@supabase/supabase-js';
 import { avatarUrl, sb } from '../lib/supabase';
 import type { Forward, MyChat, ReactionKey } from '../lib/database.types';
 import {
-  $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, el, fillText, html,
+  $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
   listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ,
 } from '../lib/dom';
 import { PACKS, findSticker, recentStickers, rememberSticker, stickerUrl, stickersForEmoji, type Sticker } from '../lib/stickers';
@@ -26,6 +26,7 @@ import { MIN_PASSWORD, mountKeySetup, mountKeyUnlock, mountNoCrypto } from './ke
 import { MAX_ALBUM, cachedUrl, dropMediaUrls, thumbUrl, type Prepared } from './attach';
 import * as calls from './calls';
 import { call, callPreview, callRow, mountCallUI, renderCallBtns, renderCalls } from './callui';
+import { openRate, openSupport, ratingShort, resetFeedback } from './feedback';
 import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
 } from './attachui';
@@ -45,7 +46,11 @@ const SHELL = `
     <div class="voice-panel" id="voicePanel" hidden></div>
     <footer class="side-foot">
       <button class="me" id="meBox" type="button" aria-label="Профиль и настройки"></button>
-      <button class="icon-btn theme-btn" id="themeBtn" type="button"></button>
+      <div class="foot-btns">
+        <button class="icon-btn foot-btn" id="supportBtn" type="button" aria-label="Поддержка" title="Поддержка">${ICONS.support}</button>
+        <button class="icon-btn foot-btn" id="rateBtn" type="button" aria-label="Оценить СКАМ" title="Оценить СКАМ">${ICONS.star}</button>
+        <button class="icon-btn foot-btn theme-btn" id="themeBtn" type="button"></button>
+      </div>
     </footer>
   </aside>
 
@@ -131,6 +136,8 @@ const SHELL = `
 <dialog id="viewer" class="viewer" aria-label="Просмотр"></dialog>
 <dialog id="fwdDlg" class="fwd-dlg" aria-label="Переслать"></dialog>
 <dialog id="callDlg" aria-label="Настройки звонка"></dialog>
+<dialog id="supportDlg" class="support-dlg" aria-label="Поддержка"></dialog>
+<dialog id="rateDlg" class="rate-dlg" aria-label="Оценить СКАМ"></dialog>
 <div class="ctx-menu" id="ctxMenu" role="menu" hidden></div>
 <div class="vol-pop" id="volPop" hidden></div>
 <div class="ring-box" id="ringBox" role="alertdialog" aria-live="assertive" hidden></div>
@@ -237,17 +244,6 @@ function brandAvatar(cls = ''): HTMLElement {
   const node = el('div', `av brand ${cls}`);
   node.append(html(BRAND_SVG));
   return node;
-}
-
-
-function errText(e: unknown, fallback = 'Не получилось. Проверьте соединение и попробуйте ещё раз.'): string {
-  const err = e as { code?: string; message?: string } | null;
-  if (!err) return fallback;
-  if (err.message?.includes('Failed to fetch')) return 'Нет связи с сервером.';
-  if (err.code === '42501' || err.message?.includes('row-level security')) return 'Недостаточно прав для этого действия.';
-  if (err.code === 'P0002') return 'Не найдено.';
-  if (err.message && /^[А-Яа-яЁё]/.test(err.message)) return err.message;
-  return fallback;
 }
 
 function convVisible(): boolean {
@@ -1857,18 +1853,6 @@ async function submitNew(): Promise<void> {
 // Профиль
 // ---------------------------------------------------------------------------
 
-function dlgHead(title: string, dlg: HTMLDialogElement, closable = true): HTMLElement {
-  const head = el('div', 'dlg-head');
-  head.append(el('h2', null, title));
-  if (closable) {
-    const x = button('icon-btn', null, () => closeDialog(dlg));
-    x.setAttribute('aria-label', 'Закрыть');
-    x.append(html(ICONS.close));
-    head.append(x);
-  }
-  return head;
-}
-
 function openProfile(): void {
   const dlg = $<HTMLDialogElement>('profileDlg');
   renderProfile();
@@ -2013,6 +1997,18 @@ function renderProfile(): void {
   pwBtn.style.alignSelf = 'flex-start';
   encField.append(encRow, pwBtn);
 
+  // Поддержка и оценка
+  const aboutField = el('div', 'field');
+  aboutField.append(el('span', 'fld', 'СКАМ'));
+  const aboutBtns = el('div', 'about-btns');
+  const supBtn = button('btn ghost small', null, () => { closeDialog(dlg); openSupport(); });
+  supBtn.append(html(ICONS.support), 'Поддержка');
+  const avg = ratingShort();
+  const rateBtn = button('btn ghost small', null, () => { closeDialog(dlg); openRate(); });
+  rateBtn.append(html(ICONS.star), avg ? `Оценить · ${avg}` : 'Оценить СКАМ');
+  aboutBtns.append(supBtn, rateBtn);
+  aboutField.append(aboutBtns, el('p', 'hint', 'Нашли ошибку или есть идея — напишите в поддержку. Ответ придёт на почту.'));
+
   // Выход
   const out = el('div', 'field');
   out.append(
@@ -2028,7 +2024,7 @@ function renderProfile(): void {
     el('p', 'hint', 'После выхода ключ шифрования удалится с этого устройства: чтобы войти снова, понадобятся код и пароль шифрования.'),
   );
 
-  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), out);
+  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), aboutField, el('div', 'hr'), out);
   dlg.replaceChildren(dlgHead('Профиль', dlg), stack);
 }
 
@@ -2448,6 +2444,8 @@ function wire(): void {
   listen(window, 'offline', renderMe);
   listen($('findForm'), 'submit', (e: Event) => { e.preventDefault(); void runFind(true); });
   listen($('findUser'), 'input', () => void runFind(false));
+  listen($('supportBtn'), 'click', () => openSupport());
+  listen($('rateBtn'), 'click', () => openRate());
   listen($('themeBtn'), 'click', () => {
     setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark');
     renderThemeBtn();
@@ -2457,7 +2455,7 @@ function wire(): void {
   const onSys = () => renderThemeBtn();
   sysDark.addEventListener('change', onSys);
   unsubs.push(() => sysDark.removeEventListener('change', onSys));
-  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg']) {
+  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg']) {
     const d = $<HTMLDialogElement>(id);
     listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
@@ -2609,6 +2607,7 @@ export function unmountApp(): void {
   unsubs.forEach((f) => f());
   unsubs = [];
   resetState();
+  resetFeedback();
   dropMediaUrls();
   U.drafts.clear();
   U.reply.clear();

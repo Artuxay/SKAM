@@ -338,6 +338,20 @@ export type Database = {
           answered_at: string | null; ringing: boolean; server_now: string; members: CallMemberInfo[];
         }[];
       };
+      /** Оценка СКАМ: средняя, число оценок, распределение [1★…5★] и моя оценка. */
+      app_rating: {
+        Args: Record<PropertyKey, never>;
+        Returns: { avg: number; count: number; dist: number[]; mine: number | null };
+      };
+      rate_app: {
+        Args: { p_stars: number };
+        Returns: { avg: number; count: number; dist: number[]; mine: number | null };
+      };
+      /** Обычно вызывается из Edge Function support (она же отправляет письмо). */
+      support_submit: {
+        Args: { p_topic: string; p_body: string; p_meta?: Json | null };
+        Returns: { id: string; no: string; email: string | null };
+      };
       e2e_pending: {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];

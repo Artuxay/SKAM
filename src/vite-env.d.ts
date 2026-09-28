@@ -19,3 +19,6 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/** Метка сборки (дата и коммит) — подставляет Vite, см. vite.config.ts. */
+declare const __SKAM_BUILD__: string;
