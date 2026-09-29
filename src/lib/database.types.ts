@@ -6,6 +6,17 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 
 export type ChatKind = 'group' | 'direct' | 'channel' | 'bot';
 
+/** Неофициальный набор стикеров: картинки — storage stickers/<id>/<стикер>. */
+export type StickerPackInfo = {
+  id: string;
+  title: string;
+  /** Мой набор (я его автор). */
+  mine: boolean;
+  /** Набор добавлен в мою панель стикеров. */
+  added: boolean;
+  stickers: { id: string; emoji: string }[];
+};
+
 
 /** Вложение: файл лежит в бакете media зашифрованным своим ключом (key, base64, 32 байта). */
 export type Attachment = {
@@ -45,13 +56,15 @@ export type ChatRight = 'info' | 'post' | 'edit' | 'delete' | 'invite' | 'ban' |
 export type ChatCard = {
   id: string; kind: ChatKind; name: string; emoji: string; avatar_path: string | null; description: string | null;
   username: string | null; member_count: number; is_member: boolean;
+  /** Официальная галочка канала. */
+  verified: boolean;
 };
 
 /** Участник с профилем (список участников, подписчики, администраторы). */
 export type MemberInfo = {
   user_id: string; role: ChatRole; rights: ChatRight[] | null; promoted_by: string | null; joined_at: string;
   name: string | null; username: string | null; avatar_path: string | null; color: string;
-  last_seen_at: string | null; online_until: string | null;
+  last_seen_at: string | null; online_until: string | null; verified: boolean;
 };
 
 export type CallStatus = 'active' | 'ended' | 'missed' | 'declined' | 'cancelled';
@@ -96,6 +109,8 @@ type ChatRow = {
   avatar_path: string | null;
   /** Подписывать посты канала именем автора. */
   sign_messages: boolean;
+  /** Официальная галочка (только у каналов; выдаёт владелец СКАМ). */
+  verified: boolean;
 };
 
 export type Database = {
@@ -111,6 +126,8 @@ export type Database = {
           username: string | null;
           /** Исключение: этому аккаунту @username необязателен (ставит администратор). */
           username_optional: boolean;
+          /** Официальная галочка: выдаёт и снимает только владелец СКАМ (set_verified). */
+          verified: boolean;
           avatar_path: string | null;
           color: string;
           last_seen_at: string | null;
@@ -326,6 +343,8 @@ export type Database = {
           sign_messages: boolean;
           /** Мои права в этом чате (у владельца — все). */
           rights: ChatRight[];
+          /** Официальная галочка: у канала — от владельца СКАМ, у бота СКАМ — всегда. */
+          verified: boolean;
         }[];
       };
       create_chat: {
@@ -361,7 +380,7 @@ export type Database = {
         Args: { p_chat?: string | null; p_limit?: number };
         Returns: {
           id: string; name: string | null; username: string | null; avatar_path: string | null; color: string;
-          last_seen_at: string | null; online_until: string | null; in_chat: boolean;
+          last_seen_at: string | null; online_until: string | null; in_chat: boolean; verified: boolean;
         }[];
       };
       chat_by_invite: { Args: { p_code: string }; Returns: ChatCard[] };
@@ -388,7 +407,7 @@ export type Database = {
         Args: { p_query: string; p_limit?: number };
         Returns: {
           id: string; name: string | null; username: string | null; avatar_path: string | null; color: string;
-          is_contact: boolean;
+          is_contact: boolean; verified: boolean;
         }[];
       };
       username_available: { Args: { p_username: string }; Returns: boolean };
@@ -431,6 +450,20 @@ export type Database = {
         Args: { p_topic: string; p_body: string; p_meta?: Json | null };
         Returns: { id: string; no: string; email: string | null };
       };
+      /** Я владелец СКАМ (могу выдавать официальные галочки)? */
+      am_app_owner: { Args: Record<PropertyKey, never>; Returns: boolean };
+      set_verified: { Args: { p_kind: 'user' | 'channel'; p_id: string; p_on: boolean }; Returns: undefined };
+      /** Неофициальные наборы стикеров. */
+      sticker_pack: { Args: { p_pack: string }; Returns: StickerPackInfo | null };
+      my_sticker_packs: { Args: Record<PropertyKey, never>; Returns: StickerPackInfo[] };
+      create_sticker_pack: { Args: { p_title: string }; Returns: string };
+      rename_sticker_pack: { Args: { p_pack: string; p_title: string }; Returns: undefined };
+      add_sticker: { Args: { p_pack: string; p_id: string; p_emoji: string }; Returns: undefined };
+      set_sticker_emoji: { Args: { p_pack: string; p_id: string; p_emoji: string }; Returns: undefined };
+      remove_sticker: { Args: { p_pack: string; p_id: string }; Returns: undefined };
+      delete_sticker_pack: { Args: { p_pack: string }; Returns: undefined };
+      add_sticker_pack: { Args: { p_pack: string }; Returns: undefined };
+      remove_sticker_pack: { Args: { p_pack: string }; Returns: undefined };
       e2e_pending: {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];

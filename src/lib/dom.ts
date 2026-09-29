@@ -43,6 +43,8 @@ export const BRAND_AVATAR =
 export const LOGO = `<span class="logo">${APP_ICON}<span class="wordmark">СКАМ</span></span>`;
 
 export const ICONS = {
+  /** Официальная галочка: розетка в цветах логотипа и тёмная галочка. */
+  verified: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6L14.23 3.69L17.2 2.99L18.08 5.92L21.01 6.8L20.31 9.77L22.4 12L20.31 14.23L21.01 17.2L18.08 18.08L17.2 21.01L14.23 20.31L12 22.4L9.77 20.31L6.8 21.01L5.92 18.08L2.99 17.2L3.69 14.23L1.6 12L3.69 9.77L2.99 6.8L5.92 5.92L6.8 2.99L9.77 3.69Z" fill="url(#skamGrad)" stroke="url(#skamGrad)" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 12.3l2.9 2.9 5.8-6.2" fill="none" stroke="#0E0E10" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
   back: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
   send: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>',
@@ -90,6 +92,17 @@ export const ICONS = {
   edit: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
   bell: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></svg>',
 };
+
+/** Официальная галочка рядом с именем. Выдаёт только владелец СКАМ — подделать её нельзя. */
+export function verifiedMark(kind: 'user' | 'channel' | 'bot' = 'user'): HTMLElement {
+  const s = el('span', 'vmark');
+  s.append(html(ICONS.verified));
+  const label = kind === 'channel' ? 'Официальный канал' : kind === 'bot' ? 'Официальный бот СКАМ' : 'Официальный аккаунт';
+  s.title = label;
+  s.setAttribute('role', 'img');
+  s.setAttribute('aria-label', label);
+  return s;
+}
 
 // ---------------------------------------------------------------------------
 // Всплывающие уведомления

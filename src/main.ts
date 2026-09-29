@@ -10,16 +10,20 @@ import { registerServiceWorker } from './app/pwa';
 applyTheme();
 registerServiceWorker();
 
-// Ссылка-приглашение ?join=КОД и публичный канал ?c=имя: запоминаем и чистим адресную строку.
+// Ссылка-приглашение ?join=КОД, публичный канал ?c=имя и стикеры ?stickers=<id>: запоминаем и чистим адресную строку.
 const url = new URL(location.href);
 const join = url.searchParams.get('join');
 // Публичный канал ?c=имя — откроем после входа.
 const pub = url.searchParams.get('c');
-if (join || pub) {
+// Набор стикеров ?stickers=<id> — покажем после входа с кнопкой «Добавить».
+const pack = url.searchParams.get('stickers');
+if (join || pub || pack) {
   if (join) lsSet('skam:join', join);
   if (pub && /^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(pub)) lsSet('skam:open', pub.replace(/^@/, '').toLowerCase());
+  if (pack && /^u[0-9a-f]{11}$/.test(pack)) lsSet('skam:stickers', pack);
   url.searchParams.delete('join');
   url.searchParams.delete('c');
+  url.searchParams.delete('stickers');
   history.replaceState(history.state, '', url.pathname + url.search + url.hash);
 }
 

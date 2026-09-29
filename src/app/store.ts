@@ -81,6 +81,8 @@ export const S = {
   visibleChat: (): string | null => null,
   /** Публичный канал, открытый до подписки (его нет в списке чатов). */
   preview: null as MyChat | null,
+  /** Я владелец СКАМ: могу выдавать и снимать официальные галочки. */
+  appOwner: false,
 };
 
 /** Чат из списка или открытый до подписки публичный канал. */
@@ -147,6 +149,7 @@ export function resetState(): void {
   S.previews.clear();
   S.quoted.clear();
   S.preview = null;
+  S.appOwner = false;
   e2e.reset();
   listeners.clear();
   pending.clear();
@@ -201,9 +204,29 @@ export function putProfile(p: Profile): void {
   S.profiles.set(p.id, p);
   if (p.id === meId()) S.me = p;
   // Пульс «в сети» меняет только время — ленту сообщений в этом случае не перерисовываем.
-  const onlyPresence = !!old && (['name', 'username', 'avatar_path', 'color'] as const).every((k) => old[k] === p[k]);
+  const onlyPresence = !!old && (['name', 'username', 'avatar_path', 'color', 'verified'] as const).every((k) => old[k] === p[k]);
   if (onlyPresence) emit('online', 'head', 'chats', 'members', ...(p.id === meId() ? (['me'] as const) : []));
   else emit('chats', 'feed', 'head', 'online', 'members', 'me');
+}
+
+/** Владелец ли я СКАМ (кнопки «Выдать галочку»). Ошибка — просто «нет». */
+export async function loadAppOwner(): Promise<void> {
+  const { data } = await sb.rpc('am_app_owner');
+  S.appOwner = data === true;
+}
+
+/** Выдать или снять официальную галочку (только владелец СКАМ). */
+export async function setVerified(kind: 'user' | 'channel', id: string, on: boolean): Promise<void> {
+  const { error } = await sb.rpc('set_verified', { p_kind: kind, p_id: id, p_on: on });
+  if (error) throw error;
+  if (kind === 'user') {
+    const p = S.profiles.get(id);
+    if (p) putProfile({ ...p, verified: on });
+  } else {
+    const c = chatById(id);
+    if (c) c.verified = on;
+    emit('chats', 'head');
+  }
 }
 
 /** username = null — только для аккаунтов-исключений (profiles.username_optional). */
@@ -497,15 +520,19 @@ export async function deleteChat(chatId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /** Профили из списков участников: у подписчиков канала их иначе не прочитать. */
-function rememberProfiles(list: { id: string; name: string | null; username: string | null; avatar_path: string | null;
-  color: string; last_seen_at?: string | null; online_until?: string | null }[]): void {
+export function rememberProfiles(list: { id: string; name: string | null; username: string | null; avatar_path: string | null;
+  color: string; last_seen_at?: string | null; online_until?: string | null; verified?: boolean }[]): void {
   for (const p of list) {
     const have = S.profiles.get(p.id);
-    if (have) continue;
+    if (have) {
+      // Галочку обновляем и у уже известных: её могли выдать или снять.
+      if (p.verified !== undefined && have.verified !== p.verified) have.verified = p.verified;
+      continue;
+    }
     S.profiles.set(p.id, {
       id: p.id, name: p.name, first_name: p.name, last_name: null, username: p.username, username_optional: false,
       avatar_path: p.avatar_path, color: p.color, last_seen_at: p.last_seen_at ?? null, online_until: p.online_until ?? null,
-      created_at: '', updated_at: '',
+      verified: !!p.verified, created_at: '', updated_at: '',
     });
   }
 }
@@ -607,7 +634,7 @@ export function setPreview(card: ChatCard): MyChat {
     member_count: card.member_count, peer_id: null, unread: 0, last_id: null, last_body: null, last_user_id: null,
     last_kind: null, last_at: null, last_deleted: null, last_enc: null, last_key_id: null, last_files: null, last_call: null,
     description: card.description, username: card.username, avatar_path: card.avatar_path, sign_messages: false,
-    rights: [], preview: true,
+    rights: [], verified: !!card.verified, preview: true,
   };
   if (S.preview?.id !== c.id) S.feeds.delete(c.id);
   S.preview = c;

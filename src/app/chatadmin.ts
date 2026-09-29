@@ -3,14 +3,14 @@
 import type { ChatCard, ChatRight, MemberInfo, MyChat } from '../lib/database.types';
 import { avatarUrl } from '../lib/supabase';
 import {
-  $, ICONS, button, closeDialog, dlgHead, el, errText, fillText, html, openDialog, plural, toast, touchMQ,
+  $, ICONS, button, closeDialog, dlgHead, el, errText, fillText, html, openDialog, plural, toast, touchMQ, verifiedMark,
 } from '../lib/dom';
 import { isOnline, statusText } from '../lib/status';
 import {
   S, SEARCH_MIN, USERNAME_RE, addMembers, bannedList, channelLink, chatById, chatUsernameAvailable, createChat,
-  deleteChat, hasRight, inviteLink, isAdmin, leaveChat, memberList, meId, myContacts, normUsername, removeAdmin,
-  removeChatAvatar, removeMember, resetInvite, searchNorm, searchUsers, setAdmin, setChatUsername, transferOwner,
-  unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact,
+  deleteChat, hasRight, inviteLink, isAdmin, joinChannel, leaveChat, memberList, meId, myContacts, normUsername, removeAdmin,
+  removeChatAvatar, removeMember, resetInvite, searchNorm, searchUsers, setAdmin, setChatUsername, setVerified,
+  transferOwner, unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact,
 } from './store';
 
 /** Что нужно от основного интерфейса. */
@@ -181,7 +181,10 @@ function personRow(uid: string, sub: string, onClick: (() => void) | null, extra
   const text = el('span', 'pr-text');
   const p = S.profiles.get(uid);
   const on = uid !== meId() && isOnline(p);
-  text.append(el('span', 'nm', uid === meId() ? `${env.name(uid)} (вы)` : env.name(uid)), el('span', `st${on ? ' on' : ''}`, sub));
+  const nm = el('span', 'nm');
+  nm.append(el('span', 'nm-t', uid === meId() ? `${env.name(uid)} (вы)` : env.name(uid)));
+  if (p?.verified) nm.append(verifiedMark());
+  text.append(nm, el('span', `st${on ? ' on' : ''}`, sub));
   b.append(env.personAvatar(uid), text);
   if (extra) b.append(extra);
   li.append(b);
@@ -303,7 +306,9 @@ function pageMain(c: MyChat): HTMLElement {
   }
   const members = S.members.get(c.id) ?? [];
   const online = members.filter((m) => m.user_id !== meId() && isOnline(S.profiles.get(m.user_id))).length;
-  top.append(el('h2', null, env.chatTitle(c)),
+  const title = el('h2', 'person-name', env.chatTitle(c));
+  if (c.verified) title.append(verifiedMark('channel'));
+  top.append(title,
     el('p', 'st', `${c.kind === 'channel' ? 'канал' : 'группа'} · ${countLabel(c)}${c.kind === 'group' && online ? `, ${online} в сети` : ''}`));
   stack.append(top);
 
@@ -340,7 +345,23 @@ function pageMain(c: MyChat): HTMLElement {
   if (canAdd) acts.append(button('btn ghost small', w.add, () => openAddMembers(c.id)));
   if (acts.childNodes.length) stack.append(acts);
 
-  if (c.kind === 'channel' && c.role === 'member' && !c.is_default) {
+  if (c.preview) {
+    // Публичный канал открыт до подписки.
+    const sub = button('btn primary', 'Подписаться', async () => {
+      sub.disabled = true;
+      try {
+        await joinChannel(c.id);
+        toast(`Вы подписались на «${c.name}»`);
+        env.openChat(c.id);
+        render();
+      } catch (e) {
+        toast(errText(e, 'Не получилось подписаться.'));
+        sub.disabled = false;
+      }
+    });
+    sub.style.alignSelf = 'flex-start';
+    stack.append(el('p', 'hint', 'Вы ещё не подписаны: посты видно, а реакции и уведомления — после подписки.'), sub);
+  } else if (c.kind === 'channel' && c.role === 'member' && !c.is_default) {
     stack.append(el('p', 'hint', 'Вы подписчик. Писать в канал могут только администраторы, а реакции ставить — все.'));
   }
 
@@ -379,9 +400,23 @@ function pageMain(c: MyChat): HTMLElement {
     stack.append(mf);
   }
 
+  // Официальная галочка — её выдаёт только владелец СКАМ (в том числе каналу, где он не админ).
+  if (c.kind === 'channel' && S.appOwner) {
+    const list = el('div', 'ci-list');
+    const row = switchRow('✅', 'Официальная галочка', !!c.verified, () => {
+      row.disabled = true;
+      setVerified('channel', c.id, !c.verified).then(
+        () => { toast(c.verified ? 'Каналу выдана официальная галочка' : 'Галочка снята'); render(); },
+        (e) => { toast(errText(e, 'Не получилось изменить галочку.')); row.disabled = false; },
+      );
+    });
+    list.append(row);
+    stack.append(list, el('p', 'hint ci-list-hint', 'Вы владелец СКАМ. Галочку видят все: так подписчики отличают настоящий канал от подделки.'));
+  }
+
   // Выход и удаление
   const foot = el('div', 'ci-foot');
-  if (!c.is_default) {
+  if (!c.is_default && !c.preview) {
     const soleOwner = c.role === 'owner' && c.kind === 'channel' && c.member_count > 1;
     if (!soleOwner) {
       const heirNote = c.role === 'owner' && c.kind === 'group' && c.member_count > 1 ? 'Точно? Права владельца перейдут другому' : 'Точно выйти?';
@@ -886,7 +921,10 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
     cb.addEventListener('change', () => { if (cb.checked) picked.add(uid); else picked.delete(uid); syncBtn(); });
     const text = el('span', 'pr-text');
     const on = isOnline(S.profiles.get(uid));
-    text.append(el('span', 'nm', env.name(uid)), el('span', `st${on && state === 'free' ? ' on' : ''}`, sub));
+    const nm = el('span', 'nm');
+    nm.append(el('span', 'nm-t', env.name(uid)));
+    if (S.profiles.get(uid)?.verified) nm.append(verifiedMark());
+    text.append(nm, el('span', `st${on && state === 'free' ? ' on' : ''}`, sub));
     l.append(env.personAvatar(uid), text, cb);
     return l;
   };
@@ -918,7 +956,7 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
       try {
         const got = await searchUsers(raw);
         if (my !== seq) return;
-        got.forEach((g) => { if (!S.profiles.has(g.id)) S.profiles.set(g.id, { id: g.id, name: g.name, first_name: g.name, last_name: null, username: g.username, username_optional: false, avatar_path: g.avatar_path, color: g.color, last_seen_at: null, online_until: null, created_at: '', updated_at: '' }); });
+        got.forEach((g) => { if (!S.profiles.has(g.id)) S.profiles.set(g.id, { id: g.id, name: g.name, first_name: g.name, last_name: null, username: g.username, username_optional: false, avatar_path: g.avatar_path, color: g.color, last_seen_at: null, online_until: null, verified: g.verified, created_at: '', updated_at: '' }); });
         found = got.map((g) => ({ id: g.id, is_contact: g.is_contact }));
         draw();
       } catch { /* поиск — не главное */ }

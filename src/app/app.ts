@@ -4,9 +4,14 @@ import { avatarUrl, sb } from '../lib/supabase';
 import type { ChatCard, Forward, MyChat, ReactionKey } from '../lib/database.types';
 import {
   $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
-  listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ,
+  listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, verifiedMark, wideMQ,
 } from '../lib/dom';
-import { PACKS, findSticker, recentStickers, rememberSticker, stickerUrl, stickersForEmoji, type Sticker } from '../lib/stickers';
+import {
+  PACKS, customPacks, findSticker, recentStickers, rememberSticker, stickerUrl, stickersForEmoji, type Sticker,
+} from '../lib/stickers';
+import {
+  loadMyPacks, mountStickerPacks, openStickerManager, openStickerPack, resetStickerPacks,
+} from './stickerpacks';
 import { isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
@@ -18,6 +23,7 @@ import {
   updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
+  loadAppOwner, rememberProfiles, setVerified,
 } from './store';
 import {
   cardTile, countLabel, mountChatAdmin, openAddMembers, openChatInfo as openChatAdmin, openCreate, refreshChatInfo, shareLinkOf,
@@ -150,6 +156,7 @@ const SHELL = `
 <dialog id="callDlg" aria-label="Настройки звонка"></dialog>
 <dialog id="supportDlg" class="support-dlg" aria-label="Поддержка"></dialog>
 <dialog id="rateDlg" class="rate-dlg" aria-label="Оценить СКАМ"></dialog>
+<dialog id="stickerDlg" class="sticker-dlg" aria-label="Стикеры"></dialog>
 <div class="ctx-menu" id="ctxMenu" role="menu" hidden></div>
 <div class="vol-pop" id="volPop" hidden></div>
 <div class="ring-box" id="ringBox" role="alertdialog" aria-live="assertive" hidden></div>
@@ -164,7 +171,7 @@ const U = {
   drafts: new Map<string, string>(),
   restoreScroll: null as { height: number; top: number } | null,
   /** Картинки стикеров открытого чата: не пересоздаём при каждой перерисовке (без мигания). */
-  stickerImgs: new Map<string, HTMLImageElement>(),
+  stickerImgs: new Map<string, HTMLElement>(),
   /** Ответ, который готовится в чате (как в Telegram — у каждого чата свой). */
   reply: new Map<string, Msg>(),
   /** Что переслать в чат: сообщения ждут отправки вместе с комментарием. */
@@ -185,14 +192,36 @@ let recUI: RecordUI | null = null;
 // Кто есть кто
 // ---------------------------------------------------------------------------
 
-type Who = { id: string | null; name: string; avatar: string | null; color: string | null; brand?: boolean; emoji?: string };
+type Who = {
+  id: string | null; name: string; avatar: string | null; color: string | null; brand?: boolean; emoji?: string;
+  /** Официальная галочка. */
+  verified?: boolean;
+};
 
 function who(uid: string | null | undefined, kind: string = 'text'): Who {
   if (kind === 'system') return { id: null, name: 'СКАМ', avatar: null, color: null, brand: true };
   if (!uid) return { id: null, name: 'Удалённый аккаунт', avatar: null, color: null };
   const p = S.profiles.get(uid);
   const name = p?.name || (uid === meId() ? 'Вы' : 'Участник');
-  return { id: uid, name, avatar: avatarUrl(p?.avatar_path), color: p?.color ?? null };
+  return { id: uid, name, avatar: avatarUrl(p?.avatar_path), color: p?.color ?? null, verified: !!p?.verified };
+}
+
+/** Имя с официальной галочкой: текст обрезается многоточием, галочка остаётся видна. */
+function nameWithMark(cls: string, name: string, verified: boolean, kind: 'user' | 'channel' | 'bot' = 'user'): HTMLElement {
+  const n = el('span', cls);
+  n.append(el('span', 'nm-t', name));
+  if (verified) n.append(verifiedMark(kind));
+  return n;
+}
+
+/** Есть ли у чата официальная галочка: у личного — у собеседника, у канала и бота — у самого чата. */
+function chatVerified(c: MyChat): boolean {
+  if (c.kind === 'direct') return !!(c.peer_id && S.profiles.get(c.peer_id)?.verified);
+  return !!c.verified;
+}
+
+function markKind(c: MyChat): 'user' | 'channel' | 'bot' {
+  return c.kind === 'bot' ? 'bot' : c.kind === 'channel' ? 'channel' : 'user';
 }
 
 function avatarEl(w: Who, cls = '', clickable = false): HTMLElement {
@@ -252,7 +281,7 @@ function canPost(c: MyChat | null | undefined): boolean {
 /** Как канал выглядит автором постов: фото или значок (канал новостей — логотип СКАМ). */
 function chatWho(c: MyChat): Who {
   const avatar = avatarUrl(c.avatar_path);
-  return { id: null, name: c.name ?? 'Канал', avatar, color: null, brand: c.is_default && !avatar, emoji: c.emoji };
+  return { id: null, name: c.name ?? 'Канал', avatar, color: null, brand: c.is_default && !avatar, emoji: c.emoji, verified: !!c.verified };
 }
 
 /** Можно ли удалить сообщение: своё — всегда, чужое — админу группы или канала с правом удаления. */
@@ -361,7 +390,7 @@ function renderSide(): void {
     b.dataset.chat = c.id;
     const active = c.id === S.cur && convVisible();
     if (active) b.setAttribute('aria-current', 'true');
-    const name = el('span', 'name', chatTitle(c));
+    const name = nameWithMark('name', chatTitle(c), chatVerified(c), markKind(c));
     const live = calls.callInChat(c.id);
     if (live) {
       const ic = el('span', `live-call${calls.C.session?.callId === live.id ? ' mine' : ''}`);
@@ -420,7 +449,7 @@ function renderMe(): void {
   const st = el('span', `me-st${on ? ' on' : ''}`);
   if (on) st.append(el('span', 'pulse'));
   st.append(on ? 'в сети' : 'нет подключения');
-  text.append(el('span', 'nm', S.me.name || 'Без имени'), st);
+  text.append(nameWithMark('nm', S.me.name || 'Без имени', !!S.me.verified), st);
   box.replaceChildren(avatarEl(who(meId())), text);
 }
 
@@ -490,7 +519,8 @@ function renderHead(): void {
   }
   emoji.classList.toggle('photo', (c.kind === 'group' || c.kind === 'channel') && !!c.avatar_path);
   const nameEl = $('convName');
-  nameEl.replaceChildren(chatTitle(c));
+  nameEl.replaceChildren(el('span', 'nm-t', chatTitle(c)));
+  if (chatVerified(c)) nameEl.append(verifiedMark(markKind(c)));
   if (isE2E(c)) {
     const lock = el('span', 'lock');
     lock.title = 'Сквозное шифрование';
@@ -551,22 +581,29 @@ function fresh(m: Msg): boolean {
   return !!m.pending || Date.now() - ts(m.created_at) < 15_000;
 }
 
+/** Стикер в ленте. Нажатие открывает его набор (чужой неофициальный — с кнопкой «Добавить»). */
 function stickerEl(m: Msg): HTMLElement {
-  const s = findSticker(m.sticker);
+  const s = findSticker(m.sticker, m.body);
   if (!s) return el('span', 'sticker-missing', kindText('sticker', m.body));
-  let img = U.stickerImgs.get(m.id);
-  if (!img || img.dataset.ref !== s.ref) {
-    img = el('img', `sticker-img${fresh(m) ? ' pop' : ''}`);
-    img.dataset.ref = s.ref;
+  let box = U.stickerImgs.get(m.id);
+  if (!box || box.dataset.ref !== s.ref) {
+    const b = button('sticker-open', null, (ev) => { ev.stopPropagation(); openStickerPack(s.pack); });
+    b.dataset.ref = s.ref;
+    b.setAttribute('aria-label', `Стикер ${s.emoji} — открыть набор`);
+    const img = el('img', `sticker-img${fresh(m) ? ' pop' : ''}`);
     img.src = stickerUrl(s.ref);
     img.alt = `Стикер «${s.label}» ${s.emoji}`;
     img.title = s.label;
     img.width = img.height = 256;
     img.draggable = false;
     img.decoding = 'async';
-    U.stickerImgs.set(m.id, img);
+    // Набор удалили — вместо картинки подпись «👋 Стикер».
+    img.addEventListener('error', () => b.replaceChildren(el('span', 'sticker-missing', kindText('sticker', m.body))), { once: true });
+    b.append(img);
+    box = b;
+    U.stickerImgs.set(m.id, box);
   }
-  return img;
+  return box;
 }
 
 /**
@@ -722,7 +759,7 @@ function quoteEl(m: Msg, chat: MyChat): HTMLElement {
         else void thumbUrl(pic).then((u) => { img.src = u; }, () => img.remove());
         thumb = img;
       } else if (view === 'sticker' && target.sticker) {
-        const st = findSticker(target.sticker);
+        const st = findSticker(target.sticker, target.body);
         if (st) {
           const img = el('img', 'quote-thumb sticker');
           img.src = stickerUrl(st.ref);
@@ -818,6 +855,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
       a.type = 'button';
       a.addEventListener('click', (ev) => { ev.stopPropagation(); openPerson(w.id!); });
     }
+    if (w.verified) a.append(verifiedMark(channel ? 'channel' : 'user'));
     if (w.brand) a.style.color = 'var(--ink)';
     else if (w.color) a.style.color = w.color;
     b.append(a);
@@ -1736,6 +1774,30 @@ function renderStickerPanel(): void {
     cover.alt = '';
     tab(p.id, p.title, cover);
   }
+  // Неофициальные наборы — без особых меток. У своего пустого набора — кнопка «Добавить стикеры».
+  for (const p of customPacks()) {
+    if (!p.stickers.length && !p.mine) continue;
+    section(p.id, p.title, p.stickers);
+    const sec = body.lastElementChild;
+    const h = sec?.querySelector('.sp-title');
+    const more = button('sp-more', null, () => { closeStickers(); openStickerPack(p.id); });
+    more.append(html(p.mine ? ICONS.edit : ICONS.next));
+    more.title = p.mine ? 'Изменить набор' : 'О наборе';
+    more.setAttribute('aria-label', `${more.title}: ${p.title}`);
+    h?.append(more);
+    if (!p.stickers.length) {
+      sec?.append(button('btn ghost small sp-empty', 'Пока пусто — добавить стикеры', () => { closeStickers(); openStickerPack(p.id); }));
+    }
+    const cover = p.stickers[0] ? el('img') : el('span', 'sp-letter', p.title.trim().charAt(0).toUpperCase() || '?');
+    if (cover instanceof HTMLImageElement) { cover.src = stickerUrl(p.stickers[0].ref); cover.alt = ''; }
+    tab(p.id, p.title, cover);
+  }
+  // «＋» — свои наборы: создать, изменить, добавленные.
+  const add = button('sp-tab sp-add', null, () => { closeStickers(); openStickerManager(); });
+  add.append(html(ICONS.plus));
+  add.title = 'Свои стикеры';
+  add.setAttribute('aria-label', 'Свои стикеры: создать набор');
+  tabs.append(add);
   panel.replaceChildren(tabs, body);
 }
 
@@ -1745,6 +1807,8 @@ function stickersOpen(): boolean {
 
 function openStickers(): void {
   if (!canPost(currentChat())) return;
+  // Наборы могли добавить на другом устройстве — освежаем тихо.
+  void loadMyPacks().catch(() => {});
   renderStickerPanel();
   $('stickerPanel').hidden = false;
   $('stickerBtn').setAttribute('aria-expanded', 'true');
@@ -1873,10 +1937,16 @@ function highlight(text: string, toks: string[], wholeOnly = false): Node {
 
 function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[] }): HTMLElement {
   const row = el('div', 'found');
-  const w: Who = { id: person.id, name: person.name ?? 'Участник', avatar: avatarUrl(person.avatar_path), color: person.color };
-  const text = el('span', 'found-text');
+  // Профиль найденного человека открывается по нажатию на имя или фото, даже без общего чата.
+  rememberProfiles([person]);
+  const w: Who = {
+    id: person.id, name: person.name ?? 'Участник', avatar: avatarUrl(person.avatar_path), color: person.color, verified: person.verified,
+  };
+  const text = button('found-text found-open', null, () => openPerson(person.id));
+  text.setAttribute('aria-label', `Профиль: ${w.name}`);
   const nm = el('span', 'nm');
   nm.append(q.at ? document.createTextNode(w.name) : highlight(w.name, q.toks));
+  if (w.verified) nm.append(verifiedMark());
   const sub = el('span', 'uname');
   if (person.username) {
     sub.append('@', highlight(person.username, q.at ? [q.s] : q.toks, true));
@@ -1904,7 +1974,7 @@ function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[]
       }
     });
   if (!isMe) action.setAttribute('aria-label', `Написать: ${w.name}`);
-  row.append(avatarEl(w), text, action);
+  row.append(avatarEl(w, '', true), text, action);
   return row;
 }
 
@@ -1914,6 +1984,7 @@ function foundChannel(card: ChatCard, q: { at: boolean; s: string; toks: string[
   const text = el('span', 'found-text');
   const nm = el('span', 'nm');
   nm.append(q.at ? document.createTextNode(card.name) : highlight(card.name, q.toks));
+  if (card.verified) nm.append(verifiedMark('channel'));
   const sub = el('span', 'uname');
   if (card.username) sub.append('@', highlight(card.username, q.at ? [q.s] : q.toks, true));
   const tag = el('span', 'found-tag');
@@ -2164,7 +2235,8 @@ function renderProfile(): void {
   const rateBtn = button('btn ghost small', null, () => { closeDialog(dlg); openRate(); });
   rateBtn.append(html(ICONS.star), avg ? `Оценить · ${avg}` : 'Оценить СКАМ');
   aboutBtns.append(supBtn, rateBtn);
-  aboutField.append(aboutBtns, el('p', 'hint', 'Нашли ошибку или есть идея — напишите в поддержку. Ответ придёт на почту.'));
+  aboutField.append(aboutBtns, el('p', 'hint', 'Нашли ошибку или есть идея — напишите в поддержку. Ответ придёт на почту.'),
+    el('p', 'hint', `Версия ${__SKAM_VERSION__}`));
 
   // Выход
   const methods = loginMethods(S.user);
@@ -2212,7 +2284,9 @@ function openPerson(uid: string): void {
   const card = el('div', 'person-card');
   const isMe = uid === meId();
   const online = isOnline(p);
-  card.append(avatarEl(w, 'xl'), el('h2', null, w.name));
+  const h = el('h2', 'person-name', w.name);
+  if (w.verified) h.append(verifiedMark());
+  card.append(avatarEl(w, 'xl'), h);
   if (p?.username) card.append(el('p', 'uname', `@${p.username}`));
   const st = el('p', `st${online ? ' on' : ''}`, isMe ? 'это вы' : statusText(p));
   st.id = 'personSt';
@@ -2259,6 +2333,25 @@ function openPerson(uid: string): void {
     }
   }
   card.append(actions);
+  // Владелец СКАМ выдаёт и снимает официальные галочки прямо из профиля.
+  if (S.appOwner && p) {
+    const on = !!p.verified;
+    const owner = el('div', 'owner-box');
+    const tgl = button(`btn ${on ? 'ghost' : 'primary'} small`, null, async () => {
+      tgl.disabled = true;
+      try {
+        await setVerified('user', uid, !on);
+        toast(on ? 'Галочка снята' : 'Официальная галочка выдана');
+        openPerson(uid);
+      } catch (e) {
+        toast(errText(e, 'Не получилось изменить галочку.'));
+        tgl.disabled = false;
+      }
+    });
+    tgl.append(html(ICONS.verified), on ? 'Снять галочку' : 'Выдать галочку');
+    owner.append(tgl, el('p', 'hint', 'Вы владелец СКАМ: официальную галочку видят все.'));
+    card.append(owner);
+  }
   dlg.replaceChildren(card);
   openDialog(dlg);
 }
@@ -2305,7 +2398,9 @@ function openBotCard(): void {
   const actions = el('div', 'dlg-actions');
   actions.append(button('btn primary', 'Понятно', () => closeDialog(dlg)));
   personUid = null;
-  card.append(brandAvatar('xl'), el('h2', null, 'СКАМ'), el('p', 'st', 'бот'), p, actions);
+  const h = el('h2', 'person-name', 'СКАМ');
+  h.append(verifiedMark('bot'));
+  card.append(brandAvatar('xl'), h, el('p', 'st', 'бот'), p, actions);
   dlg.replaceChildren(card);
   openDialog(dlg);
 }
@@ -2315,6 +2410,12 @@ function openBotCard(): void {
 // ---------------------------------------------------------------------------
 
 async function handlePendingJoin(): Promise<void> {
+  // Набор стикеров по ссылке ?stickers=<id>.
+  const pack = lsGet('skam:stickers');
+  if (pack) {
+    lsSet('skam:stickers', null);
+    openStickerPack(pack);
+  }
   // Публичный канал: ?c=имя — открываем ленту (до подписки — с кнопкой «Подписаться»).
   const pub = lsGet('skam:open');
   if (pub) {
@@ -2345,7 +2446,9 @@ async function handlePendingJoin(): Promise<void> {
   const box = el('div', 'person-card');
   const tile = cardTile(card);
   tile.style.cssText = 'margin:0 auto 12px;width:72px;height:72px;font-size:36px;border-radius:22px';
-  box.append(tile, el('h2', null, card.name), el('p', 'st', channel
+  const title = el('h2', 'person-name', card.name);
+  if (card.verified) title.append(verifiedMark('channel'));
+  box.append(tile, title, el('p', 'st', channel
     ? `Вас пригласили в канал · ${plural(card.member_count, 'подписчик', 'подписчика', 'подписчиков')}`
     : `Вас пригласили в группу · ${plural(card.member_count, 'участник', 'участника', 'участников')}`));
   if (card.description) {
@@ -2505,7 +2608,7 @@ function wire(): void {
   const onSys = () => renderThemeBtn();
   sysDark.addEventListener('change', onSys);
   unsubs.push(() => sysDark.removeEventListener('change', onSys));
-  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg', 'pickDlg']) {
+  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg', 'pickDlg', 'stickerDlg']) {
     const d = $<HTMLDialogElement>(id);
     listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
@@ -2611,6 +2714,11 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     openChat: (id) => openChat(id),
     openPerson: (uid) => openPerson(uid),
   });
+  mountStickerPacks({
+    canSend: () => !!S.cur && canPost(currentChat()),
+    send: (st) => void pickSticker(st),
+    changed: () => { if (stickersOpen()) renderStickerPanel(); updateSuggest(); },
+  });
   unsubs.push(mountCallUI({
     who: (uid) => who(uid),
     avatar: (uid, cls) => avatarEl(who(uid), cls),
@@ -2631,6 +2739,8 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   );
   renderAll();
 
+  void loadAppOwner().catch(() => {});
+  void loadMyPacks().catch(() => {});
   try {
     // Сначала свои ключи чатов — чтобы превью в списке сразу расшифровались.
     await e2e.loadMyShares().catch(() => {});
@@ -2664,6 +2774,7 @@ export function unmountApp(): void {
   stopVoice();
   dropNotes(null);
   U.stickerImgs.clear();
+  resetStickerPacks();
   void stopRealtime();
   unsubs.forEach((f) => f());
   unsubs = [];
