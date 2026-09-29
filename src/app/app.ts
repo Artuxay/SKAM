@@ -1,7 +1,7 @@
 // Интерфейс мессенджера: список чатов, лента, композер и диалоги.
 import type { User } from '@supabase/supabase-js';
 import { avatarUrl, sb } from '../lib/supabase';
-import type { Forward, MyChat, ReactionKey } from '../lib/database.types';
+import type { ChatCard, Forward, MyChat, ReactionKey } from '../lib/database.types';
 import {
   $, APP_ICON_HERO, ICONS, LOGO, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
   listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ,
@@ -11,13 +11,17 @@ import { isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
 import {
-  NoProfileError, REACTIONS, S, USERNAME_RE, createChat, usernameRequired, deleteMessage, discardMessage, emit, ensureProfiles,
-  feedOf, inviteLink, joinByInvite, leaveChat, loadChats, loadFeed, loadMe, loadOlder, markRead, meId,
-  normUsername, on, openDirect, previewInvite, removeAvatar, renameChat, resetInvite, resetState, retryMessage,
+  NoProfileError, REACTIONS, S, USERNAME_RE, usernameRequired, deleteMessage, discardMessage, emit, ensureProfiles,
+  feedOf, joinByInvite, loadFeed, loadMe, loadOlder, markRead, meId,
+  normUsername, on, openDirect, previewInvite, removeAvatar, resetState, retryMessage,
   SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, toggleReaction, totalUnread, ts,
   updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
+  chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
 } from './store';
+import {
+  cardTile, countLabel, mountChatAdmin, openAddMembers, openChatInfo as openChatAdmin, openCreate, refreshChatInfo, shareLinkOf,
+} from './chatadmin';
 import { goOffline, joinChatChannel, sendTyping, startRealtime, stopRealtime } from './realtime';
 import { dropNotes, mediaBlob, setLocalMedia, setVoiceQueue, stopVoice, videoNoteEl, voiceEl } from './media';
 import { mountRecorder, type RecordUI } from './record-ui';
@@ -32,7 +36,6 @@ import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
 } from './attachui';
 
-const EMOJIS = ['💬', '🕵️', '💸', '🎲', '🍕', '🐈', '🚀', '🎧', '📦', '🤡'];
 const MAX_LEN = 4000;
 
 const SHELL = `
@@ -82,8 +85,11 @@ const SHELL = `
       <div class="feed" id="feed" role="log" aria-label="Сообщения"></div>
       <button class="jump" id="jumpBtn" type="button" hidden>Новые сообщения ↓</button>
       <div class="rec-stage" id="recStage" hidden></div>
+      <div class="join-bar" id="joinBar" hidden>
+        <button class="btn primary" id="joinBtn" type="button">Подписаться</button>
+      </div>
       <div class="composer" id="composer">
-        <p class="composer-note" id="composerNote" hidden>Это канал: писать могут только авторы. А реакции — пожалуйста 🔥</p>
+        <p class="composer-note" id="composerNote" hidden>Это канал: писать могут только администраторы. А реакции — пожалуйста 🔥</p>
         <div class="sticker-panel" id="stickerPanel" role="dialog" aria-label="Стикеры" hidden></div>
         <div class="sticker-suggest" id="stickerSuggest" role="listbox" aria-label="Стикеры к эмодзи" hidden></div>
         <div class="select-bar" id="selectBar" hidden></div>
@@ -108,7 +114,7 @@ const SHELL = `
 <dialog id="newDlg" aria-labelledby="newDlgTitle">
   <h2 id="newDlgTitle">Новый чат</h2>
   <form class="find-form" id="findForm" novalidate>
-    <label class="fld" for="findUser">Написать человеку</label>
+    <label class="fld" for="findUser">Найти человека или канал</label>
     <div class="invite">
       <input class="txt" id="findUser" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false"
         enterkeyhint="search" placeholder="Имя или @username">
@@ -116,18 +122,23 @@ const SHELL = `
     </div>
     <div id="findResult"></div>
   </form>
-  <div class="hr" style="margin:18px 0 16px"></div>
-  <span class="fld" style="font-size:15px;color:var(--text);margin-bottom:10px">Или создайте группу</span>
-  <label class="fld" for="chatName">Название</label>
-  <input class="txt" id="chatName" maxlength="40" autocomplete="off" placeholder="Например, Мемы отдела">
-  <p class="err" id="chatErr"></p>
-  <span class="fld" id="emojiLbl">Значок</span>
-  <div class="emoji-grid" id="emojiGrid" role="group" aria-labelledby="emojiLbl"></div>
-  <div class="dlg-actions">
-    <button class="btn ghost" id="cancelBtn" type="button">Отмена</button>
-    <button class="btn primary" id="createBtn" type="button">Создать группу</button>
+  <div class="hr" style="margin:18px 0 14px"></div>
+  <div class="new-kinds">
+    <button class="new-kind" id="newGroupBtn" type="button">
+      <span class="nk-ic" aria-hidden="true">👥</span>
+      <span class="nk-text"><b>Новая группа</b><small>Переписка с друзьями, сквозное шифрование</small></span>
+    </button>
+    <button class="new-kind" id="newChannelBtn" type="button">
+      <span class="nk-ic" aria-hidden="true">📢</span>
+      <span class="nk-text"><b>Новый канал</b><small>Посты от имени канала для подписчиков</small></span>
+    </button>
+  </div>
+  <div class="dlg-actions" style="margin-top:14px">
+    <button class="btn ghost" id="cancelBtn" type="button">Закрыть</button>
   </div>
 </dialog>
+<dialog id="createDlg" class="create-dlg" aria-label="Новая группа или канал"></dialog>
+<dialog id="pickDlg" class="pick-dlg" aria-label="Добавить участников"></dialog>
 <dialog id="profileDlg" aria-label="Профиль"></dialog>
 <dialog id="chatDlg" aria-label="О чате"></dialog>
 <dialog id="personDlg" aria-label="Профиль участника"></dialog>
@@ -163,6 +174,8 @@ const U = {
   armedSel: false,
   /** Подсветить сообщение после перехода к нему по цитате. */
   flash: null as string | null,
+  /** Пост канала, который сейчас изменяют (текст — в поле ввода). */
+  edit: new Map<string, Msg>(),
 };
 let unsubs: (() => void)[] = [];
 let mounted = false;
@@ -172,7 +185,7 @@ let recUI: RecordUI | null = null;
 // Кто есть кто
 // ---------------------------------------------------------------------------
 
-type Who = { id: string | null; name: string; avatar: string | null; color: string | null; brand?: boolean };
+type Who = { id: string | null; name: string; avatar: string | null; color: string | null; brand?: boolean; emoji?: string };
 
 function who(uid: string | null | undefined, kind: string = 'text'): Who {
   if (kind === 'system') return { id: null, name: 'СКАМ', avatar: null, color: null, brand: true };
@@ -191,6 +204,11 @@ function avatarEl(w: Who, cls = '', clickable = false): HTMLElement {
   }
   const tag = clickable && w.id ? 'button' : 'div';
   node = el(tag, `av ${cls}`);
+  if (!w.avatar && w.emoji) {
+    node.classList.add('emoji');
+    node.textContent = w.emoji;
+    return node;
+  }
   if (w.avatar) {
     const img = el('img');
     img.src = w.avatar;
@@ -226,9 +244,28 @@ function chatTitle(c: MyChat): string {
   return c.name ?? 'Без названия';
 }
 
-/** Можно ли мне писать в этот чат (в канал — только авторам). */
-function canPost(c: MyChat | null): boolean {
-  return !!c && (c.kind !== 'channel' || c.role === 'owner');
+/** Можно ли мне писать в этот чат (в канал — владельцу и админам с правом публикации). */
+function canPost(c: MyChat | null | undefined): boolean {
+  return !!c && !c.preview && (c.kind !== 'channel' || hasRight(c, 'post'));
+}
+
+/** Как канал выглядит автором постов: фото или значок (канал новостей — логотип СКАМ). */
+function chatWho(c: MyChat): Who {
+  const avatar = avatarUrl(c.avatar_path);
+  return { id: null, name: c.name ?? 'Канал', avatar, color: null, brand: c.is_default && !avatar, emoji: c.emoji };
+}
+
+/** Можно ли удалить сообщение: своё — всегда, чужое — админу группы или канала с правом удаления. */
+function canDelete(m: Msg, c: MyChat): boolean {
+  if (m.kind === 'call' && m.user_id !== meId()) return false;
+  if (m.user_id === meId() && m.kind !== 'system') return true;
+  return (c.kind === 'group' || c.kind === 'channel') && hasRight(c, 'delete');
+}
+
+/** Изменить можно пост канала: свой (пока можешь публиковать) или чужой — с правом «Изменение чужих публикаций». */
+function canEdit(m: Msg, c: MyChat): boolean {
+  if (c.kind !== 'channel' || m.deleted_at || m.pending || m.failed || (m.kind !== 'text' && m.kind !== 'media')) return false;
+  return (m.user_id === meId() && canPost(c)) || hasRight(c, 'edit');
 }
 
 /** Сквозное шифрование — в личных чатах и группах (канал и бот — без него, как в Telegram). */
@@ -252,7 +289,7 @@ function convVisible(): boolean {
 }
 
 function currentChat(): MyChat | null {
-  return S.cur ? S.chats.get(S.cur) ?? null : null;
+  return chatById(S.cur) ?? null;
 }
 
 function setBanner(text: string | null): void {
@@ -360,6 +397,13 @@ function chatTileEl(c: MyChat, cls = ''): HTMLElement {
   } else if (c.kind === 'bot') {
     tile = el('span', `tile person ${cls}`);
     tile.append(brandAvatar());
+  } else if (c.avatar_path) {
+    tile = el('span', `tile photo ${cls}`);
+    const img = el('img');
+    img.src = avatarUrl(c.avatar_path) ?? '';
+    img.alt = '';
+    img.decoding = 'async';
+    tile.append(img);
   } else {
     tile = el('span', `tile ${cls}`, c.emoji);
   }
@@ -412,7 +456,10 @@ function renderConv(): void {
   $('convMain').hidden = !c;
   $('convEmpty').hidden = !!c;
   const ro = !!c && !canPost(c);
+  const preview = !!c?.preview;
   $('composer').classList.toggle('readonly', ro);
+  $('composer').hidden = preview;
+  $('joinBar').hidden = !preview;
   $('composerNote').hidden = !ro;
   if (ro) { closeStickers(); recUI?.cancel(); }
   renderSelectBar();
@@ -429,11 +476,19 @@ function renderHead(): void {
     emoji.replaceChildren(c.kind === 'bot' ? brandAvatar() : personAvatar(c.peer_id));
     emoji.style.border = '0';
     emoji.style.background = 'transparent';
+  } else if (c.avatar_path) {
+    const img = el('img');
+    img.src = avatarUrl(c.avatar_path) ?? '';
+    img.alt = '';
+    emoji.replaceChildren(img);
+    emoji.style.border = '0';
+    emoji.style.background = 'transparent';
   } else {
     emoji.replaceChildren(c.emoji);
     emoji.style.border = '';
     emoji.style.background = '';
   }
+  emoji.classList.toggle('photo', (c.kind === 'group' || c.kind === 'channel') && !!c.avatar_path);
   const nameEl = $('convName');
   nameEl.replaceChildren(chatTitle(c));
   if (isE2E(c)) {
@@ -472,7 +527,7 @@ function renderHead(): void {
   sub.classList.remove('online');
   if (c.kind === 'bot') { sub.textContent = 'бот'; return; }
   if (c.kind === 'channel') {
-    sub.textContent = `канал · ${plural(c.member_count, 'подписчик', 'подписчика', 'подписчиков')}`;
+    sub.textContent = `${c.username ? 'публичный канал' : 'канал'} · ${countLabel(c)}`;
     return;
   }
   // Группа: «5 участников, 2 в сети» — считаем только участников этого чата.
@@ -487,7 +542,7 @@ function reactionCounts(m: Msg) {
   const list = S.reactions.get(m.id) ?? [];
   return REACTIONS.map((R) => {
     const rs = list.filter((r) => r.emoji === R.k);
-    return { k: R.k, e: R.e, n: rs.length, on: rs.some((r) => r.user_id === meId()), who: rs.map((r) => who(r.user_id).name) };
+    return { k: R.k, e: R.e, n: rs.length, on: rs.some((r) => r.user_id === meId()), who: rs.filter((r) => r.user_id).map((r) => who(r.user_id).name) };
   }).filter((x) => x.n > 0);
 }
 
@@ -610,7 +665,7 @@ function swipeToReply(row: HTMLElement, target: HTMLElement, onReply: () => void
 
 /** Имя автора сообщения для цитаты и «Переслано от …». */
 function authorOf(m: { user_id: string | null; kind?: string }, chat: MyChat): Who {
-  if (chat.kind === 'channel') return { id: null, name: chat.name ?? 'Канал', avatar: null, color: null, brand: true };
+  if (chat.kind === 'channel') return chatWho(chat);
   return who(m.user_id, m.kind ?? 'text');
 }
 
@@ -743,7 +798,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     + `${selecting ? ' selecting' : ''}${selected ? ' selected' : ''}${U.flash === m.id ? ' flash' : ''}`);
   row.dataset.id = m.id;
   if (U.openMsg === m.id) row.classList.add('open');
-  const w: Who = channel ? { id: null, name: chat.name ?? 'Канал', avatar: null, color: null, brand: true } : who(m.user_id, m.kind);
+  const w: Who = channel ? chatWho(chat) : who(m.user_id, m.kind);
   if (selecting) {
     const mark = el('span', `sel-mark${selectable ? '' : ' off'}`);
     mark.setAttribute('aria-hidden', 'true');
@@ -772,8 +827,12 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   let textBox: HTMLElement = b;
   if (deleted) b.append('Сообщение удалено');
   else textBox = messageBody(b, m, w.name);
-  const meta = el('span', `meta${bare ? ' pill' : ''}${mediaOnly ? ' over' : ''}`, timeLabel(ts(m.created_at)));
-  meta.title = new Date(ts(m.created_at)).toLocaleString('ru-RU');
+  const meta = el('span', `meta${bare ? ' pill' : ''}${mediaOnly ? ' over' : ''}`);
+  if (channel && m.signature && !deleted) meta.append(el('span', 'sign', m.signature), ', ');
+  if (m.edited_at && !deleted) meta.append(el('span', 'edited', 'изменено '));
+  meta.append(timeLabel(ts(m.created_at)));
+  meta.title = new Date(ts(m.created_at)).toLocaleString('ru-RU')
+    + (m.edited_at ? ` · изменено ${new Date(ts(m.edited_at)).toLocaleString('ru-RU')}` : '');
   if (mine && !deleted && !m.failed) {
     const read = !m.pending && readUpTo >= ts(m.created_at);
     const tick = el('span', `tick${read ? ' read' : ''}`, m.pending ? '✓' : read ? '✓✓' : '✓');
@@ -805,7 +864,8 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
         chip.setAttribute('aria-label', `${c.e} ${c.n}`);
         chip.setAttribute('aria-pressed', String(c.on));
         chip.title = c.who.join(', ');
-        chip.addEventListener('click', () => react(m, c.k));
+        if (chat.preview) chip.disabled = true;
+        else chip.addEventListener('click', () => react(m, c.k));
         rs.append(chip);
       });
       wrap.append(rs);
@@ -814,16 +874,19 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     if (!selecting) {
       // Над сообщением (при наведении): реакции, «Ответить», «Переслать», «Удалить».
       const act = el('div', 'actions');
-      REACTIONS.forEach((R) => {
-        const btn = button(null, R.e, (ev) => { ev.stopPropagation(); U.openMsg = null; react(m, R.k); });
-        btn.setAttribute('aria-label', `Реакция ${R.e}`);
-        act.append(btn);
-      });
-      act.append(el('span', 'act-sep'));
+      if (!chat.preview) {
+        REACTIONS.forEach((R) => {
+          const btn = button(null, R.e, (ev) => { ev.stopPropagation(); U.openMsg = null; react(m, R.k); });
+          btn.setAttribute('aria-label', `Реакция ${R.e}`);
+          act.append(btn);
+        });
+        act.append(el('span', 'act-sep'));
+      }
       if (canPost(chat)) act.append(iconAction('reply', 'Ответить', () => setReply(m)));
+      if (canEdit(m, chat)) act.append(iconAction('edit', 'Изменить', () => startEdit(m)));
       if (canForward(m)) act.append(iconAction('forward', 'Переслать', () => openForward([m])));
-      act.append(iconAction('check', 'Выбрать', () => startSelect(m)));
-      if (own) {
+      if (!chat.preview) act.append(iconAction('check', 'Выбрать', () => startSelect(m)));
+      if (canDelete(m, chat)) {
         const armed = U.armedDelete === m.id;
         const del = button('del', armed ? 'Точно?' : 'Удалить', (ev) => {
           ev.stopPropagation();
@@ -893,10 +956,15 @@ function renderFeed(): void {
     if (c.kind === 'direct' || c.kind === 'bot') {
       q.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение — обещаем, это не развод.');
     } else if (c.kind === 'channel') {
-      q.append(el('strong', null, 'Новостей пока нет'), 'Как только появятся — они будут здесь.');
+      if (canPost(c)) {
+        q.append(el('strong', null, 'Здесь пока нет постов'), 'Напишите первый — подписчики увидят его от имени канала.');
+        if (shareLinkOf(c)) q.append(el('br'), button('btn primary small', 'Позвать подписчиков', () => void shareInvite(c)));
+      } else {
+        q.append(el('strong', null, 'Постов пока нет'), 'Как только появятся — они будут здесь.');
+      }
     } else {
-      q.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение или позовите друзей по ссылке.');
-      if (c.invite_code) q.append(el('br'), button('btn primary small', 'Пригласить', () => shareInvite(c)));
+      q.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение или позовите друзей.');
+      q.append(el('br'), button('btn primary small', 'Добавить участников', () => openAddMembers(c.id)));
     }
     inner.append(q);
   }
@@ -991,8 +1059,10 @@ function markVisibleRead(): void {
 
 function openChat(id: string, opts: { silent?: boolean } = {}): void {
   const inp = $<HTMLTextAreaElement>('input');
+  if (S.preview && S.preview.id !== id) { S.feeds.delete(S.preview.id); S.preview = null; }
   if (S.cur !== id) {
-    if (S.cur) U.drafts.set(S.cur, inp.value);
+    // Во время правки поста в поле — текст поста, а черновик сохранён отдельно.
+    if (S.cur && !U.edit.delete(S.cur)) U.drafts.set(S.cur, inp.value);
     stopTyping();
     recUI?.cancel();
     closeStickers();
@@ -1007,11 +1077,11 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
     U.armedDelete = null;
     U.lastCount = 0;
     $('jumpBtn').hidden = true;
-    lsSet('skam:last', id);
+    if (!S.preview) lsSet('skam:last', id);
     inp.value = U.drafts.get(id) ?? '';
     loadFeed(id).catch(() => toast('Не удалось загрузить сообщения.'));
   }
-  joinChatChannel(isConversation(S.chats.get(id)) ? id : null);
+  joinChatChannel(isConversation(chatById(id)) ? id : null);
   if (!wideMQ.matches && !document.body.classList.contains('chat-open')) {
     history.pushState({ skamChat: id }, '');
   }
@@ -1041,11 +1111,12 @@ function autoOpen(): void {
 }
 
 function closeMissingChat(): void {
-  if (S.cur && S.chatsLoaded && !S.chats.has(S.cur)) {
+  if (S.cur && S.chatsLoaded && !chatById(S.cur)) {
     S.cur = null;
     joinChatChannel(null);
     document.body.classList.remove('chat-open');
     closeDialog($<HTMLDialogElement>('chatDlg'));
+    closeDialog($<HTMLDialogElement>('pickDlg'));
     renderConv();
   }
 }
@@ -1085,7 +1156,7 @@ function autosize(): void {
 /** Есть текст — кнопка «Отправить», пусто — микрофон/кружочек (как в Telegram). */
 function updateSendBtn(): void {
   // Пересылка ждёт отправки — «Отправить» доступна и без текста.
-  const has = !!$<HTMLTextAreaElement>('input').value.trim() || (!!S.cur && U.fwd.has(S.cur));
+  const has = !!$<HTMLTextAreaElement>('input').value.trim() || (!!S.cur && (U.fwd.has(S.cur) || U.edit.has(S.cur)));
   const sendBtn = $<HTMLButtonElement>('sendBtn');
   sendBtn.disabled = !currentChat() || !has;
   sendBtn.hidden = !has;
@@ -1110,6 +1181,8 @@ async function send(): Promise<void> {
   const inp = $<HTMLTextAreaElement>('input');
   const text = inp.value.trim();
   const id = S.cur;
+  const ed = id ? U.edit.get(id) : undefined;
+  if (id && ed) { await saveEdit(id, ed, text); return; }
   const fw = id ? U.fwd.get(id) : undefined;
   if (!id || (!text && !fw)) return;
   if (text.length > MAX_LEN) { toast(`Слишком длинное сообщение — до ${MAX_LEN} символов.`); return; }
@@ -1131,6 +1204,54 @@ async function send(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Изменить пост канала
+// ---------------------------------------------------------------------------
+
+function startEdit(m: Msg): void {
+  const c = chatById(m.chat_id);
+  if (!c || !canEdit(m, c)) return;
+  closeMenu();
+  if (U.sel) exitSelect();
+  const inp = $<HTMLTextAreaElement>('input');
+  if (!U.edit.has(m.chat_id)) U.drafts.set(m.chat_id, inp.value);
+  U.edit.set(m.chat_id, m);
+  U.reply.delete(m.chat_id);
+  U.fwd.delete(m.chat_id);
+  inp.value = m.content?.text ?? m.body;
+  renderComposerBar();
+  autosize();
+  inp.focus();
+  inp.setSelectionRange(inp.value.length, inp.value.length);
+}
+
+function cancelEdit(chatId: string): void {
+  if (!U.edit.delete(chatId)) return;
+  if (chatId === S.cur) {
+    const inp = $<HTMLTextAreaElement>('input');
+    inp.value = U.drafts.get(chatId) ?? '';
+    renderComposerBar();
+    autosize();
+  }
+}
+
+async function saveEdit(chatId: string, m: Msg, text: string): Promise<void> {
+  const files = m.content?.files ?? [];
+  if (!text && !files.length) { toast('Пост не может быть пустым — его можно удалить.'); return; }
+  if (text.length > MAX_LEN) { toast(`Слишком длинный текст — до ${MAX_LEN} символов.`); return; }
+  U.edit.delete(chatId);
+  const inp = $<HTMLTextAreaElement>('input');
+  inp.value = U.drafts.get(chatId) ?? '';
+  U.drafts.delete(chatId);
+  renderComposerBar();
+  autosize();
+  try {
+    await editMessage(m, text);
+  } catch (e) {
+    toast(errText(e, 'Не получилось изменить пост.'));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Ответить, переслать, выбрать несколько — как в Telegram
 // ---------------------------------------------------------------------------
 
@@ -1139,6 +1260,7 @@ function setReply(m: Msg): void {
   if (!c || !canPost(c) || m.pending || m.failed || m.deleted_at || m.kind === 'call') return;
   closeMenu();
   if (U.sel) exitSelect();
+  cancelEdit(m.chat_id);
   U.reply.set(m.chat_id, m);
   U.fwd.delete(m.chat_id);
   renderComposerBar();
@@ -1159,6 +1281,7 @@ function takeReply(chatId: string): Msg | null {
 function cancelComposerBar(): void {
   const id = S.cur;
   if (!id) return;
+  if (U.edit.has(id)) { cancelEdit(id); return; }
   U.reply.delete(id);
   U.fwd.delete(id);
   renderComposerBar();
@@ -1170,18 +1293,25 @@ function renderComposerBar(): void {
   const bar = document.getElementById('replyBar');
   if (!bar) return;
   const c = currentChat();
-  const fw = c ? U.fwd.get(c.id) : undefined;
-  const r = c && !fw ? U.reply.get(c.id) : undefined;
-  if (!c || (!fw && !r) || !canPost(c) || U.sel) { bar.hidden = true; bar.replaceChildren(); return; }
+  const ed = c ? U.edit.get(c.id) : undefined;
+  const fw = c && !ed ? U.fwd.get(c.id) : undefined;
+  const r = c && !fw && !ed ? U.reply.get(c.id) : undefined;
+  if (!c || (!fw && !r && !ed) || (!canPost(c) && !ed) || U.sel) { bar.hidden = true; bar.replaceChildren(); return; }
   bar.hidden = false;
   const ic = el('span', 'cb-ic');
-  ic.append(html(fw ? ICONS.forward : ICONS.reply));
-  ic.title = fw ? 'Переслать' : 'Ответ';
+  ic.append(html(ed ? ICONS.edit : fw ? ICONS.forward : ICONS.reply));
+  ic.title = ed ? 'Изменение' : fw ? 'Переслать' : 'Ответ';
   const body = el('button', 'cb-body');
   body.type = 'button';
   const title = el('span', 'cb-title');
   const sub = el('span', 'cb-sub');
-  if (fw) {
+  if (ed) {
+    title.textContent = 'Изменение поста';
+    const snap = snapOf(ed);
+    sub.textContent = oneLine(snap.k, snap.text, ed.content?.files ?? []);
+    body.title = 'Перейти к посту';
+    body.addEventListener('click', () => void jumpTo(ed.id));
+  } else if (fw) {
     const n = fw.msgs.length;
     title.textContent = n === 1 ? 'Переслать сообщение' : `Переслать ${plural(n, 'сообщение', 'сообщения', 'сообщений')}`;
     if (fw.hide) sub.textContent = 'без имени отправителя';
@@ -1207,7 +1337,7 @@ function renderComposerBar(): void {
   body.append(title, sub);
   const x = button('icon-btn cb-x', null, cancelComposerBar);
   x.append(html(ICONS.close));
-  x.setAttribute('aria-label', fw ? 'Не пересылать' : 'Отменить ответ');
+  x.setAttribute('aria-label', ed ? 'Отменить изменение' : fw ? 'Не пересылать' : 'Отменить ответ');
   bar.replaceChildren(ic, body, x);
 }
 
@@ -1303,7 +1433,7 @@ function renderSelectBar(): void {
   fwd.append(html(ICONS.forward), el('span', null, 'Переслать'));
   fwd.disabled = !list.length || !list.every(canForward);
   bar.replaceChildren(cancel, count, el('span', 'sb-spacer'), fwd);
-  const own = list.length > 0 && list.every((m) => m.user_id === meId() && m.kind !== 'system');
+  const own = list.length > 0 && !!c && list.every((m) => canDelete(m, c));
   if (own) {
     const del = button('btn danger small sb-btn', U.armedSel ? 'Точно удалить?' : 'Удалить', () => {
       if (!U.armedSel) {
@@ -1402,6 +1532,7 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
   const menu = $('ctxMenu');
   const own = m.user_id === meId() && m.kind !== 'system';
   const rs = el('div', 'cm-reacts');
+  rs.hidden = !!chat.preview;
   REACTIONS.forEach((R) => {
     const b = button(null, R.e, () => { closeMenu(); react(m, R.k); });
     b.setAttribute('aria-label', `Реакция ${R.e}`);
@@ -1416,6 +1547,7 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
     return b;
   };
   if (canPost(chat)) item('reply', 'Ответить', () => setReply(m));
+  if (canEdit(m, chat)) item('edit', 'Изменить', () => startEdit(m));
   const text = copyText(m);
   if (text) {
     item('copy', 'Копировать текст', () => {
@@ -1424,8 +1556,8 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
     });
   }
   if (canForward(m)) item('forward', 'Переслать', () => openForward([m]));
-  item('check', 'Выбрать', () => startSelect(m));
-  if (own) {
+  if (!chat.preview) item('check', 'Выбрать', () => startSelect(m));
+  if (canDelete(m, chat)) {
     let armed = false;
     const del = item('trash', 'Удалить', () => {
       if (!armed) { armed = true; del.querySelector('span')!.textContent = 'Точно удалить?'; return; }
@@ -1688,32 +1820,22 @@ function nextVoiceAfter(cur: { id: string; chatId: string }): Msg | null {
 // Диалог «Новый чат»
 // ---------------------------------------------------------------------------
 
-let picked = EMOJIS[0];
-function renderEmojiGrid(grid: HTMLElement, current: string, onPick: (e: string) => void): void {
-  grid.replaceChildren();
-  EMOJIS.forEach((e) => {
-    const b = button(null, e, () => { onPick(e); renderEmojiGrid(grid, e, onPick); });
-    b.setAttribute('aria-pressed', String(e === current));
-    b.setAttribute('aria-label', `Значок ${e}`);
-    grid.append(b);
-  });
-}
-
 function openNew(): void {
-  $<HTMLInputElement>('chatName').value = '';
-  $('chatErr').textContent = '';
   $<HTMLInputElement>('findUser').value = '';
   findSeq++;
   clearTimeout(findTimer);
   showFindHint();
-  picked = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
-  renderEmojiGrid($('emojiGrid'), picked, (e) => { picked = e; });
   openDialog($<HTMLDialogElement>('newDlg'));
-  $('findUser').focus();
+  if (!touchMQ.matches) $('findUser').focus();
+}
+
+function startCreate(kind: 'group' | 'channel'): void {
+  closeDialog($<HTMLDialogElement>('newDlg'));
+  openCreate(kind);
 }
 
 // Поиск людей: по имени, фамилии или @username — прямо во время набора.
-const FIND_HINT = 'Имя, фамилия или @username — от 2 символов.';
+const FIND_HINT = 'Имя, фамилия, @username или название публичного канала — от 2 символов.';
 let findSeq = 0;
 let findTimer = 0;
 
@@ -1786,6 +1908,50 @@ function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[]
   return row;
 }
 
+/** Публичный канал в результатах поиска: «Открыть» — лента до подписки. */
+function foundChannel(card: ChatCard, q: { at: boolean; s: string; toks: string[] }): HTMLElement {
+  const row = el('div', 'found');
+  const text = el('span', 'found-text');
+  const nm = el('span', 'nm');
+  nm.append(q.at ? document.createTextNode(card.name) : highlight(card.name, q.toks));
+  const sub = el('span', 'uname');
+  if (card.username) sub.append('@', highlight(card.username, q.at ? [q.s] : q.toks, true));
+  const tag = el('span', 'found-tag');
+  tag.append(el('span', 'sep', ' · '), `канал, ${plural(card.member_count, 'подписчик', 'подписчика', 'подписчиков')}`);
+  sub.append(tag);
+  text.append(nm, sub);
+  const action = button(`btn ${card.is_member ? 'ghost' : 'primary'} small`, 'Открыть', () => {
+    closeDialog($<HTMLDialogElement>('newDlg'));
+    openCard(card);
+  });
+  action.setAttribute('aria-label', `Открыть канал ${card.name}`);
+  row.append(cardTile(card), text, action);
+  return row;
+}
+
+/** Открыть группу или канал по карточке: свой — сразу, публичный канал — до подписки. */
+function openCard(card: ChatCard): void {
+  if (card.is_member && S.chats.has(card.id)) { openChat(card.id); return; }
+  setPreview(card);
+  openChat(card.id);
+}
+
+async function subscribePreview(): Promise<void> {
+  const c = currentChat();
+  if (!c?.preview) return;
+  const btn = $<HTMLButtonElement>('joinBtn');
+  btn.disabled = true;
+  try {
+    await joinChannel(c.id);
+    toast(`Вы подписались на «${c.name}»`);
+    renderAll();
+  } catch (e) {
+    toast(errText(e, 'Не получилось подписаться.'));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /** Найти людей по введённому запросу. now = true — по кнопке «Найти»/Enter, иначе во время набора. */
 async function runFind(now: boolean): Promise<void> {
   const out = $('findResult');
@@ -1812,41 +1978,31 @@ async function runFind(now: boolean): Promise<void> {
     // Пока ищем, старые результаты остаются на месте — без мигания при наборе.
     if (!out.querySelector('.found')) out.replaceChildren(el('p', 'hint', 'Ищем…'));
     let found: FoundUser[];
+    let chans: ChatCard[];
     try {
-      found = await searchUsers(raw);
+      [found, chans] = await Promise.all([searchUsers(raw), searchChats(raw).catch(() => [] as ChatCard[])]);
     } catch (e) {
       if (my === findSeq) out.replaceChildren(el('p', 'err', errText(e, 'Не получилось найти. Попробуйте ещё раз.')));
       return;
     }
     if (my !== findSeq) return;
-    if (!found.length) {
-      out.replaceChildren(el('p', 'err', q.at ? `Пользователь @${q.s} не найден.` : `Никого не нашли по запросу «${raw.trim()}».`));
+    if (!found.length && !chans.length) {
+      out.replaceChildren(el('p', 'err', q.at ? `@${q.s} не найден — ни человек, ни публичный канал.` : `Никого не нашли по запросу «${raw.trim()}».`));
       return;
     }
     const list = el('div', 'found-list');
     list.setAttribute('role', 'list');
+    // Точное @имя канала — наверх.
+    const exact = chans.filter((c) => c.username === q.s);
+    const rest = chans.filter((c) => c.username !== q.s);
+    const addChans = (cs: ChatCard[]) => cs.forEach((c) => { const r = foundChannel(c, q); r.setAttribute('role', 'listitem'); list.append(r); });
+    addChans(exact);
     found.forEach((p) => { const r = foundRow(p, q); r.setAttribute('role', 'listitem'); list.append(r); });
+    if (rest.length) {
+      if (found.length || exact.length) list.append(el('p', 'fld found-sep', 'Каналы'));
+      addChans(rest);
+    }
     out.replaceChildren(list);
-  }
-}
-
-async function submitNew(): Promise<void> {
-  const name = $<HTMLInputElement>('chatName').value.trim();
-  if (!name) {
-    $('chatErr').textContent = 'Введите название чата.';
-    $('chatName').focus();
-    return;
-  }
-  const btn = $<HTMLButtonElement>('createBtn');
-  btn.disabled = true;
-  try {
-    const id = await createChat(name, picked);
-    closeDialog($<HTMLDialogElement>('newDlg'));
-    openChat(id);
-  } catch (e) {
-    $('chatErr').textContent = errText(e, 'Не получилось создать чат.');
-  } finally {
-    btn.disabled = false;
   }
 }
 
@@ -2112,11 +2268,12 @@ function openPerson(uid: string): void {
 // ---------------------------------------------------------------------------
 
 async function shareInvite(c: MyChat): Promise<void> {
-  if (!c.invite_code) return;
-  const link = inviteLink(c.invite_code);
+  const link = shareLinkOf(c);
+  if (!link) return;
   const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
   if (touchMQ.matches && nav.share) {
-    try { await nav.share({ title: `Чат «${chatTitle(c)}» в СКАМ`, text: 'Заходи в чат в СКАМ:', url: link }); return; } catch { /* отменили */ }
+    const what = c.kind === 'channel' ? `Канал «${chatTitle(c)}» в СКАМ` : `Чат «${chatTitle(c)}» в СКАМ`;
+    try { await nav.share({ title: what, text: c.kind === 'channel' ? 'Подписывайся на канал в СКАМ:' : 'Заходи в чат в СКАМ:', url: link }); return; } catch { /* отменили */ }
   }
   try {
     await navigator.clipboard.writeText(link);
@@ -2137,8 +2294,7 @@ function openChatInfo(): void {
     openBotCard();
     return;
   }
-  renderChatInfo();
-  openDialog($<HTMLDialogElement>('chatDlg'));
+  openChatAdmin(c.id);
 }
 
 function openBotCard(): void {
@@ -2154,145 +2310,27 @@ function openBotCard(): void {
   openDialog(dlg);
 }
 
-function renderChannelInfo(dlg: HTMLDialogElement, c: MyChat): void {
-  const stack = el('div', 'stack');
-  const row = el('div', 'chat-title-row');
-  const text = el('span');
-  text.append(el('strong', null, chatTitle(c)), el('br'),
-    el('span', 'hint', `канал · ${plural(c.member_count, 'подписчик', 'подписчика', 'подписчиков')}`));
-  row.append(el('span', 'conv-emoji', c.emoji), text);
-  stack.append(row, el('p', null, 'Официальный канал СКАМ: новости, обновления и важные объявления. Читать и ставить реакции могут все, писать — только авторы.'));
-  if (c.role === 'owner') stack.append(el('p', 'hint', 'Вы автор канала: ваши посты публикуются от имени канала.'));
-  dlg.replaceChildren(dlgHead('О канале', dlg), stack);
-}
-
-let editEmoji = '';
-function renderChatInfo(): void {
-  const dlg = $<HTMLDialogElement>('chatDlg');
-  const c = currentChat();
-  if (c?.kind === 'channel') { renderChannelInfo(dlg, c); return; }
-  if (!c || c.kind !== 'group') { closeDialog(dlg); return; }
-  const owner = c.role === 'owner';
-  const stack = el('div', 'stack');
-
-  if (owner) {
-    editEmoji = editEmoji && dlg.open ? editEmoji : c.emoji;
-    const f = el('div', 'field');
-    const lbl = el('label', 'fld', 'Название');
-    lbl.htmlFor = 'editName';
-    const inp = el('input', 'txt');
-    const typed = dlg.open ? (document.getElementById('editName') as HTMLInputElement | null)?.value : undefined;
-    Object.assign(inp, { id: 'editName', maxLength: 40, value: typed ?? c.name ?? '' });
-    const grid = el('div', 'emoji-grid');
-    grid.style.margin = '10px 0 0';
-    renderEmojiGrid(grid, editEmoji, (e) => { editEmoji = e; });
-    const err = el('p', 'err');
-    const save = button('btn primary small', 'Сохранить', async () => {
-      const v = inp.value.trim();
-      if (!v) { err.textContent = 'Введите название.'; return; }
-      try {
-        await renameChat(c.id, v, editEmoji);
-        toast('Сохранено');
-        err.textContent = '';
-      } catch (e) {
-        err.textContent = errText(e);
-      }
-    });
-    save.style.alignSelf = 'flex-start';
-    f.append(lbl, inp, grid, err, save);
-    stack.append(f);
-  } else {
-    const row = el('div', 'chat-title-row');
-    row.append(el('span', 'conv-emoji', c.emoji), el('strong', null, chatTitle(c)));
-    stack.append(row);
-  }
-
-  if (c.invite_code) {
-    const f = el('div', 'field');
-    f.append(el('span', 'fld', 'Ссылка-приглашение'));
-    const box = el('div', 'invite');
-    const link = el('input', 'txt');
-    Object.assign(link, { readOnly: true, value: inviteLink(c.invite_code), id: 'inviteLink' });
-    link.setAttribute('aria-label', 'Ссылка-приглашение');
-    link.addEventListener('focus', () => link.select());
-    box.append(link, button('btn ghost small', 'Копировать', async () => {
-      try { await navigator.clipboard.writeText(link.value); toast('Ссылка скопирована'); } catch { link.select(); }
-    }));
-    f.append(box, el('p', 'hint', 'Любой, у кого есть ссылка, может вступить в чат.'));
-    if (owner) {
-      const reset = button('linkish', 'Сбросить ссылку', async () => {
-        try { await resetInvite(c.id); renderChatInfo(); toast('Старая ссылка больше не работает'); } catch (e) { toast(errText(e)); }
-      });
-      reset.style.cssText = 'align-self:flex-start;margin-top:6px;font-size:13px';
-      f.append(reset);
-    }
-    stack.append(f);
-  }
-
-  const members = S.members.get(c.id);
-  const mf = el('div', 'field');
-  mf.append(el('span', 'fld', `Участники · ${c.member_count}`));
-  if (!members) {
-    mf.append(el('p', 'hint', 'Загружаем…'));
-  } else {
-    const ul = el('ul', 'members');
-    const onl = (uid: string) => uid === meId() || isOnline(S.profiles.get(uid));
-    const seen = (uid: string) => Date.parse(S.profiles.get(uid)?.last_seen_at ?? '') || 0;
-    const sorted = [...members].sort((a, b) =>
-      Number(onl(b.user_id)) - Number(onl(a.user_id))
-      || (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : 0)
-      || seen(b.user_id) - seen(a.user_id)
-      || who(a.user_id).name.localeCompare(who(b.user_id).name, 'ru'));
-    sorted.slice(0, 200).forEach((m) => {
-      const li = el('li');
-      const isMe = m.user_id === meId();
-      const p = S.profiles.get(m.user_id);
-      const on = isMe || isOnline(p);
-      const b = button(null, null, () => openPerson(m.user_id));
-      const text = el('span');
-      text.style.minWidth = '0';
-      text.append(el('span', 'nm', isMe ? `${who(m.user_id).name} (вы)` : who(m.user_id).name), el('br'),
-        el('span', `st${on ? ' on' : ''}`, isMe ? 'в сети' : statusText(p)));
-      b.append(personAvatar(m.user_id), text);
-      if (m.role === 'owner') b.append(el('span', 'role', 'владелец'));
-      li.append(b);
-      ul.append(li);
-    });
-    mf.append(ul);
-  }
-  stack.append(mf);
-
-  if (!c.is_default) {
-    const leave = button('btn danger', 'Выйти из чата', async () => {
-      if (leave.dataset.armed !== '1') {
-        leave.dataset.armed = '1';
-        leave.textContent = owner && c.member_count > 1 ? 'Точно? Вы владелец' : 'Точно выйти?';
-        return;
-      }
-      try {
-        await leaveChat(c.id);
-        closeDialog(dlg);
-        toast('Вы вышли из чата');
-      } catch (e) {
-        toast(errText(e));
-      }
-    });
-    leave.style.alignSelf = 'flex-start';
-    stack.append(el('div', 'hr'), leave);
-  }
-
-  dlg.replaceChildren(dlgHead('О чате', dlg), stack);
-}
-
 // ---------------------------------------------------------------------------
 // Приглашения ?join=КОД
 // ---------------------------------------------------------------------------
 
 async function handlePendingJoin(): Promise<void> {
+  // Публичный канал: ?c=имя — открываем ленту (до подписки — с кнопкой «Подписаться»).
+  const pub = lsGet('skam:open');
+  if (pub) {
+    lsSet('skam:open', null);
+    try {
+      const card = await chatByUsername(pub);
+      if (!card) toast(`Канал @${pub} не найден.`);
+      else openCard(card);
+    } catch (e) {
+      toast(errText(e, 'Не получилось открыть канал.'));
+    }
+  }
   const code = lsGet('skam:join');
   if (!code) return;
   lsSet('skam:join', null);
-  let info: Awaited<ReturnType<typeof previewInvite>>;
+  let info: ChatCard | null;
   try {
     info = await previewInvite(code);
   } catch (e) {
@@ -2301,27 +2339,36 @@ async function handlePendingJoin(): Promise<void> {
   }
   if (!info) { toast('Приглашение не найдено или устарело.'); return; }
   if (info.is_member) { openChat(info.id); return; }
+  const card = info;
+  const channel = card.kind === 'channel';
   const dlg = $<HTMLDialogElement>('joinDlg');
-  const card = el('div', 'person-card');
-  const tile = el('span', 'conv-emoji', info.emoji);
+  const box = el('div', 'person-card');
+  const tile = cardTile(card);
   tile.style.cssText = 'margin:0 auto 12px;width:72px;height:72px;font-size:36px;border-radius:22px';
-  card.append(tile, el('h2', null, info.name), el('p', 'st', `Вас пригласили в чат · ${plural(info.member_count, 'участник', 'участника', 'участников')}`));
+  box.append(tile, el('h2', null, card.name), el('p', 'st', channel
+    ? `Вас пригласили в канал · ${plural(card.member_count, 'подписчик', 'подписчика', 'подписчиков')}`
+    : `Вас пригласили в группу · ${plural(card.member_count, 'участник', 'участника', 'участников')}`));
+  if (card.description) {
+    const d = el('p', 'join-desc');
+    fillText(d, card.description);
+    box.append(d);
+  }
   const actions = el('div', 'dlg-actions');
-  const joinBtn = button('btn primary', 'Вступить', async () => {
+  const joinBtn = button('btn primary', channel ? 'Подписаться' : 'Вступить', async () => {
     joinBtn.disabled = true;
     try {
       const id = await joinByInvite(code);
       closeDialog(dlg);
       openChat(id);
-      toast(`Вы вступили в «${info!.name}»`);
+      toast(channel ? `Вы подписались на «${card.name}»` : `Вы вступили в «${card.name}»`);
     } catch (e) {
-      toast(errText(e, 'Не получилось вступить в чат.'));
+      toast(errText(e, channel ? 'Не получилось подписаться.' : 'Не получилось вступить в группу.'));
       joinBtn.disabled = false;
     }
   });
   actions.append(button('btn ghost', 'Не сейчас', () => closeDialog(dlg)), joinBtn);
-  card.append(actions);
-  dlg.replaceChildren(card);
+  box.append(actions);
+  dlg.replaceChildren(box);
   openDialog(dlg);
 }
 
@@ -2338,10 +2385,9 @@ function wire(): void {
   listen($('newBtn'), 'click', openNew);
   listen($('emptyNewBtn'), 'click', openNew);
   listen($('cancelBtn'), 'click', () => closeDialog($<HTMLDialogElement>('newDlg')));
-  listen($('createBtn'), 'click', () => void submitNew());
-  listen($('chatName'), 'keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void submitNew(); }
-  });
+  listen($('newGroupBtn'), 'click', () => startCreate('group'));
+  listen($('newChannelBtn'), 'click', () => startCreate('channel'));
+  listen($('joinBtn'), 'click', () => void subscribePreview());
   listen($('backBtn'), 'click', () => backToList());
   listen($('headBtn'), 'click', openChatInfo);
   listen($('meBox'), 'click', () => openProfile());
@@ -2355,7 +2401,7 @@ function wire(): void {
       e.preventDefault();
       replyStep(e.key === 'ArrowUp' ? -1 : 1);
     }
-    if (e.key === 'Escape' && S.cur && (U.reply.has(S.cur) || U.fwd.has(S.cur)) && !stickersOpen()) {
+    if (e.key === 'Escape' && S.cur && (U.reply.has(S.cur) || U.fwd.has(S.cur) || U.edit.has(S.cur)) && !stickersOpen()) {
       e.preventDefault();
       cancelComposerBar();
     }
@@ -2459,7 +2505,7 @@ function wire(): void {
   const onSys = () => renderThemeBtn();
   sysDark.addEventListener('change', onSys);
   unsubs.push(() => sysDark.removeEventListener('change', onSys));
-  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg']) {
+  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg', 'pickDlg']) {
     const d = $<HTMLDialogElement>(id);
     listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
@@ -2556,6 +2602,15 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     },
   });
   unsubs.push(() => { recUI?.destroy(); recUI = null; });
+  mountChatAdmin({
+    avatar: (uid, cls) => avatarEl(who(uid), cls),
+    personAvatar: (uid) => personAvatar(uid),
+    chatTile: (c, cls) => chatTileEl(c, cls),
+    chatTitle,
+    name: (uid) => who(uid).name,
+    openChat: (id) => openChat(id),
+    openPerson: (uid) => openPerson(uid),
+  });
   unsubs.push(mountCallUI({
     who: (uid) => who(uid),
     avatar: (uid, cls) => avatarEl(who(uid), cls),
@@ -2567,12 +2622,12 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   S.visibleChat = () => (S.cur && convVisible() && document.visibilityState === 'visible' ? S.cur : null);
   unsubs.push(
     on('call', () => { renderCalls(); renderSide(); updateTitle(); refreshCallRows(); }),
-    on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
+    on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); refreshChatInfo(); }),
     on('feed', renderFeed),
     on('head', renderHead),
     on('online', () => { renderMe(); renderSide(); if ($<HTMLDialogElement>('personDlg').open) refreshPersonStatus(); }),
     on('me', () => { renderMe(); renderSide(); }),
-    on('members', () => { if ($<HTMLDialogElement>('chatDlg').open) renderChatInfo(); }),
+    on('members', () => refreshChatInfo()),
   );
   renderAll();
 
@@ -2618,6 +2673,7 @@ export function unmountApp(): void {
   U.drafts.clear();
   U.reply.clear();
   U.fwd.clear();
+  U.edit.clear();
   U.sel = null;
   document.body.classList.remove('chat-open', 'ringing');
   document.title = 'СКАМ';

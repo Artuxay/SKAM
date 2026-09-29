@@ -10,12 +10,16 @@ import { registerServiceWorker } from './app/pwa';
 applyTheme();
 registerServiceWorker();
 
-// Ссылка-приглашение ?join=КОД: запоминаем и чистим адресную строку.
+// Ссылка-приглашение ?join=КОД и публичный канал ?c=имя: запоминаем и чистим адресную строку.
 const url = new URL(location.href);
 const join = url.searchParams.get('join');
-if (join) {
-  lsSet('skam:join', join);
+// Публичный канал ?c=имя — откроем после входа.
+const pub = url.searchParams.get('c');
+if (join || pub) {
+  if (join) lsSet('skam:join', join);
+  if (pub && /^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(pub)) lsSet('skam:open', pub.replace(/^@/, '').toLowerCase());
   url.searchParams.delete('join');
+  url.searchParams.delete('c');
   history.replaceState(history.state, '', url.pathname + url.search + url.hash);
 }
 

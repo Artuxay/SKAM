@@ -953,3 +953,123 @@ dialog.rate-dlg{width:min(440px,calc(100% - 24px))}
   .seg.four button{font-size:12.5px}
 }
 @media (prefers-reduced-motion: reduce){.star-btn,.rb-fill{transition:none}}
+
+/* ---------- группы и каналы: фото, создание, управление ---------- */
+.tile.photo{padding:0;overflow:hidden;background:var(--raised)}
+.tile.photo img{width:100%;height:100%;object-fit:cover;display:block}
+.chat .tile.photo{border:0}
+.fwd-chat .tile.photo,.rb-av .tile.photo{border:0}
+.conv-emoji.photo{overflow:hidden;padding:0}
+.conv-emoji.photo img,.conv-emoji img{width:100%;height:100%;object-fit:cover;display:block}
+.av.emoji{background:var(--card);border:1px solid var(--line);color:var(--text);font-family:var(--emoji);font-weight:400;font-size:18px;line-height:1}
+.meta .sign{font-style:italic;max-width:18ch;display:inline-block;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;white-space:nowrap}
+.meta .edited{opacity:.85}
+.join-bar{display:flex;justify-content:center;padding:12px 22px calc(12px + env(safe-area-inset-bottom, 0px));border-top:1px solid var(--line);background:var(--surface)}
+.join-bar .btn{min-width:min(320px,100%)}
+.dlg-back{margin:0 2px 0 -10px}
+dialog .dlg-head .dlg-back + h2{margin-right:auto}
+
+/* «Новый чат»: группа или канал */
+.new-kinds{display:flex;flex-direction:column;gap:6px}
+.new-kind{display:flex;align-items:center;gap:12px;width:100%;border:1px solid var(--line);background:var(--card);border-radius:16px;padding:10px 12px;text-align:left}
+.new-kind:hover{border-color:var(--ink)}
+.nk-ic{width:40px;height:40px;border-radius:12px;background:var(--raised);display:grid;place-items:center;font-size:21px;font-family:var(--emoji);flex:none}
+.nk-text{display:flex;flex-direction:column;min-width:0}
+.nk-text b{font-weight:600}
+.nk-text small{font-size:13px;color:var(--muted)}
+.found .join-tile,.found > .conv-emoji{width:42px;height:42px;font-size:21px;border-radius:13px}
+.found-sep{margin:8px 2px 0}
+
+/* Мастер создания */
+dialog.create-dlg,dialog.pick-dlg{width:min(440px,calc(100% - 24px))}
+.create-dlg .field,.create-dlg .create-photo{margin-bottom:14px}
+.create-dlg .emoji-grid{margin-bottom:6px}
+.create-photo{display:flex;align-items:center;gap:16px}
+.create-photo-side{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.create-photo-side .hint{margin:0}
+.create-photo-side .linkish{font-size:13px}
+.ci-tile,.tile.ci-tile{width:88px;height:88px;border-radius:26px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:42px;font-family:var(--emoji);flex:none;overflow:hidden}
+.tile.ci-tile.photo{border:0}
+.ci-photo{position:relative;border:0;background:transparent;padding:0;border-radius:26px;flex:none}
+.ci-photo:hover .ci-tile{filter:brightness(.92)}
+.ci-cam{position:absolute;right:-4px;bottom:-4px;width:32px;height:32px;border-radius:50%;background:var(--ink);color:var(--on-ink);display:grid;place-items:center;box-shadow:0 0 0 3px var(--surface)}
+.txt.area{resize:vertical;min-height:70px;max-height:200px;line-height:1.4;font-size:15px}
+.type-radio{display:flex;flex-direction:column;gap:4px}
+.tr-opt{display:flex;align-items:flex-start;gap:12px;padding:10px;border-radius:14px;cursor:pointer}
+.tr-opt:hover{background:var(--raised)}
+.tr-opt input{width:20px;height:20px;margin:2px 0 0;accent-color:var(--accent);flex:none}
+.tr-text{display:flex;flex-direction:column;gap:2px}
+.tr-text b{font-weight:600}
+.tr-text span{font-size:13.5px;color:var(--muted)}
+.prefixed{display:flex;align-items:center;border:1.5px solid var(--line);background:var(--card);border-radius:14px;padding:0 0 0 12px}
+.prefixed:focus-within{border-color:var(--accent)}
+.prefixed .pre{color:var(--muted);font-weight:600}
+.prefixed .txt{border:0;background:transparent;padding-left:4px}
+.ci-full{overflow-wrap:anywhere;margin-top:2px}
+
+/* О канале / о группе */
+.ci-head{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px}
+.ci-head .ci-tile,.ci-head .ci-photo{margin-bottom:10px}
+.ci-head h2{margin:0;font-size:20px;overflow-wrap:anywhere}
+.ci-head .st{margin:0;color:var(--muted);font-size:14px}
+.ci-desc{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--raised);border-radius:14px;padding:10px 12px;font-size:14.5px}
+.ci-desc a{color:var(--accent-text)}
+.ci-reset{align-self:flex-start;margin-top:6px;font-size:13px}
+.ci-actions{display:flex;flex-wrap:wrap;gap:8px}
+.ci-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--card)}
+.ci-row{display:flex;align-items:center;gap:12px;border:0;background:transparent;padding:11px 12px;text-align:left;width:100%}
+.ci-row + .ci-row{border-top:1px solid var(--line)}
+.ci-row:hover{background:var(--raised)}
+.ci-ic{width:26px;text-align:center;font-family:var(--emoji);font-size:18px;flex:none}
+.ci-title{flex:1;min-width:0;font-weight:500}
+.ci-val{color:var(--muted);font-size:14px}
+.ci-chev{color:var(--muted);display:grid;place-items:center}
+.ci-chev svg{width:18px;height:18px}
+.ci-list-hint{margin-top:-6px}
+.ci-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.ci-foot .hint{flex-basis:100%;margin:0}
+.ci-more{align-self:center;margin-top:6px}
+.members .pr{display:flex;align-items:center;gap:12px;width:100%;border:0;background:transparent;padding:8px;border-radius:14px;text-align:left}
+.members button.pr:hover{background:var(--raised)}
+.pr-text{display:flex;flex-direction:column;min-width:0;flex:1;line-height:1.3}
+.pr-text .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr-text .st{font-size:13px;color:var(--muted)}
+.pr-text .st.on{color:var(--online-text)}
+.members .pr .btn{flex:none}
+.members .role{flex:none}
+.ci-person{display:flex;align-items:center;gap:14px}
+.ci-person .btn{flex:none;margin-left:auto}
+.av.lg{width:56px;height:56px;font-size:22px}
+.ci-person-text{display:flex;flex-direction:column;min-width:0}
+.ci-person-text b{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ci-person-text .uname,.ci-person-text .st{font-size:13px;color:var(--muted)}
+.rights{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:16px;background:var(--card);overflow:hidden}
+.right-row{padding:11px 12px;margin:0}
+.right-row + .right-row{border-top:1px solid var(--line)}
+.right-row:has(input:disabled){opacity:.55;cursor:default}
+
+/* Добавить участников */
+.pick-q{margin-bottom:8px}
+.pick-link{display:flex;align-items:center;gap:12px;width:100%;border:0;background:transparent;padding:8px;border-radius:14px;color:var(--accent-text);font-weight:600;text-align:left}
+.pick-link:hover{background:var(--raised)}
+.pick-link-ic{width:42px;height:42px;border-radius:50%;background:var(--accent-soft);display:grid;place-items:center;flex:none}
+.pick-list{display:flex;flex-direction:column;max-height:min(380px,48dvh);overflow-y:auto;overscroll-behavior:contain;margin:0 -8px;padding:0 4px}
+.pick-row{display:flex;align-items:center;gap:12px;padding:8px;border-radius:14px;cursor:pointer}
+.pick-row:hover{background:var(--raised)}
+.pick-row .person-av .av{width:42px;height:42px;font-size:17px}
+.pick-row input{width:20px;height:20px;accent-color:var(--accent);flex:none;margin:0}
+.pick-row.off{cursor:default}
+.pick-row.off .pr-text{opacity:.6}
+.pick-sep{margin:10px 8px 2px}
+.pick-note{margin:8px 0 14px}
+.join-desc{margin:-8px 0 18px;color:var(--text);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+@media (max-width:480px){
+  .ci-person{flex-wrap:wrap}
+  .create-photo{gap:12px}
+}
+.ci-switch{width:40px;height:24px;border-radius:999px;background:var(--line);position:relative;flex:none;transition:background .15s}
+.ci-switch::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+.ci-switch.on{background:var(--accent)}
+.ci-switch.on::after{transform:translateX(16px)}
+.stack > .ci-left{align-self:flex-start}
+@media (prefers-reduced-motion: reduce){.ci-switch,.ci-switch::after{transition:none}}

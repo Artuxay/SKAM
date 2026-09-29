@@ -2,7 +2,8 @@
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type {
-  Attachment, Database, Forward, Member, Message, MessageKind, MyChat, Profile, Reaction, ReactionKey,
+  Attachment, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, Profile, Reaction,
+  ReactionKey,
 } from '../lib/database.types';
 import { uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
@@ -78,7 +79,25 @@ export const S = {
   quoted: new Map<string, Msg | 'missing'>(),
   /** UI сообщает, какой чат сейчас реально виден пользователю (для непрочитанных). */
   visibleChat: (): string | null => null,
+  /** Публичный канал, открытый до подписки (его нет в списке чатов). */
+  preview: null as MyChat | null,
 };
+
+/** Чат из списка или открытый до подписки публичный канал. */
+export function chatById(id: string | null | undefined): MyChat | undefined {
+  if (!id) return undefined;
+  return S.chats.get(id) ?? (S.preview?.id === id ? S.preview : undefined);
+}
+
+/** Есть ли у меня право в чате (у владельца — все). */
+export function hasRight(c: MyChat | null | undefined, r: ChatRight): boolean {
+  return !!c && !c.preview && (c.rights ?? []).includes(r);
+}
+
+/** Админ или владелец. */
+export function isAdmin(c: MyChat | null | undefined): boolean {
+  return !!c && !c.preview && (c.role === 'owner' || c.role === 'admin');
+}
 
 export function meId(): string {
   return S.user?.id ?? '';
@@ -127,6 +146,7 @@ export function resetState(): void {
   S.typingWhat.clear();
   S.previews.clear();
   S.quoted.clear();
+  S.preview = null;
   e2e.reset();
   listeners.clear();
   pending.clear();
@@ -232,7 +252,7 @@ export function normUsername(v: string): string {
 }
 export const USERNAME_RE = /^[a-z][a-z0-9_]{4,31}$/;
 
-async function toSquare(file: Blob, size = 256): Promise<Blob> {
+export async function toSquare(file: Blob, size = 256): Promise<Blob> {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
@@ -303,6 +323,7 @@ export async function loadChats(): Promise<void> {
   }
   S.chats = next;
   S.chatsLoaded = true;
+  if (S.preview && next.has(S.preview.id)) S.preview = null;
   for (const id of [...S.feeds.keys()]) if (!next.has(id)) S.feeds.delete(id);
   emit('chats');
   void decryptPreviews();
@@ -349,14 +370,15 @@ export function reloadChatsSoon(): void {
   reloadTimer = window.setTimeout(() => { loadChats().catch(() => {}); }, 400);
 }
 
-export async function createChat(name: string, emoji: string): Promise<string> {
-  const { data, error } = await sb.rpc('create_chat', { p_name: name, p_emoji: emoji });
+export async function createChat(name: string, emoji: string, kind: 'group' | 'channel' = 'group',
+  description: string | null = null): Promise<string> {
+  const { data, error } = await sb.rpc('create_chat', { p_name: name, p_emoji: emoji, p_kind: kind, p_description: description });
   if (error) throw error;
   await loadChats();
   return data.id;
 }
 
-export async function previewInvite(code: string) {
+export async function previewInvite(code: string): Promise<ChatCard | null> {
   const { data, error } = await sb.rpc('chat_by_invite', { p_code: code });
   if (error) throw error;
   return data?.[0] ?? null;
@@ -389,12 +411,220 @@ export function dropChat(chatId: string): void {
   emit('chats', 'feed', 'head');
 }
 
-export async function renameChat(chatId: string, name: string, emoji: string): Promise<void> {
-  const { error } = await sb.from('chats').update({ name, emoji }).eq('id', chatId);
+/** Название, значок, описание и подписи (null — не менять, пустое описание — убрать). */
+export async function updateChat(chatId: string, f: { name?: string; emoji?: string; description?: string; sign?: boolean }): Promise<void> {
+  const { error } = await sb.rpc('update_chat', {
+    p_chat: chatId, p_name: f.name ?? null, p_emoji: f.emoji ?? null,
+    p_description: f.description ?? null, p_sign: f.sign ?? null,
+  });
   if (error) throw error;
   const c = S.chats.get(chatId);
-  if (c) Object.assign(c, { name, emoji });
+  if (c) {
+    if (f.name) c.name = f.name.trim().slice(0, 40);
+    if (f.emoji) c.emoji = f.emoji;
+    if (f.description !== undefined) c.description = f.description.trim() || null;
+    if (f.sign !== undefined) c.sign_messages = f.sign;
+  }
+  // Список, который уже грузился, мог прийти со старыми данными — перечитаем.
+  reloadChatsSoon();
+  emit('chats', 'head', 'feed');
+}
+
+/** Фото группы или канала: квадрат 320×320 в avatars/chat/<id>/. */
+export async function uploadChatAvatar(chatId: string, file: Blob): Promise<void> {
+  if (!file.type.startsWith('image/')) throw new Error('Выберите картинку');
+  const blob = await toSquare(file, 320);
+  const ext = blob.type === 'image/webp' ? 'webp' : 'jpg';
+  const path = `chat/${chatId}/${Date.now().toString(36)}.${ext}`;
+  const up = await sb.storage.from('avatars').upload(path, blob, { contentType: blob.type, cacheControl: '31536000', upsert: false });
+  if (up.error) throw up.error;
+  const { data: old, error } = await sb.rpc('set_chat_avatar', { p_chat: chatId, p_path: path });
+  if (error) {
+    await sb.storage.from('avatars').remove([path]);
+    throw error;
+  }
+  const c = S.chats.get(chatId);
+  if (c) c.avatar_path = path;
+  // Список, который уже грузился, мог прийти со старыми данными — перечитаем.
+  reloadChatsSoon();
+  emit('chats', 'head', 'feed');
+  if (old && old !== path) void sb.storage.from('avatars').remove([old]);
+}
+
+export async function removeChatAvatar(chatId: string): Promise<void> {
+  const { data: old, error } = await sb.rpc('set_chat_avatar', { p_chat: chatId, p_path: null });
+  if (error) throw error;
+  const c = S.chats.get(chatId);
+  if (c) c.avatar_path = null;
+  // Список, который уже грузился, мог прийти со старыми данными — перечитаем.
+  reloadChatsSoon();
+  emit('chats', 'head', 'feed');
+  if (old) void sb.storage.from('avatars').remove([old]);
+}
+
+/** Публичная ссылка канала (null — сделать частным). */
+export async function setChatUsername(chatId: string, username: string | null): Promise<void> {
+  const { error } = await sb.rpc('set_chat_username', { p_chat: chatId, p_username: username });
+  if (error) throw error;
+  const c = S.chats.get(chatId);
+  if (c) c.username = username ? normUsername(username) : null;
+  // Список, который уже грузился, мог прийти со старыми данными — перечитаем.
+  reloadChatsSoon();
   emit('chats', 'head');
+}
+
+export async function chatUsernameAvailable(chatId: string | null, username: string): Promise<boolean> {
+  const { data, error } = await sb.rpc('chat_username_available', { p_chat: chatId, p_username: username });
+  if (error) throw error;
+  return !!data;
+}
+
+export async function deleteChat(chatId: string): Promise<void> {
+  const c = S.chats.get(chatId);
+  // Фото удаляем сами и заранее: после удаления чата прав на его папку уже ни у кого нет.
+  if (c?.avatar_path && c.role === 'owner') {
+    const path = c.avatar_path;
+    const { error } = await sb.rpc('set_chat_avatar', { p_chat: chatId, p_path: null });
+    if (!error) await sb.storage.from('avatars').remove([path]).then(() => {}, () => {});
+  }
+  const { error } = await sb.rpc('delete_chat', { p_chat: chatId });
+  if (error) throw error;
+  dropChat(chatId);
+}
+
+// ---------------------------------------------------------------------------
+// Участники, администраторы, чёрный список
+// ---------------------------------------------------------------------------
+
+/** Профили из списков участников: у подписчиков канала их иначе не прочитать. */
+function rememberProfiles(list: { id: string; name: string | null; username: string | null; avatar_path: string | null;
+  color: string; last_seen_at?: string | null; online_until?: string | null }[]): void {
+  for (const p of list) {
+    const have = S.profiles.get(p.id);
+    if (have) continue;
+    S.profiles.set(p.id, {
+      id: p.id, name: p.name, first_name: p.name, last_name: null, username: p.username, username_optional: false,
+      avatar_path: p.avatar_path, color: p.color, last_seen_at: p.last_seen_at ?? null, online_until: p.online_until ?? null,
+      created_at: '', updated_at: '',
+    });
+  }
+}
+
+export async function memberList(chatId: string, o: { query?: string; admins?: boolean; limit?: number; offset?: number } = {}): Promise<MemberInfo[]> {
+  const { data, error } = await sb.rpc('chat_member_list', {
+    p_chat: chatId, p_query: o.query || null, p_admins: !!o.admins, p_limit: o.limit ?? 50, p_offset: o.offset ?? 0,
+  });
+  if (error) throw error;
+  rememberProfiles((data ?? []).map((m) => ({ ...m, id: m.user_id })));
+  return data ?? [];
+}
+
+export type Contact = Database['public']['Functions']['my_contacts']['Returns'][number];
+export async function myContacts(chatId: string | null = null): Promise<Contact[]> {
+  const { data, error } = await sb.rpc('my_contacts', { p_chat: chatId, p_limit: 500 });
+  if (error) throw error;
+  rememberProfiles(data ?? []);
+  return data ?? [];
+}
+
+export async function addMembers(chatId: string, ids: string[]): Promise<number> {
+  const { data, error } = await sb.rpc('add_chat_members', { p_chat: chatId, p_users: ids });
+  if (error) throw error;
+  await loadChats();
+  return data ?? 0;
+}
+
+export async function removeMember(chatId: string, userId: string, ban = true): Promise<void> {
+  const { error } = await sb.rpc('remove_chat_member', { p_chat: chatId, p_user: userId, p_ban: ban });
+  if (error) throw error;
+  const list = S.members.get(chatId);
+  if (list) S.members.set(chatId, list.filter((m) => m.user_id !== userId));
+  const c = S.chats.get(chatId);
+  if (c) c.member_count = Math.max(1, c.member_count - 1);
+  e2e.membersChanged(chatId);
+  emit('chats', 'head', 'members');
+}
+
+export type Banned = Database['public']['Functions']['chat_banned']['Returns'][number];
+export async function bannedList(chatId: string): Promise<Banned[]> {
+  const { data, error } = await sb.rpc('chat_banned', { p_chat: chatId });
+  if (error) throw error;
+  rememberProfiles((data ?? []).map((b) => ({ ...b, id: b.user_id })));
+  return data ?? [];
+}
+
+export async function unbanMember(chatId: string, userId: string): Promise<void> {
+  const { error } = await sb.rpc('unban_chat_member', { p_chat: chatId, p_user: userId });
+  if (error) throw error;
+}
+
+function patchMember(chatId: string, userId: string, f: Partial<Member>): void {
+  const m = S.members.get(chatId)?.find((x) => x.user_id === userId);
+  if (m) Object.assign(m, f);
+  emit('members', 'chats');
+}
+
+export async function setAdmin(chatId: string, userId: string, rights: ChatRight[]): Promise<void> {
+  const { error } = await sb.rpc('set_chat_admin', { p_chat: chatId, p_user: userId, p_rights: rights });
+  if (error) throw error;
+  patchMember(chatId, userId, { role: 'admin', rights, promoted_by: meId() });
+}
+
+export async function removeAdmin(chatId: string, userId: string): Promise<void> {
+  const { error } = await sb.rpc('remove_chat_admin', { p_chat: chatId, p_user: userId });
+  if (error) throw error;
+  patchMember(chatId, userId, { role: 'member', rights: null, promoted_by: null });
+}
+
+export async function transferOwner(chatId: string, userId: string): Promise<void> {
+  const { error } = await sb.rpc('transfer_chat_owner', { p_chat: chatId, p_user: userId });
+  if (error) throw error;
+  patchMember(chatId, userId, { role: 'owner', rights: null, promoted_by: null });
+  await loadChats();
+}
+
+// ---------------------------------------------------------------------------
+// Публичные каналы: поиск, карточка, лента до подписки
+// ---------------------------------------------------------------------------
+
+export async function searchChats(query: string): Promise<ChatCard[]> {
+  const { data, error } = await sb.rpc('search_chats', { p_query: query, p_limit: 10 });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function chatByUsername(username: string): Promise<ChatCard | null> {
+  const { data, error } = await sb.rpc('chat_by_username', { p_username: username });
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+/** Открыть публичный канал до подписки: он живёт отдельно от списка чатов. */
+export function setPreview(card: ChatCard): MyChat {
+  const c: MyChat = {
+    id: card.id, kind: card.kind, name: card.name, emoji: card.emoji, invite_code: null, is_default: false,
+    created_at: new Date().toISOString(), role: 'member', last_read_at: new Date().toISOString(),
+    member_count: card.member_count, peer_id: null, unread: 0, last_id: null, last_body: null, last_user_id: null,
+    last_kind: null, last_at: null, last_deleted: null, last_enc: null, last_key_id: null, last_files: null, last_call: null,
+    description: card.description, username: card.username, avatar_path: card.avatar_path, sign_messages: false,
+    rights: [], preview: true,
+  };
+  if (S.preview?.id !== c.id) S.feeds.delete(c.id);
+  S.preview = c;
+  return c;
+}
+
+export async function joinChannel(chatId: string): Promise<void> {
+  const { error } = await sb.rpc('join_channel', { p_chat: chatId });
+  if (error) throw error;
+  await loadChats();
+  // Теперь посты читаются как подписчиком: с авторами для админов и настоящими реакциями.
+  void loadFeed(chatId, true).catch(() => {});
+}
+
+/** Ссылка на публичный канал. */
+export function channelLink(username: string): string {
+  return `${appUrl()}?c=${encodeURIComponent(username)}`;
 }
 
 export async function resetInvite(chatId: string): Promise<string> {
@@ -619,7 +849,28 @@ export async function prepareMsg(m: Msg): Promise<Msg> {
   return m;
 }
 
+/** Лента публичного канала до подписки: через функцию (таблица сообщений открыта только подписчикам). */
+async function fetchPreviewPage(chatId: string, before?: Msg) {
+  const { data, error } = await sb.rpc('channel_feed', {
+    p_chat: chatId, p_before: before?.created_at ?? null, p_before_id: before?.id ?? null, p_limit: PAGE,
+  });
+  if (error) throw error;
+  const rows = (data ?? []).reverse();
+  for (const r of rows) {
+    // Реакции — только числа: кто их поставил, до подписки не видно.
+    const list: Reaction[] = [];
+    Object.entries(r.reacts ?? {}).forEach(([emoji, n]) => {
+      for (let i = 0; i < (n ?? 0); i++) list.push({ message_id: r.id, user_id: '', emoji: emoji as ReactionKey, chat_id: chatId, created_at: '' });
+    });
+    S.reactions.set(r.id, list);
+  }
+  const msgs = rows.map(({ reacts: _r, ...m }) => m as Msg);
+  await Promise.all(msgs.map(prepareMsg));
+  return msgs;
+}
+
 async function fetchPage(chatId: string, before?: Msg) {
+  if (S.preview?.id === chatId) return fetchPreviewPage(chatId, before);
   let q = sb.from('messages').select('*').eq('chat_id', chatId);
   if (before) {
     const t = `"${before.created_at}"`;
@@ -650,10 +901,11 @@ export async function loadReactions(ids: string[]): Promise<void> {
 export async function loadFeed(chatId: string, force = false): Promise<void> {
   const f = feedOf(chatId);
   if (f.loaded && !force) return;
+  const preview = S.preview?.id === chatId;
   try {
     const [rows, members] = await Promise.all([
       fetchPage(chatId),
-      sb.from('chat_members').select('*').eq('chat_id', chatId),
+      preview ? Promise.resolve({ data: [] as Member[], error: null }) : sb.from('chat_members').select('*').eq('chat_id', chatId),
     ]);
     const fresh = !f.loaded;
     rows.forEach((m) => upsertMessage(m));
@@ -661,9 +913,12 @@ export async function loadFeed(chatId: string, force = false): Promise<void> {
     f.loaded = true;
     f.error = false;
     if (!members.error) S.members.set(chatId, members.data);
+    // В канале профили есть смысл спрашивать только у администраторов (подписчиков всё равно не видно).
+    const channel = chatById(chatId)?.kind === 'channel';
+    const people = (members.data ?? []).filter((m) => !channel || m.role !== 'member').map((m) => m.user_id);
     await Promise.all([
-      loadReactions(rows.map((r) => r.id)),
-      ensureProfiles([...rows.map((r) => r.user_id), ...(members.data ?? []).map((m) => m.user_id)]),
+      preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)),
+      ensureProfiles([...rows.map((r) => r.user_id), ...people]),
     ]);
   } catch (e) {
     f.loaded = true;
@@ -684,7 +939,8 @@ export async function loadOlder(chatId: string): Promise<void> {
     const rows = await fetchPage(chatId, oldest);
     rows.forEach((m) => upsertMessage(m));
     f.hasMore = rows.length === PAGE;
-    await Promise.all([loadReactions(rows.map((r) => r.id)), ensureProfiles(rows.map((r) => r.user_id))]);
+    const preview = S.preview?.id === chatId;
+    await Promise.all([preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)), ensureProfiles(rows.map((r) => r.user_id))]);
   } finally {
     f.loadingOlder = false;
     emit('feed');
@@ -710,6 +966,8 @@ function draftMessage(chatId: string, fields: Partial<Msg> & Pick<Message, 'kind
     reply_to: null,
     fwd: null,
     call_id: null,
+    edited_at: null,
+    signature: null,
     pending: true,
     ...fields,
   };
@@ -936,6 +1194,25 @@ export function discardMessage(m: Msg): void {
   reloadChatsSoon();
 }
 
+/** Изменить пост канала (текст или подпись к вложениям). */
+export async function editMessage(m: Msg, text: string): Promise<void> {
+  const before = { body: m.body, content: m.content, edited_at: m.edited_at };
+  const body = text.trim();
+  if (body === m.body) return;
+  m.body = body;
+  m.content = { text: body, files: m.content?.files ?? [] };
+  m.edited_at = new Date().toISOString();
+  bumpChat(m);
+  emit('feed', 'chats');
+  const { error } = await sb.rpc('edit_message', { p_id: m.id, p_body: body });
+  if (error) {
+    Object.assign(m, before);
+    bumpChat(m);
+    emit('feed', 'chats');
+    throw error;
+  }
+}
+
 export async function deleteMessage(m: Msg): Promise<void> {
   const before = {
     body: m.body, deleted_at: m.deleted_at, sticker: m.sticker, media_path: m.media_path, media_mime: m.media_mime,
@@ -1066,7 +1343,7 @@ export function canForward(m: Msg): boolean {
 /** «Переслано от …» для сообщения: сохраняем исходного автора, если его уже пересылали. */
 export function forwardOf(m: Msg): Forward {
   if (m.fwd) return m.fwd;
-  const chat = S.chats.get(m.chat_id);
+  const chat = chatById(m.chat_id);
   if (chat?.kind === 'channel') return { name: chat.name ?? 'Канал', kind: 'channel', at: m.created_at };
   if (m.kind === 'system' || !m.user_id) return { name: 'СКАМ', kind: 'bot', at: m.created_at };
   const p = S.profiles.get(m.user_id);

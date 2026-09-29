@@ -31,6 +31,29 @@ export type Attachment = {
 /** «Переслано от …»: имя автора оригинала, его id (если это человек) и время оригинала. */
 export type Forward = { name: string; from?: string; kind?: 'user' | 'channel' | 'bot'; at?: string };
 
+/** Роль в чате: владелец, администратор (с правами) и участник/подписчик. */
+export type ChatRole = 'owner' | 'admin' | 'member';
+/**
+ * Права администратора (как в Telegram). В канале — все семь, в группе — без post и edit.
+ * info — профиль (название, фото, описание, ссылка); post — публикация; edit — изменение чужих публикаций;
+ * delete — удаление чужих сообщений; invite — добавление участников и ссылка-приглашение;
+ * ban — удаление и блокировка; admins — назначение администраторов.
+ */
+export type ChatRight = 'info' | 'post' | 'edit' | 'delete' | 'invite' | 'ban' | 'admins';
+
+/** Карточка группы или канала (по ссылке, в поиске). */
+export type ChatCard = {
+  id: string; kind: ChatKind; name: string; emoji: string; avatar_path: string | null; description: string | null;
+  username: string | null; member_count: number; is_member: boolean;
+};
+
+/** Участник с профилем (список участников, подписчики, администраторы). */
+export type MemberInfo = {
+  user_id: string; role: ChatRole; rights: ChatRight[] | null; promoted_by: string | null; joined_at: string;
+  name: string | null; username: string | null; avatar_path: string | null; color: string;
+  last_seen_at: string | null; online_until: string | null;
+};
+
 export type CallStatus = 'active' | 'ended' | 'missed' | 'declined' | 'cancelled';
 
 type CallRow = {
@@ -66,6 +89,13 @@ type ChatRow = {
   direct_key: string | null;
   is_default: boolean;
   created_at: string;
+  description: string | null;
+  /** Публичный канал: @имя и ссылка ?c=имя. */
+  username: string | null;
+  /** Фото группы или канала: avatars/chat/<id>/<файл>. */
+  avatar_path: string | null;
+  /** Подписывать посты канала именем автора. */
+  sign_messages: boolean;
 };
 
 export type Database = {
@@ -100,19 +130,18 @@ export type Database = {
       chats: {
         Row: ChatRow;
         Insert: never;
-        Update: {
-          name?: string | null;
-          emoji?: string;
-        };
+        Update: never;
         Relationships: [];
       };
       chat_members: {
         Row: {
           chat_id: string;
           user_id: string;
-          role: 'owner' | 'member';
+          role: ChatRole;
           joined_at: string;
           last_read_at: string;
+          rights: ChatRight[] | null;
+          promoted_by: string | null;
         };
         Insert: never;
         Update: never;
@@ -148,6 +177,10 @@ export type Database = {
           fwd: Forward | null;
           /** Запись о звонке (kind = 'call'). */
           call_id: string | null;
+          /** Пост канала изменён. */
+          edited_at: string | null;
+          /** Подпись автора поста (снимок имени, если в канале включены подписи). */
+          signature: string | null;
         };
         Insert: {
           id?: string;
@@ -271,7 +304,7 @@ export type Database = {
           invite_code: string | null;
           is_default: boolean;
           created_at: string;
-          role: 'owner' | 'member';
+          role: ChatRole;
           last_read_at: string;
           member_count: number;
           peer_id: string | null;
@@ -287,13 +320,59 @@ export type Database = {
           last_files: Attachment[] | null;
           /** Итог звонка, если последнее сообщение — запись о звонке. */
           last_call: { status: CallStatus; video: boolean; dur: number | null } | null;
+          description: string | null;
+          username: string | null;
+          avatar_path: string | null;
+          sign_messages: boolean;
+          /** Мои права в этом чате (у владельца — все). */
+          rights: ChatRight[];
         }[];
       };
-      create_chat: { Args: { p_name: string; p_emoji?: string }; Returns: ChatRow };
-      chat_by_invite: {
-        Args: { p_code: string };
-        Returns: { id: string; name: string; emoji: string; member_count: number; is_member: boolean }[];
+      create_chat: {
+        Args: { p_name: string; p_emoji?: string | null; p_kind?: 'group' | 'channel'; p_description?: string | null };
+        Returns: ChatRow;
       };
+      update_chat: {
+        Args: { p_chat: string; p_name?: string | null; p_emoji?: string | null; p_description?: string | null; p_sign?: boolean | null };
+        Returns: undefined;
+      };
+      set_chat_avatar: { Args: { p_chat: string; p_path: string | null }; Returns: string | null };
+      set_chat_username: { Args: { p_chat: string; p_username: string | null }; Returns: undefined };
+      chat_username_available: { Args: { p_chat: string | null; p_username: string }; Returns: boolean };
+      delete_chat: { Args: { p_chat: string }; Returns: undefined };
+      add_chat_members: { Args: { p_chat: string; p_users: string[] }; Returns: number };
+      remove_chat_member: { Args: { p_chat: string; p_user: string; p_ban?: boolean }; Returns: undefined };
+      unban_chat_member: { Args: { p_chat: string; p_user: string }; Returns: undefined };
+      chat_banned: {
+        Args: { p_chat: string };
+        Returns: {
+          user_id: string; name: string | null; username: string | null; avatar_path: string | null; color: string;
+          banned_by: string | null; banned_by_name: string | null; created_at: string;
+        }[];
+      };
+      set_chat_admin: { Args: { p_chat: string; p_user: string; p_rights: ChatRight[] }; Returns: undefined };
+      remove_chat_admin: { Args: { p_chat: string; p_user: string }; Returns: undefined };
+      transfer_chat_owner: { Args: { p_chat: string; p_user: string }; Returns: undefined };
+      chat_member_list: {
+        Args: { p_chat: string; p_query?: string | null; p_admins?: boolean; p_limit?: number; p_offset?: number };
+        Returns: MemberInfo[];
+      };
+      my_contacts: {
+        Args: { p_chat?: string | null; p_limit?: number };
+        Returns: {
+          id: string; name: string | null; username: string | null; avatar_path: string | null; color: string;
+          last_seen_at: string | null; online_until: string | null; in_chat: boolean;
+        }[];
+      };
+      chat_by_invite: { Args: { p_code: string }; Returns: ChatCard[] };
+      chat_by_username: { Args: { p_username: string }; Returns: ChatCard[] };
+      search_chats: { Args: { p_query: string; p_limit?: number }; Returns: ChatCard[] };
+      join_channel: { Args: { p_chat: string }; Returns: string };
+      channel_feed: {
+        Args: { p_chat: string; p_before?: string | null; p_before_id?: string | null; p_limit?: number };
+        Returns: (Database['public']['Tables']['messages']['Row'] & { reacts: Partial<Record<ReactionKey, number>> | null })[];
+      };
+      edit_message: { Args: { p_id: string; p_body: string }; Returns: undefined };
       join_chat: { Args: { p_code: string }; Returns: string };
       reset_invite: { Args: { p_chat: string }; Returns: string };
       open_direct: { Args: { p_user: string }; Returns: string };
@@ -377,7 +456,8 @@ export type Message = Tables<'messages'>;
 export type Reaction = Tables<'reactions'>;
 export type KeyShare = Tables<'chat_key_shares'>;
 export type UserKey = Tables<'user_keys'>;
-export type MyChat = Database['public']['Functions']['my_chats']['Returns'][number];
+/** Чат из списка. preview — публичный канал, открытый до подписки (его нет в списке). */
+export type MyChat = Database['public']['Functions']['my_chats']['Returns'][number] & { preview?: boolean };
 export type Call = Tables<'calls'>;
 export type CallMember = Tables<'call_members'>;
 export type CallSignal = Tables<'call_signals'>;

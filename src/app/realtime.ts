@@ -1,7 +1,7 @@
 // Supabase Realtime: изменения в базе, «печатает…» (broadcast), а также пульс «в сети» (ping).
 import type { RealtimeChannel, RealtimeChannelOptions } from '@supabase/supabase-js';
 import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
-import type { Call, CallMember, CallSignal, KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
+import type { Call, CallMember, CallSignal, Chat, KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
 import {
   S, addReaction, bumpChat, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
   putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
@@ -130,6 +130,10 @@ function onMember(event: string, row: Partial<Member>): void {
     void ensureProfiles([row.user_id]);
   } else if (event === 'UPDATE') {
     const m = list?.find((x) => x.user_id === row.user_id);
+    // Меня назначили админом, сняли или передали права владельца — права и ссылку отдаёт my_chats.
+    if (mine && c && row.role && (row.role !== c.role || JSON.stringify(row.rights ?? null) !== JSON.stringify(m?.rights ?? null))) {
+      reloadChatsSoon();
+    }
     if (m) Object.assign(m, row);
     if (mine && c && row.last_read_at && ts(row.last_read_at) > ts(c.last_read_at)) {
       // Прочитано на другом устройстве.
@@ -151,7 +155,9 @@ function onMember(event: string, row: Partial<Member>): void {
   emit('chats', 'head', 'members', 'feed');
 }
 
-function onChat(event: string, row: Partial<{ id: string; name: string | null; emoji: string; invite_code: string | null }>): void {
+type ChatPatch = Partial<Pick<Chat, 'id' | 'name' | 'emoji' | 'description' | 'username' | 'avatar_path' | 'sign_messages'>>;
+
+function onChat(event: string, row: ChatPatch): void {
   if (!row.id) return;
   if (event === 'DELETE') { dropChat(row.id); return; }
   const c = S.chats.get(row.id);
@@ -159,8 +165,11 @@ function onChat(event: string, row: Partial<{ id: string; name: string | null; e
   if (event === 'UPDATE') {
     c.name = row.name ?? c.name;
     c.emoji = row.emoji ?? c.emoji;
-    if ('invite_code' in row) c.invite_code = row.invite_code ?? null;
-    emit('chats', 'head', 'members');
+    for (const k of ['description', 'username', 'avatar_path'] as const) if (k in row) c[k] = row[k] ?? null;
+    if (typeof row.sign_messages === 'boolean') c.sign_messages = row.sign_messages;
+    emit('chats', 'head', 'members', 'feed');
+    // Ссылку-приглашение Realtime не присылает (её видят не все) — её отдаёт my_chats.
+    reloadChatsSoon();
   }
 }
 
@@ -258,7 +267,7 @@ export async function startRealtime(onStatus: (ok: boolean) => void, onIdentityR
     .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_members' }, (p) =>
       onMember(p.eventType, (p.eventType === 'DELETE' ? p.old : p.new) as Partial<Member>))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, (p) =>
-      onChat(p.eventType, (p.eventType === 'DELETE' ? p.old : p.new) as Record<string, never>))
+      onChat(p.eventType, (p.eventType === 'DELETE' ? p.old : p.new) as ChatPatch))
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (p) => putProfile(p.new as Profile))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_key_shares' }, (p) => e2e.onShare(p.new as KeyShare))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'user_keys' }, (p) => {
