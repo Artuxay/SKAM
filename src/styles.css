@@ -1135,3 +1135,152 @@ button.spk-item:hover{background:var(--raised)}
 @media (max-width:480px){.spk-quick{grid-template-columns:repeat(6,1fr)}}
 .btn-ic{display:inline-flex;align-items:center;gap:6px}
 .btn-ic svg{flex:none}
+
+/* ======================================================================
+   1.1.0: поиск над списком, папки с чатами, закреплённые чаты
+   ====================================================================== */
+/* ---------- поиск ---------- */
+.side-search{position:relative;display:flex;align-items:center;margin:0 12px 10px}
+.ss-ic{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--muted);display:grid;pointer-events:none}
+.ss-ic svg{width:18px;height:18px}
+.ss-q{width:100%;height:40px;border:1.5px solid var(--line);background:var(--card);border-radius:999px;padding:0 40px 0 38px;font-size:15px;outline:none;color:var(--text);-webkit-appearance:none;appearance:none}
+.ss-q::placeholder{color:var(--muted)}
+.ss-q::-webkit-search-cancel-button,.ss-q::-webkit-search-decoration{-webkit-appearance:none;display:none}
+.ss-q:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+.ss-clear{position:absolute;right:3px;top:50%;transform:translateY(-50%);width:34px;height:34px;color:var(--muted)}
+.ss-clear svg{width:16px;height:16px}
+.ss-clear:hover{color:var(--text);background:var(--raised)}
+.sr-sec{margin:12px 10px 4px;font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.01em}
+.chat-list > .sr-sec:first-child{margin-top:2px}
+.sr-tag{color:var(--muted)}
+.chat .name mark,.chat .preview mark{background:color-mix(in srgb,var(--accent) 26%,transparent);color:inherit;border-radius:3px;padding:0 1px;margin:0 -1px}
+.chat[aria-current="true"] mark{background:transparent;text-decoration:underline;text-underline-offset:2px}
+.chat.kbd{background:var(--card);box-shadow:inset 0 0 0 1.5px var(--accent)}
+.sr-empty,.folder-empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;padding:36px 18px;color:var(--muted);font-size:14px}
+.sr-empty b,.folder-empty b{color:var(--text);font-size:15.5px}
+.sr-empty p,.folder-empty p{margin:0;max-width:30ch;line-height:1.45}
+.folder-empty-ic{font-size:40px;line-height:1;font-family:var(--emoji);margin-bottom:8px}
+.folder-empty .btn{margin-top:12px}
+
+/* ---------- закреплённые ---------- */
+.chat,.fr-item,.ft-item,.ci-row,.cm-item,.fs-open,.fs-move,.fe-icon,.fe-ic,.fe-chip-x,.ss-clear,.pick-row{-webkit-tap-highlight-color:transparent}
+@media (hover:none){.chat,.ft-item{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}}
+.chat .pin-ic{grid-column:3;grid-row:2;justify-self:end;display:grid;place-items:center;width:20px;height:20px;color:var(--muted)}
+.chat .pin-ic svg{width:15px;height:15px}
+.chat[aria-current="true"] .pin-ic{color:inherit;opacity:.72}
+.chat.dragging{opacity:.35}
+.chat.drop-before{box-shadow:inset 0 3px 0 var(--accent)}
+.chat.drop-after{box-shadow:inset 0 -3px 0 var(--accent)}
+
+/* ---------- меню чата и папки ---------- */
+.cm-head{display:flex;align-items:center;gap:4px;padding:2px 8px 6px 2px;margin-bottom:4px;border-bottom:1px solid var(--line);font-size:14px;font-weight:700;color:var(--muted)}
+.cm-back{width:32px;height:32px;border-radius:50%;border:0;background:transparent;display:grid;place-items:center;color:var(--text);flex:none}
+.cm-back:hover{background:var(--raised)}
+.cm-back svg{width:18px;height:18px}
+.cm-emoji{width:19px;text-align:center;font-family:var(--emoji);font-size:17px;line-height:1;flex:none}
+.cm-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-tick{color:var(--accent-text);font-weight:700;margin-left:8px}
+.ctx-menu .cm-item[role="menuitemcheckbox"][aria-checked="true"]{color:var(--text)}
+
+/* ---------- полоса папок слева (компьютер) ---------- */
+.side-body{flex:1;min-height:0;display:flex}
+.side-body .chat-list{flex:1;min-width:0}
+.folder-rail{flex:none;width:80px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:2px;padding:2px 6px 10px 8px;border-right:1px solid var(--line);scrollbar-width:none}
+.folder-rail::-webkit-scrollbar{display:none}
+.fr-item{position:relative;flex:none;display:flex;flex-direction:column;align-items:center;gap:4px;width:100%;border:0;background:transparent;border-radius:16px;padding:9px 3px 8px;color:var(--muted);font-size:11.5px;font-weight:600;line-height:1.2;text-align:center}
+.fr-item:hover{background:var(--card);color:var(--text)}
+.fr-ic{height:28px;display:grid;place-items:center;font-size:23px;line-height:1;font-family:var(--emoji)}
+.fr-ic svg{width:24px;height:24px}
+.fr-t{max-width:100%;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere;hyphens:manual}
+.fr-item[aria-current="true"]{background:var(--card);color:var(--text);box-shadow:0 1px 0 var(--line)}
+.fr-item[aria-current="true"] .fr-ic svg{color:var(--accent-text)}
+.fr-item[aria-current="true"]::before{content:"";position:absolute;left:-8px;top:14px;bottom:14px;width:4px;border-radius:0 4px 4px 0;background:var(--accent)}
+.fr-badge{position:absolute;top:3px;right:5px;min-width:19px;height:19px;padding:0 5px;border-radius:999px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;line-height:19px;text-align:center;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px var(--raised)}
+.fr-edit{margin-top:6px}
+.fr-edit .fr-ic svg{width:21px;height:21px}
+.fr-item.dragging{opacity:.35}
+.fr-item.drop-before{box-shadow:inset 0 3px 0 var(--accent)}
+.fr-item.drop-after{box-shadow:inset 0 -3px 0 var(--accent)}
+@media (min-width:761px){
+  .app{grid-template-columns:minmax(350px,410px) 1fr}
+  .folder-tabs{display:none !important}
+}
+
+/* ---------- вкладки папок сверху (телефон) ---------- */
+.folder-tabs{display:flex;gap:6px;overflow-x:auto;padding:0 12px 10px;scrollbar-width:none;overscroll-behavior-x:contain}
+.folder-tabs::-webkit-scrollbar{display:none}
+.ft-item{flex:none;display:inline-flex;align-items:center;gap:6px;height:34px;border:1.5px solid var(--line);background:var(--card);border-radius:999px;padding:0 13px;font-size:14px;font-weight:600;white-space:nowrap;color:var(--text)}
+.ft-item[aria-current="true"]{background:var(--ink);border-color:var(--ink);color:var(--on-ink)}
+.ft-t{max-width:14ch;overflow:hidden;text-overflow:ellipsis}
+.ft-badge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;line-height:18px;text-align:center;font-variant-numeric:tabular-nums}
+.ft-edit{padding:0 9px;color:var(--muted)}
+.ft-edit svg{width:18px;height:18px}
+@media (max-width:760px){
+  /* Вкладки папок прокручиваются внутри себя, а не раздвигают список шире экрана. */
+  .app{grid-template-columns:minmax(0,1fr)}
+  .side{min-width:0}
+  .folder-rail{display:none}
+  .side-search{margin:0 14px 10px}
+  .ss-q{height:42px;font-size:16px}
+}
+
+/* ---------- редактор папки ---------- */
+dialog.folder-dlg,dialog.folders-dlg{width:min(460px,calc(100% - 24px))}
+.fe{display:flex;flex-direction:column}
+.fe-top{display:flex;gap:10px;align-items:center}
+.fe-icon{width:48px;height:48px;border-radius:14px;border:1.5px solid var(--line);background:var(--card);font-size:24px;font-family:var(--emoji);flex:none;display:grid;place-items:center;line-height:1}
+.fe-icon:hover,.fe-icon[aria-expanded="true"]{border-color:var(--ink)}
+.fe-title{flex:1;min-width:0}
+.fe-icons{display:grid;grid-template-columns:repeat(auto-fill,minmax(40px,1fr));gap:4px;padding:8px;margin:10px 0 0;background:var(--card);border:1px solid var(--line);border-radius:16px}
+.fe-ic{height:40px;border:0;background:transparent;border-radius:10px;font-size:21px;font-family:var(--emoji);line-height:1}
+.fe-ic:hover{background:var(--raised)}
+.fe-ic.on{background:var(--accent-soft);box-shadow:inset 0 0 0 1.5px var(--accent)}
+.fe-ic.auto{font-family:var(--font);font-size:12px;font-weight:700;color:var(--muted)}
+.fe-fld{margin:18px 0 8px}
+.fe-add .ci-title{color:var(--accent-text);font-weight:600}
+.fe-add-ic{display:grid;place-items:center;color:var(--accent-text)}
+.fe-add-ic svg{width:18px;height:18px}
+.fe-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.fe-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 3px 3px 3px;border-radius:999px;background:var(--card);border:1px solid var(--line);font-size:13.5px;font-weight:500}
+.fe-chip .tile{width:24px;height:24px;border-radius:50%;font-size:13px;flex:none;display:grid;place-items:center;background:var(--raised);font-family:var(--emoji);overflow:hidden;position:relative;line-height:1}
+.fe-chip .tile .av{width:24px;height:24px;font-size:11px}
+.fe-chip .tile .on-dot{display:none}
+.fe-chip-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fe-chip-x{width:22px;height:22px;border:0;border-radius:50%;background:transparent;color:var(--muted);display:grid;place-items:center;flex:none;padding:0}
+.fe-chip-x:hover{background:var(--raised);color:var(--text)}
+.fe-chip-x svg{width:13px;height:13px}
+.fe-note{margin:16px 0 0}
+.fe .err:empty{min-height:0;margin:0}
+.fe-actions{margin-top:16px;flex-wrap:wrap}
+.fe-del{margin-right:auto}
+@media (max-width:480px){
+  .fe-actions .btn{flex:1}
+  .fe-actions .fe-del{order:1;flex-basis:100%;margin:2px 0 0}
+}
+
+/* выбор чатов */
+.pick-row .tile{width:42px;height:42px;border-radius:13px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:21px;font-family:var(--emoji);flex:none;position:relative;line-height:1}
+.pick-row .tile.person{background:transparent;border:0}
+.pick-row .tile.photo{border:0;overflow:hidden}
+.pick-row .tile .av{width:42px;height:42px;font-size:17px}
+.pick-row .tile .on-dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;background:var(--online);box-shadow:0 0 0 2px var(--surface)}
+.fe-pick-actions{margin-top:12px;align-items:center}
+.fe-pick-count{margin-right:auto;font-size:13px;color:var(--muted)}
+
+/* «Папки с чатами» */
+.fs-body{display:flex;flex-direction:column}
+.fs-lead{margin:-6px 0 14px;line-height:1.5}
+.fs-create{align-self:flex-start}
+.fs-create svg{width:18px;height:18px}
+.fs-row{display:flex;align-items:center;gap:2px;padding-right:6px}
+.fs-row + .fs-row{border-top:1px solid var(--line)}
+.fs-open{flex:1;min-width:0;display:flex;align-items:center;gap:12px;border:0;background:transparent;padding:10px 12px;text-align:left;color:inherit}
+button.fs-open:hover{background:var(--raised)}
+.fs-text{display:flex;flex-direction:column;min-width:0;line-height:1.3}
+.fs-t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fs-sub{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fs-move{width:34px;height:34px;color:var(--muted)}
+.fs-move:disabled{opacity:.3;cursor:default}
+.fs-move:hover:not(:disabled){color:var(--text)}
+.fs-row .btn{flex:none}
+.fs-body > .hint:last-child{margin-top:12px}

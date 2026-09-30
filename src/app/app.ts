@@ -37,6 +37,12 @@ import { MAX_ALBUM, cachedUrl, dropMediaUrls, thumbUrl, type Prepared } from './
 import * as calls from './calls';
 import { call, callPreview, callRow, mountCallUI, renderCallBtns, renderCalls } from './callui';
 import { openRate, openSupport, ratingShort, resetFeedback } from './feedback';
+import {
+  L, folderById, folderIcon, isPinned, listChats, loadLayout, pinChat, pinsOf, reorderPins, resetLayout, setChatInFolder,
+} from './layout';
+import {
+  emptyFolderNote, foldersOf, layoutChanged, mountFolders, openFolderEditor, openFolderSettings, renderFolderBar, type MenuItem,
+} from './folders';
 import { loginMethods, providerProfile } from '../lib/oauth';
 import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
@@ -51,8 +57,18 @@ const SHELL = `
       ${LOGO}
       <button class="new-btn" id="newBtn" type="button">${ICONS.plus} Новый чат</button>
     </header>
+    <div class="side-search" role="search">
+      <span class="ss-ic" aria-hidden="true">${ICONS.search}</span>
+      <input class="ss-q" id="chatSearch" type="search" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false"
+        enterkeyhint="search" placeholder="Поиск" aria-label="Поиск: чаты, группы, каналы, боты и люди" aria-controls="chatList">
+      <button class="icon-btn ss-clear" id="searchClear" type="button" aria-label="Очистить поиск" hidden>${ICONS.close}</button>
+    </div>
+    <nav class="folder-tabs" id="folderTabs" role="tablist" aria-label="Папки" hidden></nav>
     <div class="banner" id="banner" role="status" hidden></div>
-    <nav class="chat-list" id="chatList"></nav>
+    <div class="side-body">
+      <nav class="folder-rail" id="folderRail" aria-label="Папки"></nav>
+      <nav class="chat-list" id="chatList" aria-label="Список чатов"></nav>
+    </div>
     <div class="voice-panel" id="voicePanel" hidden></div>
     <footer class="side-foot">
       <button class="me" id="meBox" type="button" aria-label="Профиль и настройки"></button>
@@ -157,6 +173,9 @@ const SHELL = `
 <dialog id="supportDlg" class="support-dlg" aria-label="Поддержка"></dialog>
 <dialog id="rateDlg" class="rate-dlg" aria-label="Оценить СКАМ"></dialog>
 <dialog id="stickerDlg" class="sticker-dlg" aria-label="Стикеры"></dialog>
+<dialog id="folderDlg" class="folder-dlg" aria-label="Папка"></dialog>
+<dialog id="folderPickDlg" class="pick-dlg" aria-label="Выбор чатов"></dialog>
+<dialog id="foldersDlg" class="folders-dlg" aria-label="Папки с чатами"></dialog>
 <div class="ctx-menu" id="ctxMenu" role="menu" hidden></div>
 <div class="vol-pop" id="volPop" hidden></div>
 <div class="ring-box" id="ringBox" role="alertdialog" aria-live="assertive" hidden></div>
@@ -183,6 +202,20 @@ const U = {
   flash: null as string | null,
   /** Пост канала, который сейчас изменяют (текст — в поле ввода). */
   edit: new Map<string, Msg>(),
+  /** Строка поиска над списком чатов. */
+  q: '',
+  /** Глобальный поиск (люди и публичные каналы) по запросу key. */
+  found: null as { key: string; people: FoundUser[]; chans: ChatCard[]; loading: boolean; error?: string } | null,
+  /** Выбранная стрелками строка результатов поиска. */
+  kbd: -1,
+  /** Какой закреплённый чат сейчас перетаскивают (список не перерисовываем, пока тянут). */
+  drag: null as string | null,
+  dragAt: 0,
+  sidePending: false,
+  /** Когда открыли меню чата долгим нажатием: следующее касание — не «открыть чат». */
+  lpAt: 0,
+  /** Папка, которая была на экране в прошлый раз (сменилась — список наверх). */
+  shownFolder: undefined as string | null | undefined,
 };
 let unsubs: (() => void)[] = [];
 let mounted = false;
@@ -373,47 +406,440 @@ function previewText(c: MyChat): string {
 }
 
 function renderSide(): void {
+  // Пока тянут закреплённый чат, список не перерисовываем — иначе перетаскивание оборвётся.
+  if (U.drag && Date.now() - U.dragAt < 30_000) { U.sidePending = true; return; }
+  renderFolderBar();
   const list = $('chatList');
+  if (searchActive()) { renderSearch(); return; }
+  list.classList.remove('searching');
   if (!S.chatsLoaded) {
     list.replaceChildren(el('p', 'list-empty', 'Загружаем чаты…'));
     return;
   }
-  const chats = sortedChats();
-  if (!chats.length) {
+  if (!S.chats.size) {
     list.replaceChildren(el('p', 'list-empty', 'Чатов пока нет. Нажмите «Новый чат», чтобы завести первый.'));
     return;
   }
+  const folder = folderById(L.cur);
+  const chats = listChats(L.cur);
+  if (!chats.length && folder) {
+    list.replaceChildren(emptyFolderNote(folder));
+  } else {
+    const pins = new Set(pinsOf(L.cur));
+    const frag = document.createDocumentFragment();
+    for (const c of chats) {
+      const row = chatRow(c, { pinned: pins.has(c.id) });
+      if (pins.has(c.id)) pinDrag(row, c.id);
+      frag.append(row);
+    }
+    list.replaceChildren(frag);
+  }
+  // Сменили папку — список с начала.
+  if (U.shownFolder !== L.cur) {
+    U.shownFolder = L.cur;
+    list.scrollTop = 0;
+  }
+}
+
+/** Строка чата в списке (и в результатах поиска — с подсветкой совпадений). */
+function chatRow(c: MyChat, opts: { pinned?: boolean; toks?: string[] } = {}): HTMLButtonElement {
+  const b = el('button', 'chat');
+  b.type = 'button';
+  b.dataset.chat = c.id;
+  const active = c.id === S.cur && convVisible();
+  if (active) b.setAttribute('aria-current', 'true');
+  const title = chatTitle(c);
+  const name = nameWithMark('name', title, chatVerified(c), markKind(c));
+  if (opts.toks?.length) name.querySelector('.nm-t')!.replaceChildren(highlight(title, opts.toks));
+  const live = calls.callInChat(c.id);
+  if (live) {
+    const ic = el('span', `live-call${calls.C.session?.callId === live.id ? ' mine' : ''}`);
+    ic.append(html(live.video ? ICONS.video : ICONS.phone));
+    ic.title = 'Идёт звонок';
+    name.append(ic);
+  }
+  b.append(
+    chatTileEl(c),
+    name,
+    el('span', 'time', c.last_at ? listTime(ts(c.last_at)) : ''),
+    el('span', 'preview', previewText(c)),
+  );
+  if (c.unread && !active) {
+    const d = el('span', 'badge', c.unread > 99 ? '99+' : String(c.unread));
+    d.setAttribute('aria-label', plural(c.unread, 'новое сообщение', 'новых сообщения', 'новых сообщений'));
+    b.append(d);
+    b.classList.add('unread');
+  } else if (opts.pinned) {
+    const p = el('span', 'pin-ic');
+    p.append(html(ICONS.pinMark));
+    p.setAttribute('role', 'img');
+    p.setAttribute('aria-label', 'закреплён');
+    p.title = 'Закреплён';
+    b.append(p);
+  }
+  if (opts.pinned) b.classList.add('pinned');
+  b.addEventListener('click', () => {
+    if (Date.now() - U.lpAt < 700) return;
+    openChat(c.id);
+  });
+  b.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    // Клавиша меню / Shift+F10 — у события нет координат: открываем у строки.
+    const r = b.getBoundingClientRect();
+    const kb = !e.clientX && !e.clientY;
+    openChatMenu(c, kb ? r.left + 24 : e.clientX, kb ? r.top + r.height / 2 : e.clientY);
+  });
+  longPress(b, () => {
+    U.lpAt = Date.now();
+    const r = b.getBoundingClientRect();
+    openChatMenu(c, r.left + 24, r.top + r.height / 2);
+  });
+  return b;
+}
+
+/** Перетаскивание закреплённых мышью — новый порядок сразу на сервер (как в Telegram на компьютере). */
+function pinDrag(row: HTMLElement, id: string): void {
+  if (touchMQ.matches) return;
+  row.draggable = true;
+  const clear = () => document.querySelectorAll('.chat.drop-before,.chat.drop-after').forEach((n) => n.classList.remove('drop-before', 'drop-after'));
+  const done = () => {
+    U.drag = null;
+    clear();
+    if (U.sidePending) { U.sidePending = false; renderSide(); }
+  };
+  row.addEventListener('dragstart', (e) => {
+    U.drag = id;
+    U.dragAt = Date.now();
+    closeMenu();
+    e.dataTransfer?.setData('text/plain', '');
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    row.classList.add('dragging');
+  });
+  row.addEventListener('dragend', () => { row.classList.remove('dragging'); done(); });
+  row.addEventListener('dragover', (e) => {
+    if (!U.drag || U.drag === id) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    const r = row.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    row.classList.toggle('drop-after', after);
+    row.classList.toggle('drop-before', !after);
+  });
+  row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
+  row.addEventListener('drop', (e) => {
+    const moving = U.drag;
+    if (!moving || moving === id) return;
+    e.preventDefault();
+    const after = row.classList.contains('drop-after');
+    const ids = pinsOf(L.cur).filter((x) => x !== moving);
+    ids.splice(ids.indexOf(id) + (after ? 1 : 0), 0, moving);
+    U.sidePending = false;
+    done();
+    reorderPins(ids).catch((err) => toast(errText(err, 'Не получилось поменять порядок.')));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Меню чата в списке: закрепить, папки, прочитано
+// ---------------------------------------------------------------------------
+
+function openChatMenu(c: MyChat, x: number, y: number): void {
+  // В результатах поиска — как в «Все чаты»: папку сейчас не видно.
+  const ctx = searchActive() ? null : L.cur;
+  const folder = folderById(ctx);
+  const pinned = isPinned(c.id, ctx);
+  const items: MenuItem[] = [];
+  items.push({
+    icon: pinned ? 'unpin' : 'pin',
+    label: pinned ? 'Открепить' : folder ? 'Закрепить в папке' : 'Закрепить',
+    fn: () => { pinChat(c.id, !pinned, ctx).catch((e) => toast(errText(e, pinned ? 'Не получилось открепить.' : 'Не получилось закрепить.'))); },
+  });
+  if (c.unread) items.push({ icon: 'read', label: 'Отметить прочитанным', fn: () => markRead(c.id) });
+  items.push({ icon: 'folderAdd', label: 'Добавить в папку', fn: () => openFolderMenu(c, x, y) });
+  if (folder) {
+    items.push({
+      icon: 'folderOut', label: `Убрать из «${folder.title}»`,
+      fn: () => {
+        setChatInFolder(folder.id, c.id, false).then(
+          () => toast(`«${chatTitle(c)}» больше не в папке «${folder.title}»`),
+          (e) => toast(errText(e, 'Не получилось убрать из папки.')),
+        );
+      },
+    });
+  }
+  showMenu(items, x, y);
+}
+
+/** «Добавить в папку»: все папки с галочками + новая папка с этим чатом. */
+function openFolderMenu(c: MyChat, x: number, y: number): void {
+  const items: MenuItem[] = [{ head: 'Добавить в папку', back: () => openChatMenu(c, x, y) }];
+  foldersOf(c).forEach(({ f, on }) => {
+    items.push({
+      icon: 'folder', emoji: folderIcon(f), label: f.title, checked: on,
+      fn: () => {
+        setChatInFolder(f.id, c.id, !on).then(
+          () => toast(on ? `Чат убран из папки «${f.title}»` : `Чат добавлен в папку «${f.title}»`),
+          (e) => toast(errText(e, 'Не получилось изменить папку.')),
+        );
+      },
+    });
+  });
+  items.push({ icon: 'plus', label: 'Новая папка', fn: () => openFolderEditor(null, { include: [c.id] }) });
+  showMenu(items, x, y);
+}
+
+/** Контекстное меню из пунктов (для чатов и папок). */
+function showMenu(items: MenuItem[], x: number, y: number): void {
+  const menu = $('ctxMenu');
+  const box = el('div', 'cm-items');
+  for (const it of items) {
+    if ('head' in it) {
+      const h = el('div', 'cm-head');
+      if (it.back) {
+        const back = button('cm-back', null, () => it.back!());
+        back.append(html(ICONS.back));
+        back.setAttribute('aria-label', 'Назад');
+        h.append(back);
+      }
+      h.append(el('span', null, it.head));
+      box.append(h);
+      continue;
+    }
+    let armed = false;
+    const label = el('span', 'cm-label', it.label);
+    const b = button(`cm-item${it.danger ? ' danger' : ''}`, null, () => {
+      if (it.confirm && !armed) { armed = true; label.textContent = it.confirm; return; }
+      closeMenu();
+      it.fn();
+    });
+    if (it.checked === undefined) b.setAttribute('role', 'menuitem');
+    else {
+      b.setAttribute('role', 'menuitemcheckbox');
+      b.setAttribute('aria-checked', String(it.checked));
+    }
+    if (it.emoji) b.append(el('span', 'cm-emoji', it.emoji));
+    else b.append(html(ICONS[it.icon]));
+    b.append(label);
+    if (it.checked) b.append(el('span', 'cm-tick', '✓'));
+    box.append(b);
+  }
+  menu.replaceChildren(box);
+  menu.hidden = false;
+  document.body.classList.add('menu-open');
+  const r = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(window.innerWidth - r.width - 8, x));
+  let top = y;
+  if (top + r.height > window.innerHeight - 8) top = Math.max(8, y - r.height);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  (box.querySelector('.cm-item') as HTMLButtonElement | null)?.focus({ preventScroll: true });
+}
+
+// ---------------------------------------------------------------------------
+// Поиск над списком: мои чаты (личные, группы, каналы, бот) и глобально — люди и публичные каналы
+// ---------------------------------------------------------------------------
+
+let gSeq = 0;
+let gTimer = 0;
+
+function searchActive(): boolean {
+  return !!U.q.trim();
+}
+
+function onSearchInput(): void {
+  U.q = $<HTMLInputElement>('chatSearch').value;
+  $('searchClear').hidden = !U.q;
+  U.kbd = -1;
+  document.querySelector('.side')?.classList.toggle('is-searching', searchActive());
+  scheduleGlobal();
+  renderSide();
+  $('chatList').scrollTop = 0;
+}
+
+function clearSearch(): void {
+  $<HTMLInputElement>('chatSearch').value = '';
+  onSearchInput();
+}
+
+/** Людей и публичные каналы ищем на сервере — с паузой в наборе, от 2 символов. */
+function scheduleGlobal(): void {
+  const raw = U.q;
+  const q = parseQuery(raw);
+  const key = searchNorm(raw);
+  clearTimeout(gTimer);
+  if (q.s.length < SEARCH_MIN || (q.at && !/^[a-z0-9_]+$/.test(q.s))) {
+    gSeq++;
+    U.found = null;
+    return;
+  }
+  if (U.found?.key === key) return;
+  const my = ++gSeq;
+  // Пока дописывают запрос, старые результаты остаются на месте — без мигания при наборе.
+  const keep = U.found && key.startsWith(U.found.key) ? U.found : null;
+  U.found = { key, people: keep?.people ?? [], chans: keep?.chans ?? [], loading: true };
+  gTimer = window.setTimeout(async () => {
+    try {
+      const [people, chans] = await Promise.all([searchUsers(raw), searchChats(raw).catch(() => [] as ChatCard[])]);
+      if (my !== gSeq) return;
+      U.found = { key, people, chans, loading: false };
+    } catch (e) {
+      if (my !== gSeq) return;
+      U.found = { key, people: [], chans: [], loading: false, error: errText(e, 'Не получилось поискать людей и каналы.') };
+    }
+    renderSide();
+  }, 300);
+}
+
+/** Насколько чат подходит под запрос: 0 — не подходит. Ищем по названию, имени собеседника и @username. */
+function matchScore(c: MyChat, q: { at: boolean; s: string; toks: string[] }): number {
+  const users: string[] = [];
+  if (c.kind === 'direct' && c.peer_id) {
+    const u = S.profiles.get(c.peer_id)?.username;
+    if (u) users.push(u.toLowerCase());
+  }
+  if (c.username) users.push(c.username.toLowerCase());
+  if (q.at) {
+    if (users.includes(q.s)) return 100;
+    return users.some((u) => u.startsWith(q.s)) ? 80 : 0;
+  }
+  const title = searchNorm(chatTitle(c));
+  if (title === q.s) return 100;
+  if (users.includes(q.s)) return 95;
+  if (title.startsWith(q.s)) return 90;
+  // Бота находят и по слову «бот».
+  const extra = c.kind === 'bot' ? ['бот', 'bot'] : [];
+  const words = [...title.split(/[\s\-—–«»"'.,:;!?()]+/), ...users, ...extra].filter(Boolean);
+  if (q.toks.every((t) => words.some((w) => w.startsWith(t)))) return 70;
+  // Середина слова — только для запросов подлиннее, иначе на одну букву находится всё подряд.
+  return q.s.length >= 3 && title.includes(q.s) ? 50 : 0;
+}
+
+function searchLabel(text: string): HTMLElement {
+  const h = el('p', 'sr-sec', text);
+  h.setAttribute('role', 'presentation');
+  return h;
+}
+
+function renderSearch(): void {
+  const list = $('chatList');
+  list.classList.add('searching');
+  const q = parseQuery(U.q);
+  const toks = q.at ? [] : q.toks;
+  const mine = [...S.chats.values()]
+    .map((c) => ({ c, s: matchScore(c, q) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s || ts(b.c.last_at ?? b.c.created_at) - ts(a.c.last_at ?? a.c.created_at))
+    .map((x) => x.c);
   const frag = document.createDocumentFragment();
-  for (const c of chats) {
-    const b = el('button', 'chat');
-    b.type = 'button';
-    b.dataset.chat = c.id;
-    const active = c.id === S.cur && convVisible();
-    if (active) b.setAttribute('aria-current', 'true');
-    const name = nameWithMark('name', chatTitle(c), chatVerified(c), markKind(c));
-    const live = calls.callInChat(c.id);
-    if (live) {
-      const ic = el('span', `live-call${calls.C.session?.callId === live.id ? ' mine' : ''}`);
-      ic.append(html(live.video ? ICONS.video : ICONS.phone));
-      ic.title = 'Идёт звонок';
-      name.append(ic);
+  if (mine.length) {
+    frag.append(searchLabel('Чаты'));
+    mine.forEach((c) => frag.append(chatRow(c, { toks })));
+  }
+  const g = U.found && U.found.key === searchNorm(U.q) ? U.found : null;
+  const mineIds = new Set(mine.map((c) => c.id));
+  const minePeers = new Set(mine.map((c) => c.peer_id).filter(Boolean));
+  const people = (g?.people ?? []).filter((p) => p.id !== meId() && !minePeers.has(p.id));
+  const chans = (g?.chans ?? []).filter((ch) => !mineIds.has(ch.id));
+  if (people.length || chans.length) {
+    frag.append(searchLabel('Глобальный поиск'));
+    // Точное @имя канала — наверх, как в «Новом чате».
+    const exact = chans.filter((ch) => ch.username === q.s);
+    exact.forEach((ch) => frag.append(channelResult(ch, q)));
+    people.forEach((p) => frag.append(personResult(p, q)));
+    chans.filter((ch) => ch.username !== q.s).forEach((ch) => frag.append(channelResult(ch, q)));
+  }
+  if (q.at && !/^[a-z0-9_]*$/.test(q.s)) {
+    frag.append(el('p', 'list-empty', 'В @username бывают только латиница, цифры и _.'));
+  } else if (g?.loading && !people.length && !chans.length) {
+    frag.append(el('p', 'list-empty sr-wait', mine.length ? 'Ищем людей и каналы…' : 'Ищем…'));
+  } else if (!mine.length && !people.length && !chans.length) {
+    const box = el('div', 'sr-empty');
+    if (q.s.length < SEARCH_MIN) {
+      box.append(el('b', null, 'Среди ваших чатов такого нет'), el('p', null, 'Людей и каналы ищем от 2 символов.'));
+    } else {
+      box.append(el('b', null, 'Ничего не нашли'),
+        el('p', null, g?.error ?? 'Проверьте запрос. Человека можно найти по имени или @username, канал — по названию.'));
     }
-    b.append(
-      chatTileEl(c),
-      name,
-      el('span', 'time', c.last_at ? listTime(ts(c.last_at)) : ''),
-      el('span', 'preview', previewText(c)),
-    );
-    if (c.unread && !active) {
-      const d = el('span', 'badge', c.unread > 99 ? '99+' : String(c.unread));
-      d.setAttribute('aria-label', plural(c.unread, 'новое сообщение', 'новых сообщения', 'новых сообщений'));
-      b.append(d);
-      b.classList.add('unread');
-    }
-    b.addEventListener('click', () => openChat(c.id));
-    frag.append(b);
+    frag.append(box);
   }
   list.replaceChildren(frag);
+  applyKbd();
+}
+
+function personResult(p: FoundUser, q: { at: boolean; s: string; toks: string[] }): HTMLButtonElement {
+  rememberProfiles([p]);
+  const w: Who = { id: p.id, name: p.name ?? 'Участник', avatar: avatarUrl(p.avatar_path), color: p.color, verified: p.verified };
+  const b = el('button', 'chat sr-global');
+  b.type = 'button';
+  const tile = el('span', 'tile person');
+  tile.append(avatarEl(w));
+  const name = el('span', 'name');
+  const nt = el('span', 'nm-t');
+  nt.append(q.at ? document.createTextNode(w.name) : highlight(w.name, q.toks));
+  name.append(nt);
+  if (w.verified) name.append(verifiedMark());
+  const sub = el('span', 'preview');
+  if (p.username) sub.append('@', highlight(p.username, q.at ? [q.s] : q.toks, true));
+  else sub.append('пользователь СКАМ');
+  if (p.is_contact) sub.append(el('span', 'sr-tag', ' · есть общий чат'));
+  b.append(tile, name, el('span', 'time'), sub);
+  b.setAttribute('aria-label', `${w.name}${p.username ? `, @${p.username}` : ''} — открыть профиль`);
+  b.addEventListener('click', () => openPerson(p.id));
+  return b;
+}
+
+function channelResult(card: ChatCard, q: { at: boolean; s: string; toks: string[] }): HTMLButtonElement {
+  const b = el('button', 'chat sr-global');
+  b.type = 'button';
+  const tile = el('span', `tile${card.avatar_path ? ' photo' : ''}`);
+  if (card.avatar_path) {
+    const img = el('img');
+    img.src = avatarUrl(card.avatar_path) ?? '';
+    img.alt = '';
+    img.decoding = 'async';
+    tile.append(img);
+  } else tile.textContent = card.emoji;
+  const name = el('span', 'name');
+  const nt = el('span', 'nm-t');
+  nt.append(q.at ? document.createTextNode(card.name) : highlight(card.name, q.toks));
+  name.append(nt);
+  if (card.verified) name.append(verifiedMark('channel'));
+  const sub = el('span', 'preview');
+  if (card.username) sub.append('@', highlight(card.username, q.at ? [q.s] : q.toks, true), ' · ');
+  sub.append(`канал, ${plural(card.member_count, 'подписчик', 'подписчика', 'подписчиков')}`);
+  b.append(tile, name, el('span', 'time'), sub);
+  b.addEventListener('click', () => openCard(card));
+  return b;
+}
+
+/** Стрелки ↑↓ в поле поиска выбирают строку, Enter открывает. */
+function applyKbd(): void {
+  const rows = [...document.querySelectorAll<HTMLElement>('#chatList .chat')];
+  rows.forEach((r, i) => r.classList.toggle('kbd', i === U.kbd));
+  if (U.kbd >= rows.length) U.kbd = rows.length - 1;
+}
+
+function onSearchKey(e: KeyboardEvent): void {
+  const inp = e.currentTarget as HTMLInputElement;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    if (inp.value) clearSearch();
+    else inp.blur();
+    return;
+  }
+  if (!searchActive()) return;
+  const rows = [...document.querySelectorAll<HTMLElement>('#chatList .chat')];
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!rows.length) return;
+    U.kbd = e.key === 'ArrowDown' ? Math.min(rows.length - 1, U.kbd + 1) : Math.max(0, U.kbd - 1);
+    applyKbd();
+    rows[U.kbd]?.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter' && !e.isComposing) {
+    e.preventDefault();
+    rows[Math.max(0, U.kbd)]?.click();
+  }
 }
 
 /** Значок чата: аватар собеседника, бот или эмодзи группы. */
@@ -1144,7 +1570,7 @@ function backToList(fromHistory = false): void {
 function autoOpen(): void {
   if (S.cur || !wideMQ.matches || !S.chats.size) return;
   const saved = lsGet('skam:last');
-  const target = saved && S.chats.has(saved) ? saved : sortedChats()[0].id;
+  const target = saved && S.chats.has(saved) ? saved : (listChats(L.cur)[0] ?? sortedChats()[0]).id;
   openChat(target, { silent: true });
 }
 
@@ -1515,7 +1941,7 @@ function openForward(msgs: Msg[]): void {
   hideRow.append(hide, el('span', null, 'Скрыть имя отправителя'));
   const fill = () => {
     const needle = searchNorm(q.value);
-    const chats = sortedChats().filter((c) => canPost(c) && (!needle || searchNorm(chatTitle(c)).includes(needle)));
+    const chats = listChats(null).filter((c) => canPost(c) && (!needle || searchNorm(chatTitle(c)).includes(needle)));
     if (!chats.length) { box.replaceChildren(el('p', 'list-empty', 'Такого чата нет')); return; }
     box.replaceChildren(...chats.map((c) => {
       const b = button('fwd-chat', null, () => pickForward(c, list, hide.checked));
@@ -2212,6 +2638,14 @@ function renderProfile(): void {
   });
   themeField.append(seg);
 
+  // Папки с чатами
+  const folderField = el('div', 'field');
+  folderField.append(el('span', 'fld', 'Папки с чатами'));
+  const folderBtn = button('btn ghost small btn-ic', null, () => { closeDialog(dlg); openFolderSettings(); });
+  folderBtn.append(html(ICONS.folder), L.folders.length ? `Папки · ${L.folders.length}` : 'Создать папку');
+  folderBtn.style.alignSelf = 'flex-start';
+  folderField.append(folderBtn, el('p', 'hint', 'Раскладывайте чаты по папкам, а важные закрепляйте наверху — правой кнопкой мыши или долгим нажатием на чат.'));
+
   // Шифрование
   const encField = el('div', 'field');
   encField.append(el('span', 'fld', 'Шифрование'));
@@ -2256,7 +2690,7 @@ function renderProfile(): void {
       methods.some((m) => m !== 'почта' && m !== 'телефон') ? 'вход' : 'код'} и пароль шифрования.`),
   );
 
-  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), aboutField, el('div', 'hr'), out);
+  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), folderField, el('div', 'hr'), aboutField, el('div', 'hr'), out);
   dlg.replaceChildren(dlgHead('Профиль', dlg), stack);
 }
 
@@ -2566,7 +3000,12 @@ function wire(): void {
     $('jumpBtn').hidden = true;
   });
   listen(document, 'visibilitychange', () => {
-    if (document.visibilityState === 'visible') { renderSide(); markVisibleRead(); } else stopTyping();
+    if (document.visibilityState === 'visible') {
+      renderSide();
+      markVisibleRead();
+      // Папки могли поменять на другом устройстве.
+      void loadLayout().catch(() => {});
+    } else stopTyping();
   });
   listen(document, 'keydown', (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
@@ -2595,6 +3034,10 @@ function wire(): void {
   unsubs.push(() => wideMQ.removeEventListener('change', onWide));
   listen(window, 'online', renderMe);
   listen(window, 'offline', renderMe);
+  listen($('chatSearch'), 'input', onSearchInput);
+  listen($('chatSearch'), 'keydown', onSearchKey);
+  listen($('searchClear'), 'click', () => { clearSearch(); $('chatSearch').focus(); });
+  listen($('chatList'), 'scroll', closeMenu);
   listen($('findForm'), 'submit', (e: Event) => { e.preventDefault(); void runFind(true); });
   listen($('findUser'), 'input', () => void runFind(false));
   listen($('supportBtn'), 'click', () => openSupport());
@@ -2608,7 +3051,8 @@ function wire(): void {
   const onSys = () => renderThemeBtn();
   sysDark.addEventListener('change', onSys);
   unsubs.push(() => sysDark.removeEventListener('change', onSys));
-  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg', 'pickDlg', 'stickerDlg']) {
+  for (const id of ['newDlg', 'profileDlg', 'chatDlg', 'personDlg', 'joinDlg', 'keyDlg', 'fwdDlg', 'supportDlg', 'rateDlg', 'pickDlg', 'stickerDlg',
+    'folderDlg', 'folderPickDlg', 'foldersDlg']) {
     const d = $<HTMLDialogElement>(id);
     listen(d, 'click', (e: MouseEvent) => { if (e.target === d) closeDialog(d); });
   }
@@ -2714,6 +3158,13 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     openChat: (id) => openChat(id),
     openPerson: (uid) => openPerson(uid),
   });
+  mountFolders({
+    chatTile: (c, cls) => chatTileEl(c, cls),
+    chatTitle,
+    menu: showMenu,
+    clearSearch,
+    searching: searchActive,
+  });
   mountStickerPacks({
     canSend: () => !!S.cur && canPost(currentChat()),
     send: (st) => void pickSticker(st),
@@ -2736,11 +3187,14 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     on('online', () => { renderMe(); renderSide(); if ($<HTMLDialogElement>('personDlg').open) refreshPersonStatus(); }),
     on('me', () => { renderMe(); renderSide(); }),
     on('members', () => refreshChatInfo()),
+    on('layout', layoutChanged),
   );
   renderAll();
 
   void loadAppOwner().catch(() => {});
   void loadMyPacks().catch(() => {});
+  // Папки и закреплённые — параллельно с чатами.
+  void loadLayout(true).catch(() => {});
   try {
     // Сначала свои ключи чатов — чтобы превью в списке сразу расшифровались.
     await e2e.loadMyShares().catch(() => {});
@@ -2775,6 +3229,11 @@ export function unmountApp(): void {
   dropNotes(null);
   U.stickerImgs.clear();
   resetStickerPacks();
+  resetLayout();
+  U.q = '';
+  U.found = null;
+  U.drag = null;
+  U.shownFolder = undefined;
   void stopRealtime();
   unsubs.forEach((f) => f());
   unsubs = [];

@@ -109,7 +109,7 @@ export function meId(): string {
 // События → перерисовка (склеиваем несколько изменений за один тик)
 // ---------------------------------------------------------------------------
 
-export type Evt = 'chats' | 'feed' | 'head' | 'online' | 'me' | 'members' | 'call';
+export type Evt = 'chats' | 'feed' | 'head' | 'online' | 'me' | 'members' | 'call' | 'layout';
 const listeners = new Map<Evt, Set<() => void>>();
 const pending = new Set<Evt>();
 let scheduled = false;

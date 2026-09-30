@@ -464,6 +464,20 @@ export type Database = {
       delete_sticker_pack: { Args: { p_pack: string }; Returns: undefined };
       add_sticker_pack: { Args: { p_pack: string }; Returns: undefined };
       remove_sticker_pack: { Args: { p_pack: string }; Returns: undefined };
+      /** Папки с чатами и закреплённые чаты (только свои). */
+      my_chat_layout: { Args: Record<PropertyKey, never>; Returns: ChatLayout };
+      save_chat_folder: {
+        Args: {
+          p_id: string | null; p_title: string; p_emoji: string | null; p_kinds: FolderKind[];
+          p_include: string[]; p_exclude: string[]; p_no_read: boolean;
+        };
+        Returns: string;
+      };
+      delete_chat_folder: { Args: { p_id: string }; Returns: undefined };
+      reorder_chat_folders: { Args: { p_ids: string[] }; Returns: undefined };
+      folder_set_chat: { Args: { p_folder: string; p_chat: string; p_in: boolean }; Returns: undefined };
+      pin_chat: { Args: { p_chat: string; p_on: boolean; p_folder?: string | null }; Returns: undefined };
+      reorder_pinned_chats: { Args: { p_ids: string[]; p_folder?: string | null }; Returns: undefined };
       e2e_pending: {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];
@@ -495,3 +509,21 @@ export type Call = Tables<'calls'>;
 export type CallMember = Tables<'call_members'>;
 export type CallSignal = Tables<'call_signals'>;
 export type ActiveCall = Database['public']['Functions']['my_calls']['Returns'][number];
+
+/** Типы чатов, которые можно целиком положить в папку. */
+export type FolderKind = 'direct' | 'group' | 'channel' | 'bot';
+/** Папка с чатами, как в Telegram: целые типы + выбранные чаты − исключённые; pinned — закреплённые в папке. */
+export type ChatFolder = {
+  id: string;
+  title: string;
+  /** Значок; null — подобрать по содержимому. */
+  emoji: string | null;
+  kinds: FolderKind[];
+  include: string[];
+  exclude: string[];
+  pinned: string[];
+  /** «Исключить прочитанные». */
+  no_read: boolean;
+};
+/** Закреплённые в «Все чаты» (по порядку) и папки (по порядку). */
+export type ChatLayout = { pins: string[]; folders: ChatFolder[] };
