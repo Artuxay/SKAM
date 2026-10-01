@@ -23,8 +23,9 @@ import {
   updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
-  loadAppOwner, rememberProfiles, setVerified,
+  loadAppOwner, rememberProfiles, setVerified, BIO_MAX, normBio, userBio,
 } from './store';
+import { NICK_MAX, loadNicknames, nickHits, nickOf, resetNicks, setNickname } from './nicks';
 import {
   cardTile, countLabel, mountChatAdmin, openAddMembers, openChatInfo as openChatAdmin, openCreate, refreshChatInfo, shareLinkOf,
 } from './chatadmin';
@@ -235,7 +236,8 @@ function who(uid: string | null | undefined, kind: string = 'text'): Who {
   if (kind === 'system') return { id: null, name: 'СКАМ', avatar: null, color: null, brand: true };
   if (!uid) return { id: null, name: 'Удалённый аккаунт', avatar: null, color: null };
   const p = S.profiles.get(uid);
-  const name = p?.name || (uid === meId() ? 'Вы' : 'Участник');
+  // Свой ник для человека (видите только вы) — везде вместо его имени, как «имя контакта» в Telegram.
+  const name = nickOf(uid) || p?.name || (uid === meId() ? 'Вы' : 'Участник');
   return { id: uid, name, avatar: avatarUrl(p?.avatar_path), color: p?.color ?? null, verified: !!p?.verified };
 }
 
@@ -706,9 +708,13 @@ function matchScore(c: MyChat, q: { at: boolean; s: string; toks: string[] }): n
   if (title === q.s) return 100;
   if (users.includes(q.s)) return 95;
   if (title.startsWith(q.s)) return 90;
+  // Человека с ником находят и по настоящему имени.
+  const real = c.kind === 'direct' && nickOf(c.peer_id) ? searchNorm(S.profiles.get(c.peer_id!)?.name ?? '') : '';
+  if (real && real.startsWith(q.s)) return 85;
   // Бота находят и по слову «бот».
   const extra = c.kind === 'bot' ? ['бот', 'bot'] : [];
-  const words = [...title.split(/[\s\-—–«»"'.,:;!?()]+/), ...users, ...extra].filter(Boolean);
+  const split = (v: string) => v.split(/[\s\-—–«»"'.,:;!?()]+/);
+  const words = [...split(title), ...split(real), ...users, ...extra].filter(Boolean);
   if (q.toks.every((t) => words.some((w) => w.startsWith(t)))) return 70;
   // Середина слова — только для запросов подлиннее, иначе на одну букву находится всё подряд.
   return q.s.length >= 3 && title.includes(q.s) ? 50 : 0;
@@ -731,14 +737,18 @@ function renderSearch(): void {
     .sort((a, b) => b.s - a.s || ts(b.c.last_at ?? b.c.created_at) - ts(a.c.last_at ?? a.c.created_at))
     .map((x) => x.c);
   const frag = document.createDocumentFragment();
-  if (mine.length) {
-    frag.append(searchLabel('Чаты'));
-    mine.forEach((c) => frag.append(chatRow(c, { toks })));
-  }
-  const g = U.found && U.found.key === searchNorm(U.q) ? U.found : null;
   const mineIds = new Set(mine.map((c) => c.id));
   const minePeers = new Set(mine.map((c) => c.peer_id).filter(Boolean));
-  const people = (g?.people ?? []).filter((p) => p.id !== meId() && !minePeers.has(p.id));
+  // Люди, которым вы дали ник, — даже без личного чата с ними.
+  const nicked = nickHits(q).filter((p) => !minePeers.has(p.id));
+  const nickedIds = new Set(nicked.map((p) => p.id));
+  if (mine.length || nicked.length) {
+    frag.append(searchLabel(nicked.length ? 'Чаты и контакты' : 'Чаты'));
+    mine.forEach((c) => frag.append(chatRow(c, { toks })));
+    nicked.forEach((p) => frag.append(personResult(p, q)));
+  }
+  const g = U.found && U.found.key === searchNorm(U.q) ? U.found : null;
+  const people = (g?.people ?? []).filter((p) => p.id !== meId() && !minePeers.has(p.id) && !nickedIds.has(p.id));
   const chans = (g?.chans ?? []).filter((ch) => !mineIds.has(ch.id));
   if (people.length || chans.length) {
     frag.append(searchLabel('Глобальный поиск'));
@@ -751,8 +761,8 @@ function renderSearch(): void {
   if (q.at && !/^[a-z0-9_]*$/.test(q.s)) {
     frag.append(el('p', 'list-empty', 'В @username бывают только латиница, цифры и _.'));
   } else if (g?.loading && !people.length && !chans.length) {
-    frag.append(el('p', 'list-empty sr-wait', mine.length ? 'Ищем людей и каналы…' : 'Ищем…'));
-  } else if (!mine.length && !people.length && !chans.length) {
+    frag.append(el('p', 'list-empty sr-wait', mine.length || nicked.length ? 'Ищем людей и каналы…' : 'Ищем…'));
+  } else if (!mine.length && !nicked.length && !people.length && !chans.length) {
     const box = el('div', 'sr-empty');
     if (q.s.length < SEARCH_MIN) {
       box.append(el('b', null, 'Среди ваших чатов такого нет'), el('p', null, 'Людей и каналы ищем от 2 символов.'));
@@ -768,7 +778,8 @@ function renderSearch(): void {
 
 function personResult(p: FoundUser, q: { at: boolean; s: string; toks: string[] }): HTMLButtonElement {
   rememberProfiles([p]);
-  const w: Who = { id: p.id, name: p.name ?? 'Участник', avatar: avatarUrl(p.avatar_path), color: p.color, verified: p.verified };
+  const nick = nickOf(p.id);
+  const w: Who = { id: p.id, name: nick || p.name || 'Участник', avatar: avatarUrl(p.avatar_path), color: p.color, verified: p.verified };
   const b = el('button', 'chat sr-global');
   b.type = 'button';
   const tile = el('span', 'tile person');
@@ -780,7 +791,9 @@ function personResult(p: FoundUser, q: { at: boolean; s: string; toks: string[] 
   if (w.verified) name.append(verifiedMark());
   const sub = el('span', 'preview');
   if (p.username) sub.append('@', highlight(p.username, q.at ? [q.s] : q.toks, true));
-  else sub.append('пользователь СКАМ');
+  else if (!nick || !p.name) sub.append('пользователь СКАМ');
+  // С ником — рядом настоящее имя: по нему тоже ищут.
+  if (nick && p.name) sub.append(p.username ? ' · ' : '', q.at ? document.createTextNode(p.name) : highlight(p.name, q.toks));
   if (p.is_contact) sub.append(el('span', 'sr-tag', ' · есть общий чат'));
   b.append(tile, name, el('span', 'time'), sub);
   b.setAttribute('aria-label', `${w.name}${p.username ? `, @${p.username}` : ''} — открыть профиль`);
@@ -1225,7 +1238,7 @@ function fwdEl(f: Forward): HTMLElement {
   d.append(ic, f.kind === 'channel' ? 'Переслано из ' : 'Переслано от ');
   if (f.from) {
     const known = S.profiles.get(f.from);
-    const b = button('fwd-name', known?.name || f.name, (ev) => { ev.stopPropagation(); openPerson(f.from!); });
+    const b = button('fwd-name', nickOf(f.from) || known?.name || f.name, (ev) => { ev.stopPropagation(); openPerson(f.from!); });
     d.append(b);
   } else {
     d.append(el('b', 'fwd-name', f.name));
@@ -2365,8 +2378,9 @@ function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[]
   const row = el('div', 'found');
   // Профиль найденного человека открывается по нажатию на имя или фото, даже без общего чата.
   rememberProfiles([person]);
+  const nick = nickOf(person.id);
   const w: Who = {
-    id: person.id, name: person.name ?? 'Участник', avatar: avatarUrl(person.avatar_path), color: person.color, verified: person.verified,
+    id: person.id, name: nick || person.name || 'Участник', avatar: avatarUrl(person.avatar_path), color: person.color, verified: person.verified,
   };
   const text = button('found-text found-open', null, () => openPerson(person.id));
   text.setAttribute('aria-label', `Профиль: ${w.name}`);
@@ -2377,9 +2391,15 @@ function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[]
   if (person.username) {
     sub.append('@', highlight(person.username, q.at ? [q.s] : q.toks, true));
   }
+  if (nick && person.name) {
+    const real = el('span', 'found-tag');
+    if (person.username) real.append(el('span', 'sep', ' · '));
+    real.append(q.at ? document.createTextNode(person.name) : highlight(person.name, q.toks));
+    sub.append(real);
+  }
   if (person.is_contact) {
     const tag = el('span', 'found-tag');
-    if (person.username) tag.append(el('span', 'sep', ' · '));
+    if (sub.childNodes.length) tag.append(el('span', 'sep', ' · '));
     tag.append('есть общий чат');
     sub.append(tag);
   }
@@ -2483,6 +2503,10 @@ async function runFind(now: boolean): Promise<void> {
       return;
     }
     if (my !== findSeq) return;
+    // Сначала те, кому вы дали ник, — по нику их ищет только ваш поиск.
+    const nicked = nickHits(q);
+    const nickedIds = new Set(nicked.map((p) => p.id));
+    found = [...nicked, ...found.filter((p) => !nickedIds.has(p.id))];
     if (!found.length && !chans.length) {
       out.replaceChildren(el('p', 'err', q.at ? `@${q.s} не найден — ни человек, ни публичный канал.` : `Никого не нашли по запросу «${raw.trim()}».`));
       return;
@@ -2572,6 +2596,28 @@ function renderProfile(): void {
     : 'Для этого аккаунта необязательно. Латиница, цифры и _, от 5 символов.';
   const unHint = el('p', 'hint', UN_HINT);
   user.f.append(unHint);
+
+  // О себе — видят все, кто откроет профиль.
+  const bioF = el('div', 'field');
+  const bioL = el('label', 'fld', 'О себе');
+  bioL.htmlFor = 'profBio';
+  const bio = el('textarea', 'txt area bio-input');
+  Object.assign(bio, {
+    id: 'profBio', maxLength: BIO_MAX, rows: 3, placeholder: 'Пара слов о себе: чем занимаетесь, что любите',
+    value: keep('profBio') ?? S.me.bio ?? '',
+  });
+  const bioHint = el('p', 'hint bio-hint');
+  const bioCount = el('span', 'bio-count');
+  bioHint.append(el('span', null, 'Видят все, кто откроет ваш профиль.'), bioCount);
+  const syncBio = () => {
+    const left = BIO_MAX - bio.value.length;
+    bioCount.textContent = String(left);
+    bioCount.classList.toggle('low', left <= 10);
+    bioCount.setAttribute('aria-label', `Осталось символов: ${left}`);
+  };
+  bio.addEventListener('input', syncBio);
+  syncBio();
+  bioF.append(bioL, bio, bioHint);
   const err = el('p', 'err');
   const save = button('btn primary', 'Сохранить', () => void saveProfile());
   save.style.alignSelf = 'flex-start';
@@ -2612,7 +2658,10 @@ function renderProfile(): void {
     if (un && (!USERNAME_RE.test(un) || !unOk)) { err.textContent = 'Выберите другое имя пользователя.'; user.i.focus(); return; }
     save.disabled = true;
     try {
-      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un || null });
+      const about = normBio(bio.value);
+      await updateMyProfile({ first_name: fn, last_name: ln || null, username: un || null, bio: about || null });
+      bio.value = about;
+      syncBio();
       err.textContent = '';
       toast('Профиль сохранён');
     } catch (e) {
@@ -2624,6 +2673,10 @@ function renderProfile(): void {
   [first.i, last.i, user.i].forEach((i) => i.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void saveProfile(); }
   }));
+  // В «О себе» Enter — новая строка, Ctrl+Enter (⌘+Enter) — сохранить.
+  bio.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); void saveProfile(); }
+  });
 
   // Тема
   const themeField = el('div', 'field');
@@ -2690,7 +2743,7 @@ function renderProfile(): void {
       methods.some((m) => m !== 'почта' && m !== 'телефон') ? 'вход' : 'код'} и пароль шифрования.`),
   );
 
-  stack.append(avEdit, first.f, last.f, user.f, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), folderField, el('div', 'hr'), aboutField, el('div', 'hr'), out);
+  stack.append(avEdit, first.f, last.f, user.f, bioF, err, save, el('div', 'hr'), encField, el('div', 'hr'), themeField, el('div', 'hr'), folderField, el('div', 'hr'), aboutField, el('div', 'hr'), out);
   dlg.replaceChildren(dlgHead('Профиль', dlg), stack);
 }
 
@@ -2699,14 +2752,85 @@ function renderProfile(): void {
 // ---------------------------------------------------------------------------
 
 let personUid: string | null = null;
+/** «О себе» людей без общего чата (их профиль целиком не виден), чтобы не мигало при повторном открытии. */
+const bioCache = new Map<string, string | null>();
 
-/** Статус в открытой карточке человека обновляется вместе со всеми остальными. */
+/** Статус и «О себе» в открытой карточке человека обновляются вместе со всеми остальными. */
 function refreshPersonStatus(): void {
-  const st = document.getElementById('personSt');
-  if (!personUid || !st || personUid === meId()) return;
+  if (!personUid) return;
   const p = S.profiles.get(personUid);
+  const about = document.getElementById('personAbout');
+  // «О себе» из профиля — только если профиль прочитан целиком (иначе его подгружает user_bio).
+  if (about && p?.created_at) fillAbout(about, p.bio);
+  const st = document.getElementById('personSt');
+  if (!st || personUid === meId()) return;
   st.textContent = statusText(p);
   st.classList.toggle('on', isOnline(p));
+}
+
+/** Блок «О себе» в карточке: пусто — блока не видно. */
+function fillAbout(box: HTMLElement, bio: string | null | undefined): void {
+  const text = bio?.trim() ?? '';
+  if (box.dataset.bio === text && box.childNodes.length) return;
+  box.dataset.bio = text;
+  box.hidden = !text;
+  if (!text) { box.replaceChildren(); return; }
+  const t = el('p', 'pa-text');
+  fillText(t, text);
+  box.replaceChildren(el('span', 'pa-label', 'О себе'), t);
+}
+
+/** Ник человека: кнопка «Дать ник» или поле, где его меняют. Видит ник только тот, кто его дал. */
+function nickBox(uid: string): HTMLElement {
+  const box = el('div', 'nick-box');
+  const realName = () => S.profiles.get(uid)?.name ?? '';
+  const showBtn = () => {
+    const nick = nickOf(uid);
+    const b = button('btn ghost small btn-ic nick-btn', null, () => showEdit());
+    b.append(html(ICONS.edit), nick ? 'Изменить ник' : 'Дать ник');
+    b.title = 'Ник видите только вы';
+    box.replaceChildren(b);
+  };
+  const showEdit = () => {
+    const nick = nickOf(uid);
+    const lbl = el('label', 'fld', 'Ник');
+    lbl.htmlFor = 'nickInput';
+    const inp = el('input', 'txt');
+    Object.assign(inp, {
+      id: 'nickInput', maxLength: NICK_MAX, value: nick ?? '', placeholder: realName() || 'Как вы его назовёте',
+      autocomplete: 'off', spellcheck: false,
+    });
+    inp.setAttribute('enterkeyhint', 'done');
+    const err = el('p', 'err');
+    const btns = el('div', 'nick-btns');
+    const save = button('btn primary small', 'Сохранить', () => void commit(inp.value));
+    const cancel = button('btn ghost small', 'Отмена', () => showBtn());
+    if (nick) btns.append(button('btn danger small', 'Убрать', () => void commit('')));
+    btns.append(cancel, save);
+    const commit = async (v: string) => {
+      save.disabled = true;
+      try {
+        const got = await setNickname(uid, v);
+        toast(got ? `Ник сохранён: ${got}` : 'Ник убран');
+        if (personUid === uid && $<HTMLDialogElement>('personDlg').open) openPerson(uid);
+      } catch (e) {
+        err.textContent = errText(e, 'Не получилось сохранить ник.');
+        save.disabled = false;
+      }
+    };
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void commit(inp.value); }
+      // Esc закрывает поле, а не всю карточку.
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); showBtn(); }
+    });
+    box.replaceChildren(lbl, inp,
+      el('p', 'hint', `Ник видите только вы — везде вместо ${realName() ? `«${realName()}»` : 'имени'}: в чатах, группах, звонках и поиске.`),
+      err, btns);
+    inp.focus();
+    inp.select();
+  };
+  showBtn();
+  return box;
 }
 
 function openPerson(uid: string): void {
@@ -2718,13 +2842,36 @@ function openPerson(uid: string): void {
   const card = el('div', 'person-card');
   const isMe = uid === meId();
   const online = isOnline(p);
+  const nick = nickOf(uid);
   const h = el('h2', 'person-name', w.name);
   if (w.verified) h.append(verifiedMark());
   card.append(avatarEl(w, 'xl'), h);
+  // С ником — под ним настоящее имя, как человек назвал себя сам.
+  if (nick && p?.name) {
+    const real = el('p', 'real-name', p.name);
+    real.title = 'Имя в профиле';
+    card.append(real);
+  }
   if (p?.username) card.append(el('p', 'uname', `@${p.username}`));
   const st = el('p', `st${online ? ' on' : ''}`, isMe ? 'это вы' : statusText(p));
   st.id = 'personSt';
   card.append(st);
+
+  // «О себе»: из профиля, а если общего чата нет (профиль целиком не виден) — отдельным запросом.
+  const about = el('div', 'person-about');
+  about.id = 'personAbout';
+  about.hidden = true;
+  card.append(about);
+  if (p?.created_at) fillAbout(about, p.bio);
+  else {
+    // Уже загружали — показываем сразу (без мигания), а свежее подтягиваем.
+    if (bioCache.has(uid)) fillAbout(about, bioCache.get(uid));
+    void userBio(uid).then((bio) => {
+      bioCache.set(uid, bio);
+      if (personUid === uid && about.isConnected) fillAbout(about, bio);
+    }, () => {});
+  }
+  if (!isMe) card.append(nickBox(uid));
 
   const actions = el('div', 'dlg-actions');
   actions.append(button('btn ghost', 'Закрыть', () => closeDialog(dlg)));
@@ -3003,8 +3150,9 @@ function wire(): void {
     if (document.visibilityState === 'visible') {
       renderSide();
       markVisibleRead();
-      // Папки могли поменять на другом устройстве.
+      // Папки и ники могли поменять на другом устройстве.
       void loadLayout().catch(() => {});
+      void loadNicknames().catch(() => {});
     } else stopTyping();
   });
   listen(document, 'keydown', (e: KeyboardEvent) => {
@@ -3193,8 +3341,9 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
 
   void loadAppOwner().catch(() => {});
   void loadMyPacks().catch(() => {});
-  // Папки и закреплённые — параллельно с чатами.
+  // Папки, закреплённые и ники — параллельно с чатами.
   void loadLayout(true).catch(() => {});
+  void loadNicknames(true).catch(() => {});
   try {
     // Сначала свои ключи чатов — чтобы превью в списке сразу расшифровались.
     await e2e.loadMyShares().catch(() => {});
@@ -3230,6 +3379,8 @@ export function unmountApp(): void {
   U.stickerImgs.clear();
   resetStickerPacks();
   resetLayout();
+  resetNicks();
+  bioCache.clear();
   U.q = '';
   U.found = null;
   U.drag = null;

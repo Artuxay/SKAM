@@ -137,6 +137,7 @@ export function resetState(): void {
   S.user = null;
   S.me = null;
   S.profiles.clear();
+  partialTried.clear();
   S.chats.clear();
   S.chatsLoaded = false;
   S.cur = null;
@@ -172,8 +173,19 @@ export async function loadMe(user: User): Promise<void> {
 }
 
 const inflight = new Set<string>();
+/** Когда последний раз пробовали прочитать целиком профиль, известный лишь по поиску, нику или списку участников. */
+const partialTried = new Map<string, number>();
 export async function ensureProfiles(ids: (string | null | undefined)[]): Promise<void> {
-  const need = [...new Set(ids)].filter((x): x is string => !!x && !S.profiles.has(x) && !inflight.has(x));
+  const now = Date.now();
+  const need = [...new Set(ids)].filter((x): x is string => {
+    if (!x || inflight.has(x)) return false;
+    const have = S.profiles.get(x);
+    if (!have) return true;
+    // Неполный профиль (created_at пустой): раз в минуту пробуем прочитать целиком — вдруг появился общий чат.
+    if (have.created_at || now - (partialTried.get(x) ?? 0) < 60_000) return false;
+    partialTried.set(x, now);
+    return true;
+  });
   if (!need.length) return;
   need.forEach((i) => inflight.add(i));
   try {
@@ -204,7 +216,7 @@ export function putProfile(p: Profile): void {
   S.profiles.set(p.id, p);
   if (p.id === meId()) S.me = p;
   // Пульс «в сети» меняет только время — ленту сообщений в этом случае не перерисовываем.
-  const onlyPresence = !!old && (['name', 'username', 'avatar_path', 'color', 'verified'] as const).every((k) => old[k] === p[k]);
+  const onlyPresence = !!old && (['name', 'username', 'avatar_path', 'color', 'verified', 'bio'] as const).every((k) => old[k] === p[k]);
   if (onlyPresence) emit('online', 'head', 'chats', 'members', ...(p.id === meId() ? (['me'] as const) : []));
   else emit('chats', 'feed', 'head', 'online', 'members', 'me');
 }
@@ -229,8 +241,27 @@ export async function setVerified(kind: 'user' | 'channel', id: string, on: bool
   }
 }
 
-/** username = null — только для аккаунтов-исключений (profiles.username_optional). */
-export type ProfileFields = { first_name: string; last_name: string | null; username: string | null };
+/** username = null — только для аккаунтов-исключений (profiles.username_optional); bio = null — «О себе» пусто. */
+export type ProfileFields = { first_name: string; last_name: string | null; username: string | null; bio?: string | null };
+
+/** Сколько символов в «О себе» (как на сервере) и сколько строк. */
+export const BIO_MAX = 140;
+export const BIO_LINES = 5;
+
+/** «О себе» как его сохранит сервер: без лишних пробелов по краям, без \r и управляющих символов, до 5 строк. */
+export function normBio(v: string): string {
+  const t = v.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  const lines = t.split('\n');
+  if (lines.length <= BIO_LINES) return t;
+  return [...lines.slice(0, BIO_LINES - 1), lines.slice(BIO_LINES - 1).join(' ')].join('\n');
+}
+
+/** «О себе» человека: профиль целиком виден только при общем чате, а «О себе» — всем. */
+export async function userBio(uid: string): Promise<string | null> {
+  const { data, error } = await sb.rpc('user_bio', { p_user: uid });
+  if (error) throw error;
+  return data ?? null;
+}
 
 /** Нужен ли мне @username: обязателен всем, кроме аккаунтов-исключений. */
 export function usernameRequired(): boolean {
@@ -532,7 +563,7 @@ export function rememberProfiles(list: { id: string; name: string | null; userna
     S.profiles.set(p.id, {
       id: p.id, name: p.name, first_name: p.name, last_name: null, username: p.username, username_optional: false,
       avatar_path: p.avatar_path, color: p.color, last_seen_at: p.last_seen_at ?? null, online_until: p.online_until ?? null,
-      verified: !!p.verified, created_at: '', updated_at: '',
+      verified: !!p.verified, bio: null, created_at: '', updated_at: '',
     });
   }
 }

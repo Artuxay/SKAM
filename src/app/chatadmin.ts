@@ -12,6 +12,7 @@ import {
   removeChatAvatar, removeMember, resetInvite, searchNorm, searchUsers, setAdmin, setChatUsername, setVerified,
   transferOwner, unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact,
 } from './store';
+import { nickOf } from './nicks';
 
 /** Что нужно от основного интерфейса. */
 export type AdminEnv = {
@@ -932,8 +933,9 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
   const draw = () => {
     if (!contacts) { list.replaceChildren(el('p', 'hint', 'Загружаем знакомых…')); return; }
     const needle = searchNorm(q.value).replace(/^@+/, '');
-    const match = (x: Contact) => !needle || searchNorm(x.name ?? '').split(/[\s-]+/).some((wd) => wd.startsWith(needle))
-      || searchNorm(x.name ?? '').startsWith(needle) || (x.username ?? '').startsWith(needle);
+    // Ищем по имени, @username и по нику, который вы дали человеку.
+    const byName = (v: string) => searchNorm(v).split(/[\s-]+/).some((wd) => wd.startsWith(needle)) || searchNorm(v).startsWith(needle);
+    const match = (x: Contact) => !needle || byName(x.name ?? '') || byName(nickOf(x.id) ?? '') || (x.username ?? '').startsWith(needle);
     const mine = contacts.filter(match);
     const rows: HTMLElement[] = mine.map((x) => row(x.id, x.in_chat ? (c.kind === 'channel' ? 'уже подписан(а)' : 'уже в группе') : statusOf(x.id), x.in_chat ? 'in' : 'free'));
     const strangers = found.filter((f) => !f.is_contact && f.id !== meId() && !contacts!.some((x) => x.id === f.id));
@@ -956,7 +958,7 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
       try {
         const got = await searchUsers(raw);
         if (my !== seq) return;
-        got.forEach((g) => { if (!S.profiles.has(g.id)) S.profiles.set(g.id, { id: g.id, name: g.name, first_name: g.name, last_name: null, username: g.username, username_optional: false, avatar_path: g.avatar_path, color: g.color, last_seen_at: null, online_until: null, verified: g.verified, created_at: '', updated_at: '' }); });
+        got.forEach((g) => { if (!S.profiles.has(g.id)) S.profiles.set(g.id, { id: g.id, name: g.name, first_name: g.name, last_name: null, username: g.username, username_optional: false, avatar_path: g.avatar_path, color: g.color, last_seen_at: null, online_until: null, verified: g.verified, bio: null, created_at: '', updated_at: '' }); });
         found = got.map((g) => ({ id: g.id, is_contact: g.is_contact }));
         draw();
       } catch { /* поиск — не главное */ }

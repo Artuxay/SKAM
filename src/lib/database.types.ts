@@ -128,6 +128,8 @@ export type Database = {
           username_optional: boolean;
           /** Официальная галочка: выдаёт и снимает только владелец СКАМ (set_verified). */
           verified: boolean;
+          /** «О себе»: до 140 символов, до 5 строк. Видят все (без общего чата — через user_bio). */
+          bio: string | null;
           avatar_path: string | null;
           color: string;
           last_seen_at: string | null;
@@ -141,6 +143,7 @@ export type Database = {
           last_name?: string | null;
           username?: string | null;
           avatar_path?: string | null;
+          bio?: string | null;
         };
         Relationships: [];
       };
@@ -478,6 +481,12 @@ export type Database = {
       folder_set_chat: { Args: { p_folder: string; p_chat: string; p_in: boolean }; Returns: undefined };
       pin_chat: { Args: { p_chat: string; p_on: boolean; p_folder?: string | null }; Returns: undefined };
       reorder_pinned_chats: { Args: { p_ids: string[]; p_folder?: string | null }; Returns: undefined };
+      /** Мои ники для людей (видны только мне) и как эти люди выглядят. */
+      my_nicknames: { Args: Record<PropertyKey, never>; Returns: Nickname[] };
+      /** Дать, изменить или убрать ник (пусто — убрать). Возвращает сохранённый ник или null. */
+      set_nickname: { Args: { p_user: string; p_nickname: string | null }; Returns: string | null };
+      /** «О себе» любого человека (профиль целиком виден только при общем чате). */
+      user_bio: { Args: { p_user: string }; Returns: string | null };
       e2e_pending: {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];
@@ -527,3 +536,9 @@ export type ChatFolder = {
 };
 /** Закреплённые в «Все чаты» (по порядку) и папки (по порядку). */
 export type ChatLayout = { pins: string[]; folders: ChatFolder[] };
+
+/** Мой ник для человека: видит только тот, кто его дал. Плюс как этот человек выглядит (как в search_users). */
+export type Nickname = {
+  user_id: string; nickname: string; name: string | null; username: string | null; avatar_path: string | null;
+  color: string; verified: boolean;
+};

@@ -7,6 +7,7 @@ import {
   putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
 } from './store';
 import { loadLayout } from './layout';
+import { loadNicknames } from './nicks';
 import * as e2e from './e2e';
 import * as calls from './calls';
 
@@ -180,8 +181,9 @@ async function resync(withProfiles = false): Promise<void> {
   resyncing = true;
   try {
     await loadChats();
-    // Папки и закреплённые могли поменять на другом устройстве (не чаще раза в 15 секунд).
+    // Папки, закреплённые и ники могли поменять на другом устройстве (не чаще раза в 15 секунд).
     void loadLayout().catch(() => {});
+    void loadNicknames().catch(() => {});
     if (S.cur && S.chats.has(S.cur)) await loadFeed(S.cur, true);
     if (withProfiles) await refreshProfiles();
     e2e.sweepSoon();

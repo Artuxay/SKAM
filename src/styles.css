@@ -1284,3 +1284,20 @@ button.fs-open:hover{background:var(--raised)}
 .fs-move:hover:not(:disabled){color:var(--text)}
 .fs-row .btn{flex:none}
 .fs-body > .hint:last-child{margin-top:12px}
+
+/* Свои ники и «О себе» */
+.person-card .real-name{margin:0 0 4px;color:var(--muted);font-size:14px;overflow-wrap:anywhere}
+.person-about{text-align:left;background:var(--raised);border-radius:14px;padding:10px 12px;margin:0 0 14px}
+.pa-label{display:block;font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:2px}
+.pa-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:14.5px;line-height:1.4}
+.pa-text a{color:var(--accent-text)}
+.nick-box{margin:0 0 16px;text-align:left}
+.nick-box .nick-btn{display:flex;margin:0 auto}
+.nick-box .nick-btn svg{width:17px;height:17px}
+.nick-box .err:empty{display:none}
+.nick-btns{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px}
+.nick-btns .btn.danger{margin-right:auto}
+.txt.bio-input{min-height:76px}
+.bio-hint{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.bio-count{flex:none;font-variant-numeric:tabular-nums}
+.bio-count.low{color:var(--danger)}
