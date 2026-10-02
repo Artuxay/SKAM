@@ -44,7 +44,7 @@ import {
 import {
   emptyFolderNote, foldersOf, layoutChanged, mountFolders, openFolderEditor, openFolderSettings, renderFolderBar, type MenuItem,
 } from './folders';
-import { loginMethods, providerProfile } from '../lib/oauth';
+import { loginMethods, providerProfile, realEmail } from '../lib/oauth';
 import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
 } from './attachui';
@@ -2541,7 +2541,8 @@ function contactLine(): string {
   const u = S.user;
   if (!u) return '';
   if (u.phone) return `Телефон: +${u.phone.replace(/^\+/, '')}`;
-  return u.email ? `Почта: ${u.email}` : '';
+  const email = realEmail(u);
+  return email ? `Почта: ${email}` : '';
 }
 
 function renderProfile(): void {
@@ -3247,7 +3248,7 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
   // Новый аккаунт (или старый без имени или @username) — сначала «Создание аккаунта», как в Telegram.
   // @username обязателен: без него база не даст писать сообщения. Исключение — username_optional.
   if (!S.me?.first_name || (!S.me?.username && usernameRequired())) {
-    // «Старый аккаунт без @username» — только если имя вводили сами; после GitHub/Discord имя
+    // «Старый аккаунт без @username» — только если имя вводили сами; после Яндекс ID / VK ID имя
     // подставляет база, но это новый аккаунт — показываем «Создание аккаунта».
     mountRegister(root, () => { if (mounted) void keyGate(root, user); }, { existing: !!S.me?.first_name && !providerProfile(user) });
     return;

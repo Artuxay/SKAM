@@ -1,9 +1,9 @@
 // Вход и регистрация как в Telegram: номер телефона или почта → код → (для новых) создание аккаунта.
-// Или одной кнопкой — через GitHub или Discord (те, что включены в Supabase).
+// Или одной кнопкой — через Яндекс ID или VK ID (те, что настроены в функции oauth-login).
 import type { AuthError } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, lsGet, lsSet } from '../lib/dom';
-import { OAUTH, authSettings, knownSettings, lastProvider, signInWith, type OAuthId } from '../lib/oauth';
+import { OAUTH, authSettings, finishOAuth, knownSettings, lastProvider, oauthReturn, signInWith, type OAuthId } from '../lib/oauth';
 
 type Method = 'phone' | 'email';
 type Target = { method: Method; value: string };
@@ -15,6 +15,8 @@ const CODE_LEN: Record<Method, number> = {
   phone: Number(import.meta.env.VITE_SMS_OTP_LENGTH) || 6,
 };
 let cooldownTimer: number | undefined;
+/** Возвращение от Яндекса или VK — обрабатываем один раз. */
+let returned = oauthReturn;
 
 export function mountLogin(root: HTMLElement, notice?: string | null): void {
   clearInterval(cooldownTimer);
@@ -30,10 +32,18 @@ export function mountLogin(root: HTMLElement, notice?: string | null): void {
     </main>`));
   const saved = readSaved();
   const known = knownSettings();
+  const ret = returned;
+  returned = null;
+  if (ret?.ok) {
+    void finishStep(ret, saved);
+    return;
+  }
+  if (ret && !ret.ok) notice = ret.message;
   startStep(saved, notice ?? null);
   void authSettings().then((st) => {
-    // Вкладка «Телефон» и кнопки GitHub / Discord появляются сами, как только их включат в Supabase.
-    const changed = !known || known.phone !== st.phone || known.oauth.join() !== st.oauth.join();
+    // Вкладка «Телефон» и кнопки Яндекс ID / VK ID появляются сами, как только их настроят.
+    const ids = (x: typeof st | null) => x?.oauth.map((p) => p.id).join() ?? '';
+    const changed = !known || known.phone !== st.phone || ids(known) !== ids(st);
     const start = document.getElementById('authStart') as HTMLElement | null;
     if (changed && start && (st.phone || st.oauth.length)) {
       const typed = (document.getElementById('authId') as HTMLInputElement | null)?.value;
@@ -42,6 +52,20 @@ export function mountLogin(root: HTMLElement, notice?: string | null): void {
       startStep(keep, notice ?? null);
     }
   });
+}
+
+/** Вернулись от провайдера: «Входим через Яндекс ID…», затем приложение или ошибка на экране входа. */
+async function finishStep(r: Extract<typeof oauthReturn, { ok: true }>, saved: Target): Promise<void> {
+  $('authLead').textContent = `Входим через ${r.label}…`;
+  const wait = el('p', 'auth-note', 'Проверяем вход. Это займёт пару секунд.');
+  wait.setAttribute('role', 'status');
+  $('authBody').replaceChildren(wait);
+  const error = await finishOAuth(r);
+  // Без ошибки onAuthStateChange сам откроет приложение или «Создание аккаунта».
+  if (error && document.getElementById('authBody')) {
+    await authSettings();
+    startStep(saved, error);
+  }
 }
 
 function readSaved(): Target {
@@ -139,7 +163,7 @@ function startStep(saved: Target, notice: string | null): void {
   }
   wrap.append(form);
   const note = el('p', 'auth-note', 'Пришлём код подтверждения. Если аккаунта ещё нет — создадим его.');
-  const providers = st?.oauth ?? [];
+  const providers = st?.oauth.map((p) => p.id) ?? [];
   if (providers.length) wrap.append(oauthBlock(providers, (msg) => { err.textContent = msg; }));
   body.replaceChildren(wrap, note);
   applyMethod();
@@ -167,7 +191,7 @@ function startStep(saved: Target, notice: string | null): void {
   });
 }
 
-/** «или» и кнопки «Войти через GitHub / Discord». Тот, через кого входили в прошлый раз, — первым. */
+/** «или» и кнопки «Войти через Яндекс ID / VK ID». Тот, через кого входили в прошлый раз, — первым. */
 function oauthBlock(ids: OAuthId[], showError: (msg: string) => void): HTMLElement {
   const box = el('div', 'oauth');
   const sep = el('div', 'oauth-or');
@@ -184,7 +208,7 @@ function oauthBlock(ids: OAuthId[], showError: (msg: string) => void): HTMLEleme
       if (error) {
         btns.forEach((x) => { x.disabled = false; });
         label.textContent = `Войти через ${p.label}`;
-        showError(authMessage(error));
+        showError(error);
       }
     });
     const label = el('span', null, `Войти через ${p.label}`);

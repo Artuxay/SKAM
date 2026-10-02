@@ -8,6 +8,7 @@ import { sb } from '../lib/supabase';
 import { $, ICONS, button, closeDialog, dlgHead, el, errText, html, openDialog, plural, toast } from '../lib/dom';
 import { getTheme } from '../lib/theme';
 import { S } from './store';
+import { realEmail } from '../lib/oauth';
 
 // ---------------------------------------------------------------------------
 // Поддержка
@@ -80,13 +81,14 @@ export function openSupport(topic?: Topic): void {
 }
 
 function renderSupportForm(dlg: HTMLDialogElement): void {
-  const email = S.user?.email ?? null;
+  const email = realEmail(S.user);
   const stack = el('div', 'stack support');
 
   const lead = el('p', 'lead-sm');
-  lead.append('Нашли ошибку, есть вопрос или идея? Напишите нам — ответ придёт ');
-  if (email) lead.append('на ', el('b', null, email), '.');
-  else lead.append('на почту вашего аккаунта.');
+  lead.append('Нашли ошибку, есть вопрос или идея? Напишите нам');
+  if (email) lead.append(' — ответ придёт на ', el('b', null, email), '.');
+  // Вход через VK ID без почты: ответить письмом некуда, но обращение мы прочитаем.
+  else lead.append(' — мы прочитаем каждое обращение.');
 
   // Тема
   const topicField = el('div', 'field');
@@ -207,7 +209,7 @@ function renderSupportDone(dlg: HTMLDialogElement, res: SupportResult): void {
   const no = el('p', 'done-no', `№ ${res.no}`);
   const p = el('p', 'hint');
   if (res.email) p.append('Ответ придёт на ', el('b', null, res.email), '. Если захотите что-то добавить — просто напишите ещё раз.');
-  else p.textContent = 'Ответ придёт на почту вашего аккаунта.';
+  else p.textContent = 'Мы прочитаем его и учтём. У аккаунта нет почты, поэтому ответа письмом не будет.';
   box.append(ic, h, no, p);
   const actions = el('div', 'dlg-actions');
   const ok = button('btn primary', 'Готово', () => closeDialog(dlg));

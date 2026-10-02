@@ -31,7 +31,7 @@ function candidates(first: string, last: string): string[] {
   return [...new Set(list)].filter((x) => USERNAME_RE.test(x));
 }
 
-/** Фото профиля у GitHub / Discord → файл для uploadAvatar. */
+/** Фото профиля у Яндекс ID / VK ID → файл для uploadAvatar. */
 async function fetchAvatar(url: string): Promise<File> {
   const r = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer' });
   if (!r.ok) throw new Error(String(r.status));
@@ -42,7 +42,7 @@ async function fetchAvatar(url: string): Promise<File> {
 
 export function mountRegister(root: HTMLElement, onDone: () => void, opts: { existing?: boolean } = {}): void {
   const existing = !!opts.existing;
-  // Вошли через GitHub / Discord: имя уже подставлено, фото и ник можно взять оттуда же.
+  // Вошли через Яндекс ID / VK ID: имя уже подставлено, фото и ник можно взять оттуда же.
   const pp = existing ? null : providerProfile(S.user);
   root.replaceChildren(html(`
     <main class="auth">
@@ -75,7 +75,7 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   Object.assign(file, { type: 'file', accept: 'image/*', hidden: true });
   const avHint = el('span', 'hint', 'Добавить фото');
   avWrap.append(avBtn, avHint, file);
-  // «Взять фото из GitHub» — только по нажатию: без спроса чужое фото в профиль не ставим.
+  // «Взять фото из Яндекс ID» — только по нажатию: без спроса чужое фото в профиль не ставим.
   const fromProvider = pp?.avatar
     ? button('reg-from', `Взять фото из ${pp.label}`, async () => {
       fromProvider!.disabled = true;
@@ -164,7 +164,7 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   form.addEventListener('input', () => { err.textContent = ''; });
   (existing ? un.i : first).focus();
 
-  // Ник у GitHub / Discord — первый кандидат в @username.
+  // Логин в Яндексе — первый кандидат в @username.
   const nickCandidates = pp?.nick ? [latin(pp.nick).slice(0, 32)].filter((x) => USERNAME_RE.test(x)) : [];
 
   // Проверка @username на лету
