@@ -4,6 +4,7 @@
 import { avatarUrl, sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, toast } from '../lib/dom';
 import { providerProfile } from '../lib/oauth';
+import { acceptTerms, consentCheckbox } from '../lib/legal';
 import { S, USERNAME_RE, normUsername, removeAvatar, updateMyProfile, uploadAvatar, usernameAvailable, usernameRequired } from './store';
 
 const TRANSLIT: Record<string, string> = {
@@ -151,10 +152,12 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
   sugg.hidden = true;
   const err = el('p', 'err');
   err.setAttribute('role', 'alert');
+  // Согласие с Пользовательским соглашением и Политикой конфиденциальности — обязательно.
+  const consent = consentCheckbox('regConsent');
   const submit = el('button', 'btn primary', existing ? 'Продолжить' : 'Создать аккаунт');
   submit.type = 'submit';
 
-  form.append(avWrap, fn.l, fn.i, ln.l, ln.i, un.l, un.i, unHint, sugg, err, submit);
+  form.append(avWrap, fn.l, fn.i, ln.l, ln.i, un.l, un.i, unHint, sugg, consent.box, err, submit);
   const out = button('linkish', 'Войти в другой аккаунт', () => { void sb.auth.signOut(); });
   const note = el('p', 'auth-note');
   note.append(out);
@@ -249,6 +252,11 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
     if (!firstName) { err.textContent = 'Введите имя.'; first.focus(); return; }
     if (!username && unRequired) { err.textContent = 'Придумайте имя пользователя — без него в СКАМ нельзя писать.'; un.i.focus(); return; }
     if (username && !USERNAME_RE.test(username)) { err.textContent = 'Имя пользователя: латиница, цифры и _, от 5 до 32 символов, первая — буква.'; un.i.focus(); return; }
+    if (!consent.input.checked) {
+      err.textContent = 'Чтобы продолжить, примите Пользовательское соглашение и ознакомьтесь с Политикой конфиденциальности.';
+      consent.input.focus();
+      return;
+    }
     submit.disabled = true;
     submit.textContent = existing ? 'Сохраняем…' : 'Создаём…';
     // Проверка на лету могла не успеть — спросим ещё раз.
@@ -264,6 +272,8 @@ export function mountRegister(root: HTMLElement, onDone: () => void, opts: { exi
       }
     }
     try {
+      // Сначала согласие: без него аккаунт не создаётся.
+      await acceptTerms();
       await updateMyProfile({ first_name: firstName, last_name: lastName || null, username: username || null });
       onDone();
     } catch (e) {

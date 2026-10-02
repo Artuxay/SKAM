@@ -45,6 +45,8 @@ import {
   emptyFolderNote, foldersOf, layoutChanged, mountFolders, openFolderEditor, openFolderSettings, renderFolderBar, type MenuItem,
 } from './folders';
 import { loginMethods, providerProfile, realEmail } from '../lib/oauth';
+import { LEGAL_VERSION, acceptedVersion, privacyLink, termsLink } from '../lib/legal';
+import { mountTerms } from './terms';
 import {
   filesLabel, openSendDialog, renderAttachments, sendDialogOpen, updateProgress, wireSendDialog, wireViewer,
 } from './attachui';
@@ -2723,8 +2725,10 @@ function renderProfile(): void {
   const rateBtn = button('btn ghost small', null, () => { closeDialog(dlg); openRate(); });
   rateBtn.append(html(ICONS.star), avg ? `Оценить · ${avg}` : 'Оценить СКАМ');
   aboutBtns.append(supBtn, rateBtn);
+  const legal = el('p', 'hint legal-links');
+  legal.append(termsLink(), ' · ', privacyLink());
   aboutField.append(aboutBtns, el('p', 'hint', 'Нашли ошибку или есть идея — напишите в поддержку. Ответ придёт на почту.'),
-    el('p', 'hint', `Версия ${__SKAM_VERSION__}`));
+    legal, el('p', 'hint', `Версия ${__SKAM_VERSION__}`));
 
   // Выход
   const methods = loginMethods(S.user);
@@ -3251,6 +3255,14 @@ export async function mountApp(root: HTMLElement, user: User): Promise<void> {
     // «Старый аккаунт без @username» — только если имя вводили сами; после Яндекс ID / VK ID имя
     // подставляет база, но это новый аккаунт — показываем «Создание аккаунта».
     mountRegister(root, () => { if (mounted) void keyGate(root, user); }, { existing: !!S.me?.first_name && !providerProfile(user) });
+    return;
+  }
+  // Соглашение и Политика: кто ещё не принимал текущую редакцию — один раз экран «Правила СКАМ».
+  // Не удалось узнать (нет связи) — не держим человека на пороге, спросим при следующем входе.
+  const accepted = await acceptedVersion();
+  if (!mounted) return;
+  if (accepted !== undefined && (accepted ?? '') < LEGAL_VERSION) {
+    mountTerms(root, accepted !== null, () => { if (mounted) void keyGate(root, user); });
     return;
   }
   await keyGate(root, user);

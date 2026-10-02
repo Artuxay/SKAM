@@ -4,6 +4,7 @@ import type { AuthError } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, button, el, html, lsGet, lsSet } from '../lib/dom';
 import { OAUTH, authSettings, finishOAuth, knownSettings, lastProvider, oauthReturn, signInWith, type OAuthId } from '../lib/oauth';
+import { privacyLink, termsLink } from '../lib/legal';
 
 type Method = 'phone' | 'email';
 type Target = { method: Method; value: string };
@@ -163,9 +164,11 @@ function startStep(saved: Target, notice: string | null): void {
   }
   wrap.append(form);
   const note = el('p', 'auth-note', 'Пришлём код подтверждения. Если аккаунта ещё нет — создадим его.');
+  const legal = el('p', 'auth-note legal-links');
+  legal.append(termsLink(), ' · ', privacyLink());
   const providers = st?.oauth.map((p) => p.id) ?? [];
   if (providers.length) wrap.append(oauthBlock(providers, (msg) => { err.textContent = msg; }));
-  body.replaceChildren(wrap, note);
+  body.replaceChildren(wrap, note, legal);
   applyMethod();
 
   form.addEventListener('submit', async (ev) => {

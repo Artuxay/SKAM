@@ -487,6 +487,10 @@ export type Database = {
       set_nickname: { Args: { p_user: string; p_nickname: string | null }; Returns: string | null };
       /** «О себе» любого человека (профиль целиком виден только при общем чате). */
       user_bio: { Args: { p_user: string }; Returns: string | null };
+      /** Принять редакцию Пользовательского соглашения и Политики (дата вида 2026-10-02). Возвращает время принятия. */
+      accept_terms: { Args: { p_version: string }; Returns: string };
+      /** Последняя принятая редакция документов (null — ещё не принимал). */
+      my_terms: { Args: Record<PropertyKey, never>; Returns: string | null };
       e2e_pending: {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];
