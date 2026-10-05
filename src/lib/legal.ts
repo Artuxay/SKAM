@@ -7,7 +7,7 @@ import { el } from './dom';
  * Редакция документов, которую нужно принять (дата из строки «Редакция от …»).
  * Поменяли существенно — поднимите дату: при следующем входе все увидят экран «Правила СКАМ».
  */
-export const LEGAL_VERSION = '2026-10-02';
+export const LEGAL_VERSION = '2026-10-05';
 
 export const TERMS_URL = `${import.meta.env.BASE_URL}terms.html`;
 export const PRIVACY_URL = `${import.meta.env.BASE_URL}privacy.html`;

@@ -18,9 +18,9 @@ const DOCS = [
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Ссылки на свои страницы — относительные, чтобы работали и на GitHub Pages, и локально. */
+/** Ссылки на свои страницы — относительные, чтобы работали и на сервере, и локально. */
 function href(url) {
-  const m = /^https:\/\/artuxay\.github\.io\/SKAM\/(.*)$/.exec(url);
+  const m = /^https:\/\/skam-messenger\.ru\/(.*)$/.exec(url);
   return m ? `./${m[1]}` : url;
 }
 
@@ -94,9 +94,7 @@ const page = ({ title, meta, toc, body }, other) => `<!doctype html>
 <meta name="theme-color" content="#E9E2D5" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#070708" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Unbounded:wght@800&display=swap">
+<link rel="stylesheet" href="./fonts/fonts.css">
 <script>
   try { var t = localStorage.getItem('skam:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
 </script>

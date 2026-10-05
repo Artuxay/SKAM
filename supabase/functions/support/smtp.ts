@@ -1,6 +1,7 @@
-// Маленький SMTP-клиент без сторонних библиотек: TLS сразу (порт 465), AUTH PLAIN/LOGIN,
-// письмо в UTF-8 (multipart/alternative: текст + HTML). Для Яндекса: smtp.yandex.ru:465,
-// логин — адрес ящика, пароль — «пароль приложения».
+// Маленький SMTP-клиент без сторонних библиотек: TLS сразу (порт 1127 Selectel или 465),
+// AUTH PLAIN/LOGIN, письмо в UTF-8 (multipart/alternative: текст + HTML).
+// Selectel: smtp.mail.selcloud.ru:1127, логин и пароль — из карточки почтового ресурса;
+// Яндекс: smtp.yandex.ru:465, логин — адрес ящика, пароль — «пароль приложения».
 
 export type SmtpConfig = {
   host: string;

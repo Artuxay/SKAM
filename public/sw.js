@@ -1,7 +1,7 @@
 // Service worker СКАМ: оболочка приложения работает офлайн и открывается мгновенно.
 // Запросы к Supabase (API, Realtime, Storage) никогда не кэшируются.
 // Все пути считаются от области действия SW: сайт может жить и в корне, и в подпапке (GitHub Pages).
-const CACHE = 'skam-v5';
+const CACHE = 'skam-v6';
 // Кэш зашифрованных вложений ведёт само приложение (расшифровать их без ключа нельзя) — его не трогаем.
 const KEEP = (k) => k === CACHE || k.startsWith('skam-media');
 const BASE = new URL('./', self.registration.scope).pathname; // например '/' или '/skam/'
@@ -53,13 +53,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  if (url.origin !== self.location.origin) {
-    // Шрифты Google можно держать в кэше; всё остальное (Supabase и т.п.) — только сеть.
-    if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
-      event.respondWith(staleWhileRevalidate(req));
-    }
-    return;
-  }
+  // Чужие адреса (API, Realtime, Storage) — только сеть.
+  if (url.origin !== self.location.origin) return;
   if (!url.pathname.startsWith(BASE)) return;
   if (req.mode === 'navigate') {
     // Само приложение кэшируется под одним адресом BASE (с любыми ?join=… и т.п.);
@@ -68,8 +63,8 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(app ? networkFirst(req, BASE) : networkFirst(req));
     return;
   }
-  if (url.pathname.startsWith(BASE + 'assets/')) {
-    event.respondWith(cacheFirst(req)); // файлы с хэшем в имени не меняются
+  if (url.pathname.startsWith(BASE + 'assets/') || url.pathname.startsWith(BASE + 'fonts/')) {
+    event.respondWith(cacheFirst(req)); // файлы с хэшем в имени и шрифты не меняются
     return;
   }
   event.respondWith(staleWhileRevalidate(req));

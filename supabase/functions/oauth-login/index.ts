@@ -7,11 +7,12 @@
 //        почте) или создаёт новый и возвращает { tokenHash, isNew } — одноразовый токен, которым
 //        браузер входит: supabase.auth.verifyOtp({ token_hash, type: 'magiclink' }).
 //
-// Секреты (Supabase → Edge Functions → Secrets):
+// Переменные (на своём сервере — functions.environment в docker-compose.skam.yml,
+// см. server/README.md; в облаке Supabase — Edge Functions → Secrets):
 //   YANDEX_CLIENT_ID, YANDEX_CLIENT_SECRET — приложение на oauth.yandex.ru;
 //   VK_CLIENT_ID — приложение VK ID на id.vk.ru (секрет не нужен: вход защищён PKCE);
 //   OAUTH_REDIRECT_URLS — необязательно: адреса сайта через запятую,
-//     по умолчанию https://artuxay.github.io/SKAM/ и http://localhost:5173/.
+//     по умолчанию https://skam-messenger.ru/ и http://localhost:5173/.
 // SUPABASE_URL и ключи Supabase подставляет сама.
 //
 // Функция публичная (verify_jwt = false): ею пользуются до входа.
@@ -45,7 +46,7 @@ const PROVIDERS: Provider[] = ['yandex', 'vk'];
 const YANDEX = { clientId: env('YANDEX_CLIENT_ID'), secret: env('YANDEX_CLIENT_SECRET') };
 const VK = { clientId: env('VK_CLIENT_ID') };
 
-const REDIRECTS = (env('OAUTH_REDIRECT_URLS') ?? 'https://artuxay.github.io/SKAM/,http://localhost:5173/')
+const REDIRECTS = (env('OAUTH_REDIRECT_URLS') ?? 'https://skam-messenger.ru/,http://localhost:5173/')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 /** Служебный домен для аккаунтов, у которых провайдер не дал почту. */

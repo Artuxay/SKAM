@@ -1,15 +1,17 @@
 // Edge Function «support»: обращение из кнопки «Поддержка» → письмо на ящик СКАМ.
 //
 // 1. Обращение сохраняется от имени человека (support_submit — там же проверки и лимиты).
-// 2. Письмо уходит с ящика СКАМ на него же (тот же ящик, с которого приходят коды для входа);
+// 2. Письмо уходит через почтовый сервис Selectel с адреса noreply@skam-messenger.ru
+//    (тот же, с которого приходят коды для входа) на ящик поддержки;
 //    Reply-To — почта человека, так что ответить можно обычной кнопкой «Ответить».
 // 3. Если письмо не ушло, обращение остаётся в базе и досылается при следующем удачном письме.
 //
-// Секреты (Supabase → Edge Functions → Secrets):
-//   SMTP_PASS  — обязательно: пароль приложения Яндекса (тот же, что в Auth → SMTP Settings);
-//   SMTP_USER  — ящик, по умолчанию skam.messenger@yandex.com;
-//   SMTP_HOST / SMTP_PORT — по умолчанию smtp.yandex.ru:465;
-//   SUPPORT_TO — куда слать, по умолчанию тот же ящик.
+// Переменные окружения (на своём сервере — docker-compose.skam.yml → functions.environment,
+// см. server/README.md; в облаке Supabase — Edge Functions → Secrets):
+//   SMTP_USER, SMTP_PASS — обязательно: логин (Login) и пароль (Pass) почтового сервиса;
+//   SMTP_HOST / SMTP_PORT — по умолчанию smtp.mail.selcloud.ru:1127 (TLS сразу; подойдёт и 465);
+//   SMTP_FROM  — отправитель, по умолчанию noreply@skam-messenger.ru (домен должен быть подтверждён);
+//   SUPPORT_TO — куда слать, по умолчанию skam.messenger@yandex.com.
 // SUPABASE_URL и ключи Supabase подставляет сама.
 
 import { letterOf, cleanMeta, subjectOf, type SupportRow } from './letter.ts';
@@ -40,13 +42,14 @@ const ANON_KEY = pickKey('SUPABASE_ANON_KEY', 'SUPABASE_PUBLISHABLE_KEYS');
 const SERVICE_KEY = pickKey('SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEYS');
 
 const SMTP: SmtpConfig = {
-  host: env('SMTP_HOST') ?? 'smtp.yandex.ru',
-  port: Number(env('SMTP_PORT') ?? 465),
-  user: env('SMTP_USER') ?? 'skam.messenger@yandex.com',
+  host: env('SMTP_HOST') ?? 'smtp.mail.selcloud.ru',
+  port: Number(env('SMTP_PORT') ?? 1127),
+  user: env('SMTP_USER') ?? '',
   pass: env('SMTP_PASS') ?? '',
   timeoutMs: 20_000,
 };
-const SUPPORT_TO = env('SUPPORT_TO') ?? SMTP.user;
+const SMTP_FROM = env('SMTP_FROM') ?? 'noreply@skam-messenger.ru';
+const SUPPORT_TO = env('SUPPORT_TO') ?? 'skam.messenger@yandex.com';
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -76,7 +79,7 @@ const admin = <T>(fn: string, args: unknown) => rpc<T>(fn, args, { apikey: SERVI
 function mailOf(r: SupportRow): Mail {
   const { text, html } = letterOf(r);
   return {
-    from: SMTP.user,
+    from: SMTP_FROM,
     fromName: 'СКАМ · Поддержка',
     to: SUPPORT_TO,
     replyTo: r.email,
@@ -84,7 +87,7 @@ function mailOf(r: SupportRow): Mail {
     subject: subjectOf(r),
     text,
     html,
-    messageId: `<support-${r.id}@${SMTP.user.split('@')[1] ?? 'skam.local'}>`,
+    messageId: `<support-${r.id}@${SMTP_FROM.split('@')[1] ?? 'skam.local'}>`,
   };
 }
 
@@ -153,8 +156,8 @@ Deno.serve(async (req) => {
   const { id, no, email } = made.data;
 
   // 2. Письмо.
-  if (!SMTP.pass) {
-    console.warn('support: секрет SMTP_PASS не задан — обращение сохранено без письма');
+  if (!SMTP.user || !SMTP.pass) {
+    console.warn('support: SMTP_USER или SMTP_PASS не заданы — обращение сохранено без письма');
     return json({ ok: true, id, no, email, mailed: false });
   }
   const claimed = await admin<SupportRow[]>('support_claim', { p_id: id, p_limit: 1 });
