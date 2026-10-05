@@ -1,4 +1,4 @@
-// Папки с чатами: полоса слева (компьютер), вкладки сверху (телефон), редактор папки,
+// Папки с чатами: вкладки над списком чатов, редактор папки,
 // выбор чатов и «Папки с чатами» (порядок, рекомендуемые) — как в Telegram.
 import type { ChatFolder, FolderKind, MyChat } from '../lib/database.types';
 import {
@@ -6,8 +6,8 @@ import {
 } from '../lib/dom';
 import { S, markRead, searchNorm } from './store';
 import {
-  FOLDER_ICONS, FOLDER_KINDS, FOLDER_TITLE_MAX, L, MAX_FOLDER_CHATS, MAX_FOLDERS, deleteFolder, folderById, folderIcon,
-  folderSummary, listChats, reorderFolders, saveFolder, setFolder, unreadIn, type FolderDraft,
+  FOLDER_ICONS, FOLDER_KINDS, FOLDER_TITLE_MAX, KIND_TABS, L, MAX_FOLDER_CHATS, MAX_FOLDERS, deleteFolder, folderById, folderIcon,
+  folderSummary, listChats, reorderFolders, saveFolder, setFolder, setKind, unreadIn, type FolderDraft, type KindTab,
 } from './layout';
 
 export type MenuItem =
@@ -26,36 +26,13 @@ let env: Env;
 
 export function mountFolders(e: Env): void {
   env = e;
-  railSig = '';
   tabsSig = '';
   tabsCur = undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Полоса папок слева и вкладки сверху
+// Вкладки папок
 // ---------------------------------------------------------------------------
-
-/** Мягкие переносы в длинных словах: «Непрочи-танные» в узкой полосе слева. */
-const VOWELS = 'аеёиоуыэюяaeiouy';
-export function softHyphens(text: string): string {
-  return text.replace(/[A-Za-zА-Яа-яЁё]{9,}/g, (w) => {
-    const low = w.toLowerCase();
-    const isV = (i: number) => VOWELS.includes(low[i]);
-    const cuts = new Set<number>();
-    for (let i = 0; i < w.length; i++) {
-      if (!isV(i)) continue;
-      // Согласные после гласной: одна — перенос перед ней («ми-ша»), несколько — после первой («тан-ные»).
-      let j = i + 1;
-      while (j < w.length && !isV(j)) j++;
-      if (j >= w.length) break;
-      const k = j - (i + 1);
-      let cut = k <= 1 ? i + 1 : i + 2;
-      while (cut < j && 'ьъй'.includes(low[cut])) cut++;
-      if (cut >= 3 && w.length - cut >= 3) cuts.add(cut);
-    }
-    return [...w].map((ch, i) => (cuts.has(i) ? `\u00AD${ch}` : ch)).join('');
-  });
-}
 
 function badgeText(n: number): string {
   return n > 99 ? '99+' : String(n);
@@ -67,14 +44,21 @@ function pick(id: string | null): void {
   else if (!wideMQ.matches) document.getElementById('chatList')?.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-/** Меню папки: изменить, прочитать всё, удалить. */
-function folderMenu(f: ChatFolder | null, x: number, y: number): void {
+function pickKind(k: KindTab): void {
+  if (env.searching()) env.clearSearch();
+  if (L.kind !== k) setKind(k);
+  else document.getElementById('chatList')?.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/** Меню папки (или вкладки по типу): изменить, прочитать всё, удалить. */
+function folderMenu(f: ChatFolder | null, x: number, y: number, kind: KindTab = 'all'): void {
   const items: MenuItem[] = [];
-  const unread = listChats(f?.id ?? null).filter((c) => c.unread);
+  const unread = listChats(f?.id ?? null, f ? 'all' : kind).filter((c) => c.unread);
   if (f) items.push({ icon: 'edit', label: 'Изменить папку', fn: () => openFolderEditor(f.id) });
   if (unread.length) {
     items.push({ icon: 'read', label: 'Отметить всё прочитанным', fn: () => { unread.forEach((c) => markRead(c.id)); } });
   }
+  if (!L.folders.length) items.push({ icon: 'plus', label: 'Новая папка', fn: () => openFolderEditor(null) });
   items.push({ icon: 'sliders', label: 'Настроить папки', fn: () => openFolderSettings() });
   if (f) {
     items.push({
@@ -88,12 +72,12 @@ function folderMenu(f: ChatFolder | null, x: number, y: number): void {
   env.menu(items, x, y);
 }
 
-function withMenu(node: HTMLElement, f: ChatFolder | null): void {
+function withMenu(node: HTMLElement, f: ChatFolder | null, kind: KindTab = 'all'): void {
   node.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const r = node.getBoundingClientRect();
     const kb = !e.clientX && !e.clientY;
-    folderMenu(f, kb ? r.left + 12 : e.clientX, kb ? r.bottom : e.clientY);
+    folderMenu(f, kb ? r.left + 12 : e.clientX, kb ? r.bottom : e.clientY, kind);
   });
   // Долгое нажатие на телефоне.
   let timer = 0;
@@ -103,7 +87,7 @@ function withMenu(node: HTMLElement, f: ChatFolder | null): void {
     if (e.pointerType !== 'touch') return;
     fired = false;
     at = { x: e.clientX, y: e.clientY };
-    timer = window.setTimeout(() => { fired = true; navigator.vibrate?.(8); folderMenu(f, at.x, at.y); }, 450);
+    timer = window.setTimeout(() => { fired = true; navigator.vibrate?.(8); folderMenu(f, at.x, at.y, kind); }, 450);
   });
   const stop = () => clearTimeout(timer);
   node.addEventListener('pointerup', stop);
@@ -117,7 +101,7 @@ function withMenu(node: HTMLElement, f: ChatFolder | null): void {
   }, true);
 }
 
-/** Перетаскивание папок в полосе слева (мышью) — новый порядок сразу на сервер. */
+/** Перетаскивание вкладок папок мышью — новый порядок сразу на сервер. */
 let dragId: string | null = null;
 function draggableFolder(node: HTMLElement, id: string): void {
   node.draggable = true;
@@ -130,13 +114,13 @@ function draggableFolder(node: HTMLElement, id: string): void {
   node.addEventListener('dragend', () => {
     dragId = null;
     node.classList.remove('dragging');
-    document.querySelectorAll('.fr-item.drop-before,.fr-item.drop-after').forEach((n) => n.classList.remove('drop-before', 'drop-after'));
+    document.querySelectorAll('.ft-item.drop-before,.ft-item.drop-after').forEach((n) => n.classList.remove('drop-before', 'drop-after'));
   });
   node.addEventListener('dragover', (e) => {
     if (!dragId || dragId === id) return;
     e.preventDefault();
     const r = node.getBoundingClientRect();
-    const after = e.clientY > r.top + r.height / 2;
+    const after = e.clientX > r.left + r.width / 2;
     node.classList.toggle('drop-after', after);
     node.classList.toggle('drop-before', !after);
   });
@@ -153,73 +137,53 @@ function draggableFolder(node: HTMLElement, id: string): void {
 }
 
 /** Что нарисовано сейчас: одинаковое не перерисовываем (не сбиваем прокрутку вкладок и наведение). */
-let railSig = '';
 let tabsSig = '';
 let tabsCur: string | null | undefined;
 
 function barSig(): string {
-  const parts = [String(L.loaded), String(L.cur), String(env.searching()), String(unreadIn(null))];
+  const parts = [String(L.loaded), String(L.cur), L.kind, String(env.searching()), String(unreadIn(null))];
+  if (!L.folders.length) KIND_TABS.forEach((t) => parts.push(String(unreadIn(null, t.k))));
   L.folders.forEach((f) => parts.push(f.id, f.title, f.emoji ?? '', folderIcon(f), String(unreadIn(f.id))));
   return parts.join('\u0001');
 }
 
-/** Полоса слева на компьютере и вкладки сверху на телефоне. */
+/** Вкладки над списком чатов: свои папки, а пока их нет — «Все», «Личные», «Группы», «Каналы». */
 export function renderFolderBar(): void {
   const sig = barSig();
-  if (sig !== railSig) { railSig = sig; renderRail(); }
   if (sig !== tabsSig) { tabsSig = sig; renderTabs(); }
   document.querySelector('.side')?.classList.toggle('has-folders', L.folders.length > 0);
-}
-
-function renderRail(): void {
-  const rail = document.getElementById('folderRail');
-  if (!rail) return;
-  const frag = document.createDocumentFragment();
-  const item = (f: ChatFolder | null) => {
-    const id = f?.id ?? null;
-    const title = f ? f.title : 'Все чаты';
-    const b = button('fr-item', null, () => pick(id));
-    if (L.cur === id && !env.searching()) b.setAttribute('aria-current', 'true');
-    const ic = el('span', 'fr-ic');
-    if (f) ic.textContent = folderIcon(f);
-    else ic.append(html(ICONS.chats));
-    ic.setAttribute('aria-hidden', 'true');
-    b.append(ic, el('span', 'fr-t', softHyphens(title)));
-    const n = unreadIn(id);
-    let label = title;
-    if (n) {
-      b.append(el('span', 'fr-badge', badgeText(n)));
-      label += `, ${plural(n, 'непрочитанное', 'непрочитанных', 'непрочитанных')}`;
-    }
-    b.setAttribute('aria-label', label);
-    b.title = title;
-    withMenu(b, f);
-    if (f) draggableFolder(b, f.id);
-    return b;
-  };
-  frag.append(item(null));
-  // Пока папки не загрузились — только «Все чаты», без мигания кнопки «Новая папка».
-  if (!L.loaded) { rail.replaceChildren(frag); return; }
-  L.folders.forEach((f) => frag.append(item(f)));
-  const edit = button('fr-item fr-edit', null, () => (L.folders.length ? openFolderSettings() : openFolderEditor(null)));
-  const eic = el('span', 'fr-ic');
-  eic.append(html(L.folders.length ? ICONS.sliders : ICONS.folderAdd));
-  eic.setAttribute('aria-hidden', 'true');
-  const et = L.folders.length ? 'Папки' : 'Новая папка';
-  edit.append(eic, el('span', 'fr-t', et));
-  edit.title = L.folders.length ? 'Папки с чатами' : 'Создать папку';
-  frag.append(edit);
-  rail.replaceChildren(frag);
 }
 
 function renderTabs(): void {
   const tabs = document.getElementById('folderTabs');
   if (!tabs) return;
-  // На телефоне вкладки есть, только когда папки уже заведены (как в Telegram).
-  tabs.hidden = !L.folders.length || env.searching();
+  tabs.hidden = env.searching() || !L.loaded;
   if (tabs.hidden) { tabs.replaceChildren(); return; }
   const keep = tabs.scrollLeft;
   const frag = document.createDocumentFragment();
+  if (!L.folders.length) {
+    // Пока своих папок нет — вкладки по типу. Непрочитанные — числом рядом (у открытой вкладки не показываем).
+    KIND_TABS.forEach(({ k, label }) => {
+      const b = button('ft-item', null, () => pickKind(k));
+      b.setAttribute('role', 'tab');
+      const on = L.kind === k;
+      b.setAttribute('aria-selected', String(on));
+      if (on) b.setAttribute('aria-current', 'true');
+      b.append(el('span', 'ft-t', label));
+      const n = unreadIn(null, k);
+      if (n && !on) {
+        const c = el('span', 'ft-n', badgeText(n));
+        c.setAttribute('aria-label', `непрочитанных: ${n}`);
+        b.append(c);
+      }
+      withMenu(b, null, k);
+      frag.append(b);
+    });
+    tabs.replaceChildren(frag);
+    tabs.scrollLeft = keep;
+    tabsCur = undefined;
+    return;
+  }
   const tab = (f: ChatFolder | null) => {
     const id = f?.id ?? null;
     const b = button('ft-item', null, () => pick(id));
@@ -229,8 +193,10 @@ function renderTabs(): void {
     if (on) b.setAttribute('aria-current', 'true');
     b.append(el('span', 'ft-t', f ? f.title : 'Все'));
     const n = unreadIn(id);
-    if (n) b.append(el('span', 'ft-badge', badgeText(n)));
+    if (n && !on) b.append(el('span', 'ft-n', badgeText(n)));
+    b.title = f ? f.title : 'Все чаты';
     withMenu(b, f);
+    if (f && !touchMQ.matches) draggableFolder(b, f.id);
     return b;
   };
   frag.append(tab(null));

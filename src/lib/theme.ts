@@ -3,7 +3,7 @@ import { lsGet, lsSet } from './dom';
 
 export type Theme = 'auto' | 'light' | 'dark';
 const KEY = 'skam:theme';
-const PAPER = { light: '#E9E2D5', dark: '#070708' };
+const PAPER = { light: '#EEEEEE', dark: '#000000' };
 
 export function getTheme(): Theme {
   const t = lsGet(KEY);

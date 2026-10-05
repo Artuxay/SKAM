@@ -25,11 +25,10 @@ if (process.argv.includes('--if-missing') && ICONS.every(([name]) => existsSync(
 // --- геометрия логотипа ---------------------------------------------------
 const STOPS = [
   [0, [0xff, 0xab, 0x1a]],
-  [0.5, [0xf2, 0x5a, 0x1e]],
-  [0.9, [0xa8, 0xb4, 0x29]],
-  [1, [0x9c, 0xc0, 0x2a]],
+  [0.5, [0xe8, 0x50, 0x02]],
+  [1, [0x66, 0xea, 0x1b]],
 ];
-const INK = [0x0e, 0x0e, 0x10];
+const INK = [0x00, 0x00, 0x00];
 
 function gradient(x, y) {
   // linearGradient x1=0 y1=0 x2=1 y2=1 по квадрату 200×200

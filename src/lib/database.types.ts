@@ -495,6 +495,45 @@ export type Database = {
         Args: { p_limit?: number };
         Returns: { chat_id: string; key_id: string; user_id: string; public_key: string }[];
       };
+      /** Заблокировать (p_on = true) или разблокировать человека. */
+      block_user: { Args: { p_user: string; p_on: boolean }; Returns: undefined };
+      /** Кого я заблокировал — свежие сверху. */
+      my_blocks: { Args: Record<PropertyKey, never>; Returns: BlockedUser[] };
+      /** «Без звука» для чата: p_until = null — навсегда; p_on = false — включить звук. */
+      mute_chat: { Args: { p_chat: string; p_on: boolean; p_until?: string | null }; Returns: undefined };
+      /** Мои чаты без звука (до какого времени; null — навсегда). */
+      my_mutes: { Args: Record<PropertyKey, never>; Returns: { chat_id: string; until: string | null }[] };
+      /** Группы, где есть и я, и этот человек. */
+      common_groups: { Args: { p_user: string }; Returns: CommonGroup[] };
+      /** Лента историй: я и люди, с кем есть личный чат, у кого есть живые истории. */
+      story_feed: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          author_id: string; name: string | null; avatar_path: string | null; color: string | null; verified: boolean;
+          stories: Story[]; unseen: number; last_at: string;
+        }[];
+      };
+      /** Живые и закреплённые истории человека (для профиля); не видно — пустой список. */
+      user_stories: { Args: { p_user: string }; Returns: Story[] };
+      /** Кто смотрел мою историю (сначала с сердечком). */
+      story_viewers: {
+        Args: { p_story: string };
+        Returns: {
+          user_id: string; name: string | null; avatar_path: string | null; color: string | null; verified: boolean;
+          viewed_at: string; liked: boolean;
+        }[];
+      };
+      create_story: {
+        Args: {
+          p_id: string; p_kind: StoryKind; p_media_path: string | null; p_thumb_path: string | null; p_media_mime: string | null;
+          p_w: number | null; p_h: number | null; p_duration_ms: number | null; p_body: string | null; p_bg: number | null;
+        };
+        Returns: string;
+      };
+      view_story: { Args: { p_story: string }; Returns: undefined };
+      like_story: { Args: { p_story: string; p_on: boolean }; Returns: undefined };
+      pin_story: { Args: { p_story: string; p_on: boolean }; Returns: undefined };
+      delete_story: { Args: { p_story: string }; Returns: undefined };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -545,4 +584,42 @@ export type ChatLayout = { pins: string[]; folders: ChatFolder[] };
 export type Nickname = {
   user_id: string; nickname: string; name: string | null; username: string | null; avatar_path: string | null;
   color: string; verified: boolean;
+};
+
+/** История: фото, видео (до 60 с) или текст на градиентном фоне. Живёт сутки, закреплённая — пока не открепят. */
+export type StoryKind = 'photo' | 'video' | 'text';
+/** Заблокированный мной человек — как он выглядит. */
+export type BlockedUser = {
+  user_id: string; name: string | null; username: string | null; avatar_path: string | null; color: string | null;
+  verified: boolean; created_at: string;
+};
+
+/** Общая группа с человеком. */
+export type CommonGroup = { id: string; name: string | null; emoji: string; avatar_path: string | null; member_count: number };
+
+export type Story = {
+  id: string;
+  author_id: string;
+  kind: StoryKind;
+  /** stories/<автор>/<id>.<ext> и превью <id>_t.jpg (у текста — null). */
+  media_path: string | null;
+  thumb_path: string | null;
+  media_mime: string | null;
+  w: number | null;
+  h: number | null;
+  duration_ms: number | null;
+  /** Текст истории или подпись к фото и видео. */
+  body: string | null;
+  /** Фон текстовой истории: 0…7. */
+  bg: number | null;
+  pinned: boolean;
+  created_at: string;
+  expires_at: string;
+  /** Я её уже смотрел (свои — всегда true). */
+  seen: boolean;
+  /** Я поставил сердечко. */
+  liked: boolean;
+  /** Только у своих: сколько посмотрели и сколько поставили сердечко. */
+  views: number | null;
+  likes: number | null;
 };

@@ -156,6 +156,18 @@ export function renderAttachments(m: Msg, files: Attachment[], authorName: strin
   return box;
 }
 
+/** «Медиа и файлы» в профиле: плитка фото или видео — открывается в просмотрщике вместе с остальными вложениями сообщения. */
+export function mediaTile(m: Msg, a: Attachment, author: string): HTMLElement {
+  const visual = (m.content?.files ?? []).filter(isVisualAtt);
+  const i = Math.max(0, visual.findIndex((x) => x.id === a.id));
+  return tile(m, a, i, false, (idx) => openViewer(m, visual.length ? visual : [a], idx, author));
+}
+
+/** «Медиа и файлы» в профиле: файл — нажатие скачивает. */
+export function fileRow(m: Msg, a: Attachment): HTMLElement {
+  return docRow(m, a);
+}
+
 // ---------------------------------------------------------------------------
 // Просмотрщик фото и видео
 // ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@
 | `/opt/skam-backup/` | резервные копии за 14 дней, `backup.log` |
 | `/opt/skam-migrate/` | переезд из облака: дампы, `managed.sql`, `copy-files.mjs`, `cutover.sh` |
 | `/opt/skam-mcp/` | мост MCP для Claude |
+| `/opt/skam-stories/` | уборка исчезнувших историй: `cleanup.sh` (копия `stories-cleanup.sh`), `cleanup.log`; cron `/etc/cron.d/skam-stories` |
 
 ## Скрипты в этой папке
 
@@ -32,7 +33,9 @@
 - [`autodeploy.sh`](autodeploy.sh) — cron раз в 5 минут (`/etc/cron.d/skam-deploy`): если в `main` новый коммит, запускает `build.sh`. Упавшая сборка повторно не запускается, пока не появится следующий коммит. Журнал — `/opt/skam-test/deploy.log`.
 - [`backup.sh`](backup.sh) — cron каждую ночь в 03:30 по Москве (`/etc/cron.d/skam-backup`): `pg_dump -Fc` всей базы и роли (`pg_dumpall --globals-only`) от `supabase_admin`, архив файлов Storage, `.env`, наш compose и Caddyfile. Проверяет, что дамп читается. Хранит 14 дней. Копии лежат на том же сервере — копию вне сервера стоит добавить отдельно.
 - [`smtp.sh`](smtp.sh) — спрашивает логин и пароль почтового сервиса и записывает `SMTP_*` в `.env` (логин — число из поля Login, пароль — Pass (API-key)).
-- [`managed.sql`](managed.sql) — триггер `on_auth_user_created` и 15 политик Storage и Realtime. `supabase db dump` их не переносит, потому что схемы `auth`, `storage`, `realtime` служебные. Запускается от `supabase_admin`.
+- [`managed.sql`](managed.sql) — триггер `on_auth_user_created` и 18 политик Storage и Realtime (с 1.6.0 — и три политики бакета историй `stories`). `supabase db dump` их не переносит, потому что схемы `auth`, `storage`, `realtime` служебные, а у `postgres` на self-hosted нет прав создавать политики на `storage.objects`. Запускается от `supabase_admin`, можно повторять.
+- [`apply-managed.sh`](apply-managed.sh) — применяет `managed.sql` от `supabase_admin` и ставит уборку историй (cron каждые 15 минут). Запуск после выкладки: `sh /opt/skam-test/src/server/apply-managed.sh`.
+- [`stories-cleanup.sh`](stories-cleanup.sh) — уборка историй: `private.stories_gc()` удаляет истории старше суток (кроме закреплённых в профиле) и переносит пути их файлов в `private.story_trash`, а скрипт стирает эти файлы через API Storage сервисным ключом из `.env` (`SERVICE_ROLE_KEY`). Журнал — `/opt/skam-stories/cleanup.log` (пишет только когда что-то убрал).
 - [`copy-files.mjs`](copy-files.mjs) — копирует файлы Storage из облака на сервер через API (`x-upsert`).
 - [`cutover.sh`](cutover.sh) — переезд «в один заход»: сверяет версию Auth с облаком, снимает дамп, откладывает текущую базу сервера в `volumes/db/data.before-<время>`, поднимает чистую, заливает, переносит файлы и сравнивает числа. При любой ошибке сам возвращает прежнюю базу.
 - [`mcp/`](mcp/) — доступ Claude к базе: отдельный SSH-ключ, которому `authorized_keys` разрешает только запуск `bridge.sh`; мост поднимает `mcp-remote` к встроенному MCP-серверу Studio внутри сети Docker. Снаружи маршрут `/mcp` закрыт.
@@ -57,6 +60,7 @@ docker logs supabase-auth --since 10m           # вход и письма
 docker logs supabase-edge-functions --since 10m # функции
 tail /opt/skam-test/deploy.log                  # автообновление сайта
 tail /opt/skam-backup/backup.log                # резервные копии
+tail /opt/skam-stories/cleanup.log              # уборка историй
 sh /opt/skam-test/build.sh                      # пересобрать сайт вручную
 ```
 

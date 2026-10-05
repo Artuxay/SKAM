@@ -17,11 +17,15 @@ const join = url.searchParams.get('join');
 const pub = url.searchParams.get('c');
 // Набор стикеров ?stickers=<id> — покажем после входа с кнопкой «Добавить».
 const pack = url.searchParams.get('stickers');
-if (join || pub || pack) {
+// Чат ?chat=<id> — из уведомления, когда СКАМ был закрыт.
+const chat = url.searchParams.get('chat');
+if (join || pub || pack || chat) {
   if (join) lsSet('skam:join', join);
   if (pub && /^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(pub)) lsSet('skam:open', pub.replace(/^@/, '').toLowerCase());
   if (pack && /^u[0-9a-f]{11}$/.test(pack)) lsSet('skam:stickers', pack);
+  if (chat && /^[0-9a-f-]{36}$/.test(chat)) lsSet('skam:chat', chat);
   url.searchParams.delete('join');
+  url.searchParams.delete('chat');
   url.searchParams.delete('c');
   url.searchParams.delete('stickers');
   history.replaceState(history.state, '', url.pathname + url.search + url.hash);

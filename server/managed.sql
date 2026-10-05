@@ -1,4 +1,5 @@
--- SKAM: trigger and policies in auth, storage, realtime (not included in supabase db dump)
+-- SKAM: trigger and policies in auth, storage, realtime (not included in supabase db dump).
+-- Safe to run again: sh server/apply-managed.sh
 begin;
 set local client_min_messages = warning;
 
@@ -55,6 +56,18 @@ drop policy if exists "skam stickers: delete own" on storage.objects;
 create policy "skam stickers: delete own" on storage.objects for delete to authenticated
   using (bucket_id = 'stickers' and (private.owns_sticker_pack(split_part(name, '/', 1))
          or private.is_app_owner()));
+
+-- Stories (1.6.0): own folder <uid>/..., others read only live stories of people with a direct chat.
+drop policy if exists "skam stories: upload" on storage.objects;
+create policy "skam stories: upload" on storage.objects for insert to authenticated
+  with check (bucket_id = 'stories' and private.story_upload_ok(name));
+drop policy if exists "skam stories: read" on storage.objects;
+create policy "skam stories: read" on storage.objects for select to authenticated
+  using (bucket_id = 'stories' and ((storage.foldername(name))[1] = (select auth.uid())::text
+         or private.story_file_visible(name)));
+drop policy if exists "skam stories: delete own" on storage.objects;
+create policy "skam stories: delete own" on storage.objects for delete to authenticated
+  using (bucket_id = 'stories' and (storage.foldername(name))[1] = (select auth.uid())::text);
 
 drop policy if exists "skam: realtime read" on realtime.messages;
 create policy "skam: realtime read" on realtime.messages for select to authenticated

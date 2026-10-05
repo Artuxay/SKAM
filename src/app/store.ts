@@ -2,8 +2,8 @@
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type {
-  Attachment, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, Profile, Reaction,
-  ReactionKey,
+  Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, Profile,
+  Reaction, ReactionKey,
 } from '../lib/database.types';
 import { uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
@@ -83,7 +83,23 @@ export const S = {
   preview: null as MyChat | null,
   /** Я владелец СКАМ: могу выдавать и снимать официальные галочки. */
   appOwner: false,
+  /** Кого я заблокировал (по id человека). */
+  blocks: new Map<string, BlockedUser>(),
+  /** Чаты без звука: до какого момента (мс); Infinity — навсегда. */
+  mutes: new Map<string, number>(),
 };
+
+/** Чат без звука: не звенит, не показывает уведомления, его непрочитанные — серые и не в общем счёте. */
+export function chatMuted(id: string | null | undefined): boolean {
+  if (!id) return false;
+  const until = S.mutes.get(id);
+  return until !== undefined && until > Date.now();
+}
+
+/** Я заблокировал собеседника этого личного чата. */
+export function peerBlocked(c: MyChat | null | undefined): boolean {
+  return !!c && c.kind === 'direct' && !!c.peer_id && S.blocks.has(c.peer_id);
+}
 
 /** Чат из списка или открытый до подписки публичный канал. */
 export function chatById(id: string | null | undefined): MyChat | undefined {
@@ -109,7 +125,7 @@ export function meId(): string {
 // События → перерисовка (склеиваем несколько изменений за один тик)
 // ---------------------------------------------------------------------------
 
-export type Evt = 'chats' | 'feed' | 'head' | 'online' | 'me' | 'members' | 'call' | 'layout';
+export type Evt = 'chats' | 'feed' | 'head' | 'online' | 'me' | 'members' | 'call' | 'layout' | 'stories' | 'prefs';
 const listeners = new Map<Evt, Set<() => void>>();
 const pending = new Set<Evt>();
 let scheduled = false;
@@ -151,6 +167,8 @@ export function resetState(): void {
   S.quoted.clear();
   S.preview = null;
   S.appOwner = false;
+  S.blocks.clear();
+  S.mutes.clear();
   e2e.reset();
   listeners.clear();
   pending.clear();
@@ -703,9 +721,10 @@ export function inviteLink(code: string): string {
   return `${appUrl()}?join=${encodeURIComponent(code)}`;
 }
 
+/** Непрочитанные во всех чатах — без чатов «без звука» (как в Telegram). */
 export function totalUnread(): number {
   let n = 0;
-  S.chats.forEach((c) => { n += c.unread; });
+  S.chats.forEach((c) => { if (!chatMuted(c.id)) n += c.unread; });
   return n;
 }
 

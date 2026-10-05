@@ -3,7 +3,7 @@
 import { sb } from '../lib/supabase';
 import type { ChatFolder, ChatLayout, FolderKind, MyChat } from '../lib/database.types';
 import { lsGet, lsSet, plural } from '../lib/dom';
-import { S, emit, ts } from './store';
+import { S, chatMuted, emit, ts } from './store';
 
 export const MAX_PINS = 10;
 export const MAX_FOLDERS = 20;
@@ -23,7 +23,23 @@ export const FOLDER_ICONS = [
   '🏠', '🎓', '📚', '🎮', '🎵', '⚽', '✈️', '🛒', '💰', '🎉', '👑', '🐱',
 ];
 
+/** Вкладки по типу чата — пока своих папок нет: «Все», «Личные», «Группы», «Каналы». */
+export type KindTab = 'all' | 'direct' | 'group' | 'channel';
+export const KIND_TABS: { k: KindTab; label: string }[] = [
+  { k: 'all', label: 'Все' },
+  { k: 'direct', label: 'Личные' },
+  { k: 'group', label: 'Группы' },
+  { k: 'channel', label: 'Каналы' },
+];
+
+function savedKind(): KindTab {
+  const k = lsGet('skam:kind');
+  return k === 'direct' || k === 'group' || k === 'channel' ? k : 'all';
+}
+
 export const L = {
+  /** Открытая вкладка по типу (действует, только когда своих папок нет). */
+  kind: savedKind(),
   /** Закреплённые в «Все чаты», сверху вниз. */
   pins: [] as string[],
   folders: [] as ChatFolder[],
@@ -47,6 +63,7 @@ export function resetLayout(): void {
   L.folders = [];
   L.loaded = false;
   L.cur = null;
+  L.kind = savedKind();
   loadedAt = 0;
   lastJson = '';
 }
@@ -87,6 +104,22 @@ export function folderById(id: string | null | undefined): ChatFolder | undefine
   return id ? L.folders.find((f) => f.id === id) : undefined;
 }
 
+/** Бот — в «Личных»: это переписка один на один. */
+export function kindOf(c: MyChat): KindTab {
+  return c.kind === 'group' ? 'group' : c.kind === 'channel' ? 'channel' : 'direct';
+}
+
+/** Вкладка по типу, которая сейчас действует (со своими папками — всегда «Все»). */
+export function activeKind(): KindTab {
+  return L.folders.length ? 'all' : L.kind;
+}
+
+export function setKind(k: KindTab): void {
+  L.kind = k;
+  lsSet('skam:kind', k === 'all' ? null : k);
+  emit('chats', 'layout');
+}
+
 /** Открыть папку (null — «Все чаты»). Запоминается на этом устройстве. */
 export function setFolder(id: string | null): void {
   L.cur = id && folderById(id) ? id : null;
@@ -122,22 +155,23 @@ export function isPinned(chatId: string, folderId: string | null): boolean {
   return pinsOf(folderId).includes(chatId);
 }
 
-/** Чаты списка: сначала закреплённые по порядку, потом остальные — свежие сверху. */
-export function listChats(folderId: string | null = L.cur): MyChat[] {
+/** Чаты списка: сначала закреплённые по порядку, потом остальные — свежие сверху. kind — вкладка по типу (вне папок). */
+export function listChats(folderId: string | null = L.cur, kind: KindTab = 'all'): MyChat[] {
   const f = folderById(folderId);
-  const pinned = pinsOf(folderId).map((id) => S.chats.get(id)).filter((c): c is MyChat => !!c);
+  const fits = (c: MyChat) => !!f || kind === 'all' || kindOf(c) === kind;
+  const pinned = pinsOf(folderId).map((id) => S.chats.get(id)).filter((c): c is MyChat => !!c && fits(c));
   const pinSet = new Set(pinned.map((c) => c.id));
-  const rest = [...S.chats.values()].filter((c) => !pinSet.has(c.id) && (!f || inFolder(c, f))).sort(byRecent);
+  const rest = [...S.chats.values()].filter((c) => !pinSet.has(c.id) && (!f || inFolder(c, f)) && fits(c)).sort(byRecent);
   return [...pinned, ...rest];
 }
 
-/** Непрочитанные в папке (или во всех чатах) — без чата, который сейчас открыт и виден. */
-export function unreadIn(folderId: string | null): number {
+/** Непрочитанные в папке (или во всех чатах, или во вкладке по типу) — без открытого чата и чатов «без звука». */
+export function unreadIn(folderId: string | null, kind: KindTab = 'all'): number {
   const f = folderById(folderId);
   const visible = S.visibleChat();
   let n = 0;
   S.chats.forEach((c) => {
-    if (c.unread && c.id !== visible && (!f || inFolder(c, f))) n += c.unread;
+    if (c.unread && c.id !== visible && !chatMuted(c.id) && (!f || inFolder(c, f)) && (f || kind === 'all' || kindOf(c) === kind)) n += c.unread;
   });
   return n;
 }

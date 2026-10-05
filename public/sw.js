@@ -1,7 +1,7 @@
 // Service worker СКАМ: оболочка приложения работает офлайн и открывается мгновенно.
 // Запросы к Supabase (API, Realtime, Storage) никогда не кэшируются.
 // Все пути считаются от области действия SW: сайт может жить и в корне, и в подпапке (GitHub Pages).
-const CACHE = 'skam-v6';
+const CACHE = 'skam-v7';
 // Кэш зашифрованных вложений ведёт само приложение (расшифровать их без ключа нельзя) — его не трогаем.
 const KEEP = (k) => k === CACHE || k.startsWith('skam-media');
 const BASE = new URL('./', self.registration.scope).pathname; // например '/' или '/skam/'
@@ -68,4 +68,20 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   event.respondWith(staleWhileRevalidate(req));
+});
+
+// Нажали на уведомление о сообщении: показываем открытый СКАМ и просим открыть этот чат.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const chat = event.notification.data && event.notification.data.chat;
+  event.waitUntil((async () => {
+    const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const win = list.find((c) => new URL(c.url).pathname.startsWith(BASE));
+    if (win) {
+      await win.focus();
+      if (chat) win.postMessage({ type: 'skam-open', chat });
+      return;
+    }
+    if (self.clients.openWindow) await self.clients.openWindow(BASE + (chat ? '?chat=' + encodeURIComponent(chat) : ''));
+  })());
 });

@@ -118,7 +118,7 @@ export function nickHits(q: { at: boolean; s: string; toks: string[] }): FoundUs
       s,
       f: {
         id: uid, name: p?.name ?? null, username: p?.username ?? null, avatar_path: p?.avatar_path ?? null,
-        color: p?.color ?? '#F25A1E',
+        color: p?.color ?? '#E85002',
         // Профиль целиком читается только при общем чате — значит, общий чат есть.
         is_contact: !!p?.created_at, verified: !!p?.verified,
       },

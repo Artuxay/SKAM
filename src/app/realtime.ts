@@ -3,10 +3,12 @@ import type { RealtimeChannel, RealtimeChannelOptions } from '@supabase/supabase
 import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
 import type { Call, CallMember, CallSignal, Chat, KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
 import {
-  S, addReaction, bumpChat, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
+  S, addReaction, bumpChat, chatMuted, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
   putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
 } from './store';
 import { loadLayout } from './layout';
+import { loadPrefs, notifyPrefs } from './prefs';
+import { chime, incoming as notifyIncoming } from './notify';
 import { loadNicknames } from './nicks';
 import * as e2e from './e2e';
 import * as calls from './calls';
@@ -78,6 +80,7 @@ function onMessageReady(m: Msg): void {
   if (isNew && newer && m.user_id !== meId() && !m.deleted_at
       && ts(m.created_at) > ts(c.last_read_at) && S.visibleChat() !== m.chat_id) {
     c.unread += 1;
+    notifyIncoming(m);
   }
   bumpChat(m);
   if (m.user_id && S.typing.delete(m.user_id)) { S.typingWhat.delete(m.user_id); emit('head'); }
@@ -180,8 +183,12 @@ async function resync(withProfiles = false): Promise<void> {
   if (resyncing) return;
   resyncing = true;
   try {
+    const before = new Map([...S.chats.values()].map((c) => [c.id, c.unread]));
     await loadChats();
-    // Папки, закреплённые и ники могли поменять на другом устройстве (не чаще раза в 15 секунд).
+    // Без живого соединения новые сообщения приходят опросом — звук, если где-то прибавилось непрочитанных.
+    if (!S.live && notifyPrefs().sound && [...S.chats.values()].some((c) => c.unread > (before.get(c.id) ?? 0) && !chatMuted(c.id))) chime();
+    // Папки, закреплённые, ники, блокировки и «без звука» могли поменять на другом устройстве (не чаще раза в 15 секунд).
+    void loadPrefs().catch(() => {});
     void loadLayout().catch(() => {});
     void loadNicknames().catch(() => {});
     if (S.cur && S.chats.has(S.cur)) await loadFeed(S.cur, true);

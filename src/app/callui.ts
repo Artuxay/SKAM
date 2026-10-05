@@ -2,7 +2,7 @@
 // подключена» внизу слева, окно входящего звонка, записи о звонках в ленте и настройки устройств.
 import type { ActiveCall, CallMemberInfo, MyChat } from '../lib/database.types';
 import { $, ICONS, button, closeDialog, el, html, lsGet, lsSet, openDialog, plural, timeLabel, toast, wideMQ } from '../lib/dom';
-import { S, meId, ts, type Msg } from './store';
+import { S, meId, peerBlocked, ts, type Msg } from './store';
 import * as calls from './calls';
 import { C } from './calls';
 import * as snd from './sounds';
@@ -34,7 +34,8 @@ const localStreams = new Map<string, MediaStream>();
 export const CALL_KINDS = new Set(['direct', 'group']);
 
 export function canCallIn(c: MyChat | null | undefined): boolean {
-  return !!c && CALL_KINDS.has(c.kind) && calls.canCall() && (c.kind !== 'direct' || !!c.peer_id);
+  // С заблокированным не звонят (и он нам — тоже: это проверяет сервер).
+  return !!c && CALL_KINDS.has(c.kind) && calls.canCall() && (c.kind !== 'direct' || !!c.peer_id) && !peerBlocked(c);
 }
 
 // ---------------------------------------------------------------------------

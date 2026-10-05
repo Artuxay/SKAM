@@ -91,18 +91,18 @@ const page = ({ title, meta, toc, body }, other) => `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(title)}</title>
 <meta name="description" content="${esc(title)}">
-<meta name="theme-color" content="#E9E2D5" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#070708" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#EEEEEE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="./fonts/fonts.css">
 <script>
   try { var t = localStorage.getItem('skam:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
 <style>
-:root{--paper:#E9E2D5;--card:#FFFCF7;--text:#0E0E10;--muted:#6E685E;--line:#DCD4C6;--accent-text:#B5400C;--raised:#EDE6DA;
+:root{--paper:#EEEEEE;--card:#FFFFFF;--text:#000000;--muted:#646464;--line:#E6E6E6;--accent-text:#B53A00;--raised:#F2F2F2;
   --font:"Onest",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;--display:"Unbounded","Arial Black",Arial,sans-serif;color-scheme:light}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--paper:#070708;--card:#1C1C20;--text:#F4EFE6;--muted:#9C968B;--line:#2A2A2E;--accent-text:#FF8C50;--raised:#151517;color-scheme:dark}}
-:root[data-theme="dark"]{--paper:#070708;--card:#1C1C20;--text:#F4EFE6;--muted:#9C968B;--line:#2A2A2E;--accent-text:#FF8C50;--raised:#151517;color-scheme:dark}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--paper:#000000;--card:#0E0E0E;--text:#F9F9F9;--muted:#A7A7A7;--line:#262626;--accent-text:#FF7A2E;--raised:#1A1A1A;color-scheme:dark}}
+:root[data-theme="dark"]{--paper:#000000;--card:#0E0E0E;--text:#F9F9F9;--muted:#A7A7A7;--line:#262626;--accent-text:#FF7A2E;--raised:#1A1A1A;color-scheme:dark}
 *,*::before,*::after{box-sizing:border-box}
 html{background:var(--paper);scroll-padding-top:16px}
 body{margin:0;background:var(--paper);color:var(--text);font:15.5px/1.55 var(--font);-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
@@ -135,7 +135,7 @@ footer{max-width:820px;margin:0 auto 32px;padding:0 16px;color:var(--muted);font
 <body>
 <header class="top">
   <a class="brand" href="./" aria-label="Открыть СКАМ">
-    <svg viewBox="0 0 200 200" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFAB1A"/><stop offset=".5" stop-color="#F25A1E"/><stop offset=".9" stop-color="#A8B429"/><stop offset="1" stop-color="#9CC02A"/></linearGradient></defs><rect width="200" height="200" rx="46" fill="url(#g)"/><svg x="54.3" y="50.3" width="91.7" height="100.1" viewBox="-1 -1 131 143"><path fill="#0E0E10" fill-rule="evenodd" d="M9.84 98.75A64.5 64.5 0 1 1 39.9 124.1L0.5 140.5Z M34 64.5A30.5 30.5 0 1 0 95 64.5A30.5 30.5 0 1 0 34 64.5Z"/></svg></svg>
+    <svg viewBox="0 0 200 200" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFAB1A"/><stop offset=".5" stop-color="#E85002"/><stop offset="1" stop-color="#66EA1B"/></linearGradient></defs><rect width="200" height="200" rx="46" fill="url(#g)"/><svg x="54.3" y="50.3" width="91.7" height="100.1" viewBox="-1 -1 131 143"><path fill="#000" fill-rule="evenodd" d="M9.84 98.75A64.5 64.5 0 1 1 39.9 124.1L0.5 140.5Z M34 64.5A30.5 30.5 0 1 0 95 64.5A30.5 30.5 0 1 0 34 64.5Z"/></svg></svg>
     СКАМ
   </a>
   <a class="other" href="./${other.href}">${esc(other.label)}</a>
