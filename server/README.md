@@ -1,6 +1,6 @@
 # Сервер СКАМ
 
-С версии 1.5.0 СКАМ работает на своём сервере в России: VDS Selectel в Москве (4 vCPU, 8 ГБ, 80 ГБ NVMe, Ubuntu 24.04). На нём self-hosted Supabase в Docker (Postgres 17, Auth, Storage, Realtime, Edge Functions, Studio) за Caddy с сертификатами Let's Encrypt.
+С версии 0.3.0 (до новой нумерации — 1.5.0) СКАМ работает на своём сервере в России: VDS Selectel в Москве (4 vCPU, 8 ГБ, 80 ГБ NVMe, Ubuntu 24.04). На нём self-hosted Supabase в Docker (Postgres 17, Auth, Storage, Realtime, Edge Functions, Studio) за Caddy с сертификатами Let's Encrypt.
 
 | Адрес | Что там |
 | --- | --- |
@@ -33,7 +33,7 @@
 - [`autodeploy.sh`](autodeploy.sh) — cron раз в 5 минут (`/etc/cron.d/skam-deploy`): если в `main` новый коммит, запускает `build.sh`. Упавшая сборка повторно не запускается, пока не появится следующий коммит. Журнал — `/opt/skam-test/deploy.log`.
 - [`backup.sh`](backup.sh) — cron каждую ночь в 03:30 по Москве (`/etc/cron.d/skam-backup`): `pg_dump -Fc` всей базы и роли (`pg_dumpall --globals-only`) от `supabase_admin`, архив файлов Storage, `.env`, наш compose и Caddyfile. Проверяет, что дамп читается. Хранит 14 дней. Копии лежат на том же сервере — копию вне сервера стоит добавить отдельно.
 - [`smtp.sh`](smtp.sh) — спрашивает логин и пароль почтового сервиса и записывает `SMTP_*` в `.env` (логин — число из поля Login, пароль — Pass (API-key)).
-- [`managed.sql`](managed.sql) — триггер `on_auth_user_created` и 18 политик Storage и Realtime (с 1.6.0 — и три политики бакета историй `stories`). `supabase db dump` их не переносит, потому что схемы `auth`, `storage`, `realtime` служебные, а у `postgres` на self-hosted нет прав создавать политики на `storage.objects`. Запускается от `supabase_admin`, можно повторять.
+- [`managed.sql`](managed.sql) — триггер `on_auth_user_created` и 18 политик Storage и Realtime (с 0.3.1 — и три политики бакета историй `stories`). `supabase db dump` их не переносит, потому что схемы `auth`, `storage`, `realtime` служебные, а у `postgres` на self-hosted нет прав создавать политики на `storage.objects`. Запускается от `supabase_admin`, можно повторять.
 - [`apply-managed.sh`](apply-managed.sh) — применяет `managed.sql` от `supabase_admin` и ставит уборку историй (cron каждые 15 минут). Запуск после выкладки: `sh /opt/skam-test/src/server/apply-managed.sh`.
 - [`stories-cleanup.sh`](stories-cleanup.sh) — уборка историй: `private.stories_gc()` удаляет истории старше суток (кроме закреплённых в профиле) и переносит пути их файлов в `private.story_trash`, а скрипт стирает эти файлы через API Storage сервисным ключом из `.env` (`SERVICE_ROLE_KEY`). Журнал — `/opt/skam-stories/cleanup.log` (пишет только когда что-то убрал).
 - [`copy-files.mjs`](copy-files.mjs) — копирует файлы Storage из облака на сервер через API (`x-upsert`).

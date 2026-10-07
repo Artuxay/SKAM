@@ -22,5 +22,5 @@ interface ImportMeta {
 
 /** Метка сборки (дата и коммит) — подставляет Vite, см. vite.config.ts. */
 declare const __SKAM_BUILD__: string;
-/** Версия СКАМ из package.json, например 1.0.0. */
+/** Версия СКАМ из package.json, например 0.3.2 (релиз.неделя.день). */
 declare const __SKAM_VERSION__: string;

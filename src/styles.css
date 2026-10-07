@@ -1,5 +1,5 @@
 :root{
-  /* 1.6.0: чёрный, белый и оранжевый; янтарь и зелёный — только акценты (звёзды, «в сети»). */
+  /* 0.3.1: чёрный, белый и оранжевый; янтарь и зелёный — только акценты (звёзды, «в сети»). */
   --paper:#EEEEEE;
   --surface:#FFFFFF;
   --raised:#F2F2F2;
@@ -456,8 +456,7 @@ dialog .dlg-head h2{margin:0}
 .meta.pill .tick,.meta.pill .tick.read{color:#fff}
 .row:not(.mine) .meta.pill .tick{display:none}
 .sticker-img{display:block;width:168px;height:168px;object-fit:contain;-webkit-touch-callout:none;user-select:none;-webkit-user-drag:none}
-.sticker-img.pop{animation:stickerPop .55s cubic-bezier(.2,.9,.25,1.35) both}
-@keyframes stickerPop{0%{transform:scale(.4) rotate(-8deg);opacity:0}60%{transform:scale(1.06) rotate(2deg);opacity:1}100%{transform:none}}
+/* «прыжок» только что отправленного стикера — в app.ts (popSticker), не CSS: перерисовка ленты перезапускала CSS-анимацию */
 .sticker-missing{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:8px 13px}
 .unsupported{color:var(--muted);font-style:italic}
 
@@ -517,7 +516,7 @@ dialog .dlg-head h2{margin:0}
   .rec-time{min-width:56px}
 }
 @media (prefers-reduced-motion: reduce){
-  .sticker-img.pop,.rec-lock.on,.rec-dot,.sticker-panel,.sticker-suggest,.rec-stage{animation:none}
+  .rec-lock.on,.rec-dot,.sticker-panel,.sticker-suggest,.rec-stage{animation:none}
 }
 
 /* ======================================================================
@@ -1171,7 +1170,7 @@ button.spk-item:hover{background:var(--raised)}
 .btn-ic svg{flex:none}
 
 /* ======================================================================
-   1.1.0: поиск над списком, папки с чатами, закреплённые чаты
+   0.2.1: поиск над списком, папки с чатами, закреплённые чаты
    ====================================================================== */
 /* ---------- поиск ---------- */
 .side-search{position:relative;display:flex;align-items:center;margin:0 12px 10px}
@@ -1316,7 +1315,7 @@ button.fs-open:hover{background:var(--raised)}
 .bio-count.low{color:var(--danger)}
 
 /* ======================================================================
-   1.6.0: новый дизайн — панели, сворачивание списка, официальные чаты
+   0.3.1: новый дизайн — панели, сворачивание списка, официальные чаты
    ====================================================================== */
 :root{--ring-seen:#C4C4C4}
 :root[data-theme="dark"]{--ring-seen:#3A3A3A}
@@ -1391,7 +1390,7 @@ button.fs-open:hover{background:var(--raised)}
 .foot-btn:hover{background:var(--surface)}
 
 /* ======================================================================
-   1.6.0: истории
+   0.3.1: истории
    ====================================================================== */
 .stories{height:100px;display:flex;align-items:center;gap:2px;padding:0 10px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;flex:none;overscroll-behavior-x:contain}
 .stories::-webkit-scrollbar{display:none}
@@ -1536,7 +1535,7 @@ dialog.story-new{width:min(440px,calc(100% - 24px))}
   mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 3px))}
 
 /* ======================================================================
-   1.6.0: окна-листы (мой профиль, карточка человека, новый чат), меню «⋮»,
+   0.3.1: окна-листы (мой профиль, карточка человека, новый чат), меню «⋮»,
    поиск по чату, «Без звука», блокировка, вкладки по типу, поле ввода со смайликом
    ====================================================================== */
 :root{--sheet:rgba(255,255,255,.92);--mb:#C4C4C4}

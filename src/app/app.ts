@@ -1159,9 +1159,31 @@ function reactionCounts(m: Msg) {
   }).filter((x) => x.n > 0);
 }
 
-/** Только что пришедший стикер «подпрыгивает», старые — нет. */
-function fresh(m: Msg): boolean {
-  return !!m.pending || Date.now() - ts(m.created_at) < 15_000;
+/**
+ * «Подпрыгивает» только стикер, который вы только что отправили с этого устройства, и только один раз.
+ * Полученные и старые стикеры — неподвижны.
+ *
+ * Web Animations, а не CSS-класс: лента перерисовывается целиком (новое сообщение, реакция, прочтение,
+ * подтверждение отправки), картинка стикера при этом вынимается и вставляется обратно — и CSS-анимация
+ * каждый раз начиналась заново. Анимация из element.animate() от перестановки не перезапускается.
+ */
+const STICKER_POP: Keyframe[] = [
+  { transform: 'scale(.4) rotate(-8deg)', opacity: 0 },
+  { transform: 'scale(1.06) rotate(2deg)', opacity: 1, offset: 0.6 },
+  { transform: 'none', opacity: 1 },
+];
+const stickerMotionMQ = window.matchMedia('(prefers-reduced-motion: reduce)');
+/** Стикеры, которые уже подпрыгнули, — чтобы не повторить, если ленту собрали заново до подтверждения отправки. */
+const poppedStickers = new Set<string>();
+
+function popSticker(img: HTMLImageElement, id: string): void {
+  if (poppedStickers.has(id) || stickerMotionMQ.matches || typeof img.animate !== 'function') return;
+  poppedStickers.add(id);
+  if (poppedStickers.size > 200) poppedStickers.delete(poppedStickers.values().next().value!);
+  const run = () => { img.animate(STICKER_POP, { duration: 550, easing: 'cubic-bezier(.2,.9,.25,1.35)', fill: 'backwards' }); };
+  // Картинка ещё грузится — прыжок начнётся, когда её станет видно.
+  if (img.complete) run();
+  else img.addEventListener('load', run, { once: true });
 }
 
 /** Стикер в ленте. Нажатие открывает его набор (чужой неофициальный — с кнопкой «Добавить»). */
@@ -1173,7 +1195,7 @@ function stickerEl(m: Msg): HTMLElement {
     const b = button('sticker-open', null, (ev) => { ev.stopPropagation(); openStickerPack(s.pack); });
     b.dataset.ref = s.ref;
     b.setAttribute('aria-label', `Стикер ${s.emoji} — открыть набор`);
-    const img = el('img', `sticker-img${fresh(m) ? ' pop' : ''}`);
+    const img = el('img', 'sticker-img');
     img.src = stickerUrl(s.ref);
     img.alt = `Стикер «${s.label}» ${s.emoji}`;
     img.title = s.label;
@@ -1183,6 +1205,7 @@ function stickerEl(m: Msg): HTMLElement {
     // Набор удалили — вместо картинки подпись «👋 Стикер».
     img.addEventListener('error', () => b.replaceChildren(el('span', 'sticker-missing', kindText('sticker', m.body))), { once: true });
     b.append(img);
+    if (m.pending && m.user_id === meId()) popSticker(img, m.id);
     box = b;
     U.stickerImgs.set(m.id, box);
   }
