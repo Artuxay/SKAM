@@ -134,3 +134,106 @@ export function grpNote(text: string | Node): HTMLElement {
   p.append(text);
   return p;
 }
+
+// ---------------------------------------------------------------------------
+// Строки с полями: список устройств, ползунок, выбор из нескольких
+// ---------------------------------------------------------------------------
+
+export type Opt<T> = { value: T; label: string; sub?: string };
+
+/** Подпись и выпадающий список на всю ширину строки (устройства ввода и вывода). */
+export function selectRow(label: string, opts: Opt<string>[], value: string, fn: (v: string) => void,
+  o: { icon?: IconName; id?: string; disabled?: boolean } = {}): HTMLElement {
+  const r = el('div', 'lr fld');
+  if (o.icon) {
+    const ic = el('span', 'lr-ic');
+    ic.append(html(ICONS[o.icon]));
+    r.append(ic);
+  }
+  const box = el('div', 'fld-box');
+  const l = el('label', 'fld-l', label);
+  const sel = el('select', 'fld-sel');
+  if (o.id) { sel.id = o.id; l.htmlFor = o.id; }
+  opts.forEach((x) => {
+    const op = el('option', null, x.label);
+    op.value = x.value;
+    sel.append(op);
+  });
+  sel.value = opts.some((x) => x.value === value) ? value : opts[0]?.value ?? '';
+  sel.disabled = !!o.disabled || !opts.length;
+  sel.addEventListener('change', () => fn(sel.value));
+  box.append(l, sel);
+  r.append(box);
+  return r;
+}
+
+/** Ползунок с подписью и значением справа. */
+export function rangeRow(label: string, min: number, max: number, value: number, fmt: (v: number) => string,
+  fn: (v: number) => void, o: { icon?: IconName; id?: string; step?: number } = {}): HTMLElement {
+  const r = el('div', 'lr fld');
+  if (o.icon) {
+    const ic = el('span', 'lr-ic');
+    ic.append(html(ICONS[o.icon]));
+    r.append(ic);
+  }
+  const box = el('div', 'fld-box');
+  const top = el('div', 'fld-top');
+  const l = el('label', 'fld-l', label);
+  const val = el('span', 'fld-val', fmt(value));
+  top.append(l, val);
+  const range = el('input', 'fld-range');
+  range.type = 'range';
+  range.min = String(min);
+  range.max = String(max);
+  range.step = String(o.step ?? 1);
+  range.value = String(value);
+  if (o.id) { range.id = o.id; l.htmlFor = o.id; }
+  range.addEventListener('input', () => {
+    val.textContent = fmt(Number(range.value));
+    fn(Number(range.value));
+  });
+  box.append(top, range);
+  r.append(box);
+  return r;
+}
+
+/** Выбор одного из нескольких вариантов в ряд («720p · 1080p · Исходное»). */
+export function choiceRow<T extends string | number>(label: string, opts: Opt<T>[], value: T, fn: (v: T) => void): HTMLElement {
+  const r = el('div', 'lr fld');
+  const box = el('div', 'fld-box');
+  box.append(el('span', 'fld-l', label));
+  const seg = el('div', 'choice');
+  seg.setAttribute('role', 'radiogroup');
+  seg.setAttribute('aria-label', label);
+  opts.forEach((x) => {
+    const b = button('opt', x.label, () => {
+      seg.querySelectorAll('.opt').forEach((n) => n.setAttribute('aria-checked', 'false'));
+      b.setAttribute('aria-checked', 'true');
+      fn(x.value);
+    });
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(x.value === value));
+    if (x.sub) b.title = x.sub;
+    seg.append(b);
+  });
+  box.append(seg);
+  r.append(box);
+  return r;
+}
+
+/** Строка-«радиокнопка»: один из режимов (голосовая активность / рация). */
+export function radioRow(label: string, sub: string | null, on: boolean, fn: () => void, icon?: IconName): HTMLButtonElement {
+  const r = button('lr rd-row', null, fn);
+  r.setAttribute('role', 'radio');
+  r.setAttribute('aria-checked', String(on));
+  if (icon) {
+    const ic = el('span', 'lr-ic');
+    ic.append(html(ICONS[icon]));
+    r.append(ic);
+  }
+  const text = el('span', 'lr-t');
+  text.append(el('span', 'lr-l', label));
+  if (sub) text.append(el('span', 'lr-sub', sub));
+  r.append(text, el('span', `rd${on ? ' on' : ''}`));
+  return r;
+}

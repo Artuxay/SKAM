@@ -36,7 +36,7 @@ import * as e2e from './e2e';
 import { MIN_PASSWORD, mountKeySetup, mountKeyUnlock, mountNoCrypto } from './keysetup';
 import { MAX_ALBUM, cachedUrl, dropMediaUrls, thumbUrl, type Prepared } from './attach';
 import * as calls from './calls';
-import { call, callPreview, callRow, mountCallUI, renderCallBtns, renderCalls } from './callui';
+import { call, callPreview, callRow, mountCallUI, openCallSettings, renderCallBtns, renderCalls } from './callui';
 import { openRate, openSupport, ratingShort, resetFeedback } from './feedback';
 import {
   L, activeKind, folderById, folderIcon, isPinned, listChats, loadLayout, pinChat, pinsOf, reorderPins, resetLayout, setChatInFolder,
@@ -211,7 +211,8 @@ const SHELL = `
 <dialog id="mediaDlg" class="media-dlg" aria-label="Отправка файлов"></dialog>
 <dialog id="viewer" class="viewer" aria-label="Просмотр"></dialog>
 <dialog id="fwdDlg" class="fwd-dlg" aria-label="Переслать"></dialog>
-<dialog id="callDlg" aria-label="Настройки звонка"></dialog>
+<dialog id="callDlg" class="sheet call-set" aria-label="Голос и видео"></dialog>
+<dialog id="shareDlg" class="sheet share-set" aria-label="Показать экран"></dialog>
 <dialog id="supportDlg" class="support-dlg" aria-label="Поддержка"></dialog>
 <dialog id="rateDlg" class="rate-dlg" aria-label="Оценить СКАМ"></dialog>
 <dialog id="stickerDlg" class="sticker-dlg" aria-label="Стикеры"></dialog>
@@ -2884,6 +2885,7 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
     grp(
       row({ icon: 'lock', label: 'Конфиденциальность', em: S.blocks.size ? `${S.blocks.size} в блоке` : null, chev: true, fn: () => profGo('privacy') }),
       row({ icon: 'bell', label: 'Уведомления', em: notifyState(), chev: true, fn: () => profGo('notify') }),
+      row({ icon: 'micOn', label: 'Голос и видео', chev: true, fn: () => { closeDialog(dlg); openCallSettings(); } }),
       row({ icon: 'help', label: 'Поддержка', chev: true, fn: () => { closeDialog(dlg); openSupport(); } }),
       row({ icon: 'star', label: 'Оценить СКАМ', em: avg, chev: true, fn: () => { closeDialog(dlg); openRate(); } }),
       row({ icon: 'info', label: 'О приложении', em: __SKAM_VERSION__, chev: true, fn: () => profGo('about') }),

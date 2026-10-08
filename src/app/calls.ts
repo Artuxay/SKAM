@@ -38,6 +38,37 @@ export type Flags = { muted: boolean; deafened: boolean; camera: boolean; screen
 
 type Meter = { an: AnalyserNode; src: MediaStreamAudioSourceNode; buf: Float32Array<ArrayBuffer> };
 
+/**
+ * Наш микрофон: устройство → громкость → «ворота» → дорожка, которая уходит собеседникам.
+ * Ворота открываются голосом выше порога (или клавишей рации). Дорожка `out` не меняется,
+ * даже если сменить микрофон, поэтому переговоры заново не нужны.
+ */
+export type Mic = {
+  raw: MediaStreamTrack;
+  out: MediaStreamTrack;
+  ctx: AudioContext | null;
+  src: MediaStreamAudioSourceNode | null;
+  gain: GainNode | null;
+  an: AnalyserNode | null;
+  delay: DelayNode | null;
+  gate: GainNode | null;
+  dst: MediaStreamAudioDestinationNode | null;
+  monitor: GainNode | null;
+  buf: Float32Array<ArrayBuffer> | null;
+  /** Ворота открыты: сейчас нас слышат. */
+  open: boolean;
+  voiceAt: number;
+  /** Громкость сейчас (RMS, после усиления, до ворот). */
+  lvl: number;
+  /** Оценка шума в комнате: самое тихое за последние секунды. */
+  floor: number;
+  mins: number[];
+  winMin: number;
+  winAt: number;
+  timer: number;
+  dead: boolean;
+};
+
 export type Peer = {
   uid: string;
   pc: RTCPeerConnection;
@@ -71,9 +102,12 @@ export type Session = {
   chatId: string;
   key: e2e.SignalKey;
   mic: MediaStreamTrack | null;
+  pipe: Mic | null;
   cam: MediaStreamTrack | null;
   scr: MediaStreamTrack | null;
   scrAudio: MediaStreamTrack | null;
+  /** Как мы сейчас показываем экран. */
+  share: ShareOpts | null;
   flags: Flags;
   mutedBeforeDeafen: boolean;
   peers: Map<string, Peer>;
@@ -83,7 +117,6 @@ export type Session = {
   connectedAt: number | null;
   hadCompany: boolean;
   aloneSince: number | null;
-  meter: Meter | null;
   speaking: boolean;
   loudAt: number;
   processed: Set<number>;
@@ -129,31 +162,88 @@ export function serverNow(): number {
 }
 
 // ---------------------------------------------------------------------------
-// Настройки: устройства, громкость, шумоподавление
+// Настройки: устройства, громкость, чувствительность, рация, шумоподавление
 // ---------------------------------------------------------------------------
 
-const pref = {
-  mic: () => lsGet('skam:call:mic'),
-  cam: () => lsGet('skam:call:cam'),
-  out: () => lsGet('skam:call:out'),
-  ns: () => lsGet('skam:call:ns') !== '0',
-};
+export type InputMode = 'vad' | 'ptt';
+export type ShareRes = '720' | '1080' | 'src';
+export type ShareFps = 15 | 30 | 60;
+/** Как показывать экран: разрешение, частота кадров, со звуком ли. */
+export type ShareOpts = { res: ShareRes; fps: ShareFps; audio: boolean };
 
-export function noiseSuppression(): boolean {
-  return pref.ns();
+function num(key: string, def: number, min: number, max: number): number {
+  const raw = lsGet(key);
+  if (raw === null) return def;
+  const v = Number(raw);
+  return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def;
 }
 
-function micConstraints(deviceId = pref.mic()): MediaTrackConstraints {
-  const ns = pref.ns();
+function loadShare(): ShareOpts {
+  const def: ShareOpts = { res: '1080', fps: 30, audio: true };
+  try {
+    const v = JSON.parse(lsGet('skam:call:share') ?? 'null') as Partial<ShareOpts> | null;
+    if (!v) return def;
+    return {
+      res: v.res === '720' || v.res === 'src' ? v.res : '1080',
+      fps: v.fps === 15 || v.fps === 60 ? v.fps : 30,
+      audio: v.audio !== false,
+    };
+  } catch {
+    return def;
+  }
+}
+
+/** Настройки звонка на этом устройстве. Читаем один раз, дальше держим в памяти (микрофон проверяется 40 раз в секунду). */
+const cfg = {
+  mic: lsGet('skam:call:mic'),
+  cam: lsGet('skam:call:cam'),
+  out: lsGet('skam:call:out'),
+  ns: lsGet('skam:call:ns') !== '0',
+  ec: lsGet('skam:call:ec') !== '0',
+  agc: lsGet('skam:call:agc') !== '0',
+  mode: (lsGet('skam:call:mode') === 'ptt' ? 'ptt' : 'vad') as InputMode,
+  /** Клавиша рации (KeyboardEvent.code). */
+  ptt: lsGet('skam:call:ptt') || 'KeyV',
+  /** Чувствительность: null — подбирается сама, число 0–100 — порог вручную. */
+  sens: lsGet('skam:call:sens') === null || lsGet('skam:call:sens') === 'auto' ? (null as number | null) : num('skam:call:sens', 30, 0, 100),
+  /** Громкость микрофона, %. */
+  gain: num('skam:call:gain', 100, 0, 200),
+  /** Общая громкость звонка, %. */
+  outVol: num('skam:call:outvol', 100, 0, 100),
+  share: loadShare(),
+};
+
+export type CallSettings = {
+  mode: InputMode;
+  ptt: string;
+  /** null — автоматически. */
+  sens: number | null;
+  gain: number;
+  outVol: number;
+  ns: boolean;
+  ec: boolean;
+  agc: boolean;
+};
+
+export function settings(): CallSettings {
+  return { mode: cfg.mode, ptt: cfg.ptt, sens: cfg.sens, gain: cfg.gain, outVol: cfg.outVol, ns: cfg.ns, ec: cfg.ec, agc: cfg.agc };
+}
+
+export function noiseSuppression(): boolean {
+  return cfg.ns;
+}
+
+function micConstraints(deviceId = cfg.mic): MediaTrackConstraints {
   return {
     deviceId: deviceId ? { ideal: deviceId } : undefined,
-    echoCancellation: true,
-    noiseSuppression: ns,
-    autoGainControl: true,
+    echoCancellation: cfg.ec,
+    noiseSuppression: cfg.ns,
+    autoGainControl: cfg.agc,
+    channelCount: { ideal: 1 },
   };
 }
 
-function camConstraints(deviceId = pref.cam()): MediaTrackConstraints {
+function camConstraints(deviceId = cfg.cam): MediaTrackConstraints {
   return {
     deviceId: deviceId ? { ideal: deviceId } : undefined,
     width: { ideal: 1280 },
@@ -167,8 +257,23 @@ function volumeOf(uid: string): number {
   return Number.isFinite(v) && v > 0 ? Math.min(1, v) : 1;
 }
 
+function streamVolumeOf(uid: string): number {
+  const v = Number(lsGet(`skam:call:svol:${uid}`));
+  return Number.isFinite(v) && v > 0 ? Math.min(1, v) : 1;
+}
+
 export function peerVolume(uid: string): number {
   return volumeOf(uid);
+}
+
+/** Громкость звука показа экрана у этого человека (отдельно от его голоса). */
+export function streamVolume(uid: string): number {
+  return streamVolumeOf(uid);
+}
+
+function applyVolumes(p: Peer): void {
+  p.audio.volume = Math.min(1, volumeOf(p.uid) * (cfg.outVol / 100));
+  p.audio2.volume = Math.min(1, streamVolumeOf(p.uid) * (cfg.outVol / 100));
 }
 
 /** Громкость собеседника (0–100 %), запоминается. */
@@ -176,22 +281,65 @@ export function setPeerVolume(uid: string, v: number): void {
   const vol = Math.max(0, Math.min(1, v));
   lsSet(`skam:call:vol:${uid}`, vol >= 0.999 ? null : String(vol || 0.0001));
   const p = C.session?.peers.get(uid);
-  if (p) { p.audio.volume = vol; p.audio2.volume = vol; }
+  if (p) applyVolumes(p);
+}
+
+/** Громкость звука показа экрана (0–100 %), запоминается. */
+export function setStreamVolume(uid: string, v: number): void {
+  const vol = Math.max(0, Math.min(1, v));
+  lsSet(`skam:call:svol:${uid}`, vol >= 0.999 ? null : String(vol || 0.0001));
+  const p = C.session?.peers.get(uid);
+  if (p) applyVolumes(p);
+}
+
+/** Общая громкость звонка (0–100 %): все голоса и звук экрана сразу. */
+export function setOutputVolume(percent: number): void {
+  cfg.outVol = Math.round(Math.max(0, Math.min(100, percent)));
+  lsSet('skam:call:outvol', cfg.outVol >= 100 ? null : String(cfg.outVol));
+  C.session?.peers.forEach(applyVolumes);
 }
 
 export type DeviceList = { mics: MediaDeviceInfo[]; cams: MediaDeviceInfo[]; outs: MediaDeviceInfo[] };
 
 export async function listDevices(): Promise<DeviceList> {
   const all = await navigator.mediaDevices.enumerateDevices().catch(() => [] as MediaDeviceInfo[]);
+  // «default» и «communications» в Chrome дублируют настоящие устройства — «Как в системе» уже есть в списке.
+  const real = (d: MediaDeviceInfo) => d.deviceId !== 'default' && d.deviceId !== 'communications';
   return {
-    mics: all.filter((d) => d.kind === 'audioinput'),
+    mics: all.filter((d) => d.kind === 'audioinput' && real(d)),
     cams: all.filter((d) => d.kind === 'videoinput'),
-    outs: all.filter((d) => d.kind === 'audiooutput'),
+    outs: all.filter((d) => d.kind === 'audiooutput' && real(d)),
   };
 }
 
 export function chosen(): { mic: string | null; cam: string | null; out: string | null } {
-  return { mic: pref.mic(), cam: pref.cam(), out: pref.out() };
+  return { mic: cfg.mic, cam: cfg.cam, out: cfg.out };
+}
+
+const deviceFns = new Set<() => void>();
+let deviceWatch = false;
+/** Подключили или отключили микрофон, камеру, наушники. */
+export function onDevices(fn: () => void): () => void {
+  deviceFns.add(fn);
+  if (!deviceWatch && navigator.mediaDevices?.addEventListener) {
+    deviceWatch = true;
+    navigator.mediaDevices.addEventListener('devicechange', () => deviceFns.forEach((f) => f()));
+  }
+  return () => deviceFns.delete(fn);
+}
+
+/**
+ * Браузер скрывает названия устройств, пока не получен доступ. Просим его один раз
+ * (и сразу отпускаем), чтобы в списке были «Микрофон HyperX», а не «Микрофон 1».
+ */
+export async function unlockLabels(kind: 'mic' | 'cam'): Promise<boolean> {
+  try {
+    const st = await navigator.mediaDevices.getUserMedia(kind === 'mic' ? { audio: true } : { video: true });
+    st.getTracks().forEach((t) => t.stop());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function canPickOutput(): boolean {
@@ -386,6 +534,7 @@ export function startCalls(): void {
   // Раз в секунду: входящий перестаёт звонить через 45 секунд, гудки — когда никто не ответил.
   tick = window.setInterval(updateTones, 1000);
   window.addEventListener('pagehide', onPageHide);
+  watchKeys(true);
 }
 
 export function stopCalls(): void {
@@ -402,6 +551,8 @@ export function stopCalls(): void {
   C.dismissed.clear();
   C.joining = null;
   window.removeEventListener('pagehide', onPageHide);
+  watchKeys(false);
+  ptt.down = false;
 }
 
 function stopTimers(): void {
@@ -482,24 +633,29 @@ function mediaError(e: unknown, what: 'mic' | 'cam' | 'screen'): string {
   return what === 'mic' ? 'Не получилось включить микрофон.' : what === 'cam' ? 'Не получилось включить камеру.' : 'Не получилось показать экран.';
 }
 
-async function getMic(deviceId?: string | null): Promise<MediaStreamTrack> {
-  const st = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ?? pref.mic()) });
+async function getRawMic(deviceId?: string | null): Promise<MediaStreamTrack> {
+  const st = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ?? cfg.mic) });
   return st.getAudioTracks()[0];
 }
 
+/** Микрофон с обработкой (громкость, ворота), готовый к отправке. */
+async function getMic(deviceId?: string | null): Promise<Mic> {
+  return makeMic(await getRawMic(deviceId));
+}
+
 async function getCam(deviceId?: string | null): Promise<MediaStreamTrack> {
-  const st = await navigator.mediaDevices.getUserMedia({ video: camConstraints(deviceId ?? pref.cam()) });
+  const st = await navigator.mediaDevices.getUserMedia({ video: camConstraints(deviceId ?? cfg.cam) });
   const t = st.getVideoTracks()[0];
   t.contentHint = 'motion';
   return t;
 }
 
-type Media = { mic: MediaStreamTrack | null; cam: MediaStreamTrack | null };
+type Media = { mic: Mic | null; cam: MediaStreamTrack | null };
 
 /** Микрофон (и камера): без микрофона всё равно пускаем в звонок — слушать. */
 async function openMedia(video: boolean): Promise<Media> {
   if (!canCall()) throw new CallError('Этот браузер не умеет звонить. Откройте СКАМ в Chrome, Edge, Firefox или Safari.');
-  let mic: MediaStreamTrack | null = null;
+  let mic: Mic | null = null;
   let cam: MediaStreamTrack | null = null;
   try { mic = await getMic(); } catch (e) { const t = mediaError(e, 'mic'); if (t) notice(`${t} Вы в звонке без микрофона.`); }
   if (video) {
@@ -509,7 +665,7 @@ async function openMedia(video: boolean): Promise<Media> {
 }
 
 function stopMedia(m: Media): void {
-  m.mic?.stop();
+  if (m.mic) dropMic(m.mic);
   m.cam?.stop();
 }
 
@@ -573,12 +729,11 @@ export async function joinCall(callId: string, video = false): Promise<void> {
 function begin(callId: string, chatId: string, key: e2e.SignalKey, media: Media): void {
   const s: Session = {
     callId, chatId, key,
-    mic: media.mic, cam: media.cam, scr: null, scrAudio: null,
+    mic: media.mic?.out ?? null, pipe: media.mic, cam: media.cam, scr: null, scrAudio: null, share: null,
     flags: { muted: !media.mic, deafened: false, camera: !!media.cam, screen: false },
     mutedBeforeDeafen: false,
     peers: new Map(), firstSeen: new Map(), early: new Map(),
     startedAt: Date.now(), connectedAt: null, hadCompany: false, aloneSince: null,
-    meter: media.mic ? meter(new MediaStream([media.mic])) : null,
     speaking: false, loudAt: 0,
     processed: new Set(), chain: Promise.resolve(), timers: [],
     lastToken: null, present: new Set(), warnedKey: false,
@@ -591,6 +746,7 @@ function begin(callId: string, chatId: string, key: e2e.SignalKey, media: Media)
     window.setInterval(() => measureSpeaking(s), 120),
     window.setInterval(() => { void measureRtt(s); }, 5000),
   );
+  if (media.mic) watchMic(s, media.mic);
   void heartbeat(s);
   void refreshCalls();
   void pollSignals(s);
@@ -633,9 +789,10 @@ function teardown(s: Session): void {
   clearTimeout(sigTimer);
   clearTimeout(s.pingTimer);
   s.peers.forEach((p) => closePeer(s, p, false));
-  [s.mic, s.cam, s.scr, s.scrAudio].forEach((t) => t?.stop());
-  dropMeter(s.meter);
-  s.meter = null;
+  [s.cam, s.scr, s.scrAudio].forEach((t) => t?.stop());
+  if (s.pipe) dropMic(s.pipe);
+  s.pipe = null;
+  s.mic = null;
   snd.stopTones();
 }
 
@@ -724,12 +881,12 @@ export function toggleMute(): void {
 
 async function retryMic(s: Session): Promise<void> {
   try {
-    const t = await getMic();
-    if (C.session !== s) { t.stop(); return; }
-    s.mic = t;
-    setTrack(s, MIC, t);
-    dropMeter(s.meter);
-    s.meter = meter(new MediaStream([t]));
+    const m = await getMic();
+    if (C.session !== s) { dropMic(m); return; }
+    s.pipe = m;
+    s.mic = m.out;
+    watchMic(s, m);
+    setTrack(s, MIC, m.out);
     s.flags.muted = false;
     stateChanged(s);
   } catch (e) {
@@ -782,28 +939,96 @@ export async function toggleCamera(): Promise<void> {
   }
 }
 
-export async function toggleScreen(): Promise<void> {
+/** Показать экран (или прекратить показ). Без аргумента берутся сохранённые настройки. */
+export async function toggleScreen(opts?: ShareOpts): Promise<void> {
   const s = C.session;
   if (!s) return;
   if (s.scr) { stopScreen(s); return; }
-  if (!canShareScreen()) { notice('На этом устройстве показать экран нельзя — попробуйте с компьютера.'); return; }
+  await startScreen(opts ?? cfg.share);
+}
+
+/** Сохранённые настройки показа экрана. */
+export function shareOpts(): ShareOpts {
+  return { ...cfg.share };
+}
+
+function rememberShare(o: ShareOpts): void {
+  cfg.share = { ...o };
+  lsSet('skam:call:share', JSON.stringify(o));
+}
+
+const SHARE_SIZE: Record<ShareRes, [number, number]> = { '720': [1280, 720], '1080': [1920, 1080], src: [3840, 2160] };
+
+function shareVideo(o: ShareOpts): MediaTrackConstraints {
+  const [w, h] = SHARE_SIZE[o.res];
+  return { frameRate: { ideal: o.fps, max: o.fps }, width: { max: w }, height: { max: h } };
+}
+
+export async function startScreen(opts: ShareOpts): Promise<boolean> {
+  const s = C.session;
+  if (!s || s.scr) return false;
+  if (!canShareScreen()) { notice('На этом устройстве показать экран нельзя — попробуйте с компьютера.'); return false; }
+  rememberShare(opts);
   try {
-    const st = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 } }, audio: true });
-    if (C.session !== s) { st.getTracks().forEach((t) => t.stop()); return; }
+    // Дополнительные поля есть только в Chrome и Edge; остальные браузеры их просто не заметят.
+    const req = {
+      video: shareVideo(opts),
+      audio: opts.audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'include',
+      systemAudio: 'include',
+      suppressLocalAudioPlayback: true,
+    } as MediaStreamConstraints;
+    const st = await navigator.mediaDevices.getDisplayMedia(req);
+    if (C.session !== s) { st.getTracks().forEach((t) => t.stop()); return false; }
     const v = st.getVideoTracks()[0];
-    v.contentHint = 'detail';
+    // Браузер мог дать больше, чем просили (особенно «окно»), — подрежем и частоту кадров.
+    await v.applyConstraints(shareVideo(opts)).catch(() => {});
+    v.contentHint = opts.fps >= 60 ? 'motion' : 'detail';
     s.scr = v;
-    s.scrAudio = st.getAudioTracks()[0] ?? null;
+    s.scrAudio = opts.audio ? st.getAudioTracks()[0] ?? null : null;
+    st.getAudioTracks().forEach((t) => { if (t !== s.scrAudio) t.stop(); });
+    s.share = { ...opts, audio: !!s.scrAudio };
     s.flags.screen = true;
     // «Прекратить показ» в окне браузера.
     v.addEventListener('ended', () => { if (s.scr === v) stopScreen(s); });
     setTrack(s, SCR, v);
     setTrack(s, SCR_AUDIO, s.scrAudio);
     stateChanged(s);
+    if (opts.audio && !s.scrAudio) notice('Показ идёт без звука: браузер не дал звук этого окна. Для звука выберите вкладку или весь экран и отметьте «Поделиться звуком».');
+    return true;
   } catch (e) {
     const m = mediaError(e, 'screen');
     if (m && (e as { name?: string })?.name !== 'NotAllowedError') notice(m);
+    return false;
   }
+}
+
+/** Сменить качество показа на лету (звук уже выбран и меняется только новым показом). */
+export async function changeScreen(opts: Pick<ShareOpts, 'res' | 'fps'>): Promise<void> {
+  const s = C.session;
+  if (!s?.scr || !s.share) return;
+  const next: ShareOpts = { ...s.share, ...opts };
+  rememberShare({ ...next, audio: cfg.share.audio });
+  s.share = next;
+  s.scr.contentHint = next.fps >= 60 ? 'motion' : 'detail';
+  await s.scr.applyConstraints(shareVideo(next)).catch(() => {});
+  tune(s);
+  emit('call');
+}
+
+/** Что сейчас показываем: для строки «Вы показываете экран». */
+export function screenInfo(): { opts: ShareOpts; surface: string; width: number; height: number; fps: number } | null {
+  const s = C.session;
+  if (!s?.scr || !s.share) return null;
+  const st = s.scr.getSettings();
+  return {
+    opts: s.share,
+    surface: (st as { displaySurface?: string }).displaySurface ?? '',
+    width: st.width ?? 0,
+    height: st.height ?? 0,
+    fps: Math.round(st.frameRate ?? 0),
+  };
 }
 
 function stopScreen(s: Session): void {
@@ -811,6 +1036,7 @@ function stopScreen(s: Session): void {
   s.scrAudio?.stop();
   s.scr = null;
   s.scrAudio = null;
+  s.share = null;
   s.flags.screen = false;
   setTrack(s, SCR, null);
   setTrack(s, SCR_AUDIO, null);
@@ -819,28 +1045,35 @@ function stopScreen(s: Session): void {
 
 /** Сменить микрофон или камеру на лету. */
 export async function useDevice(kind: 'mic' | 'cam' | 'out', deviceId: string): Promise<void> {
-  lsSet(`skam:call:${kind}`, deviceId || null);
+  const id = deviceId || null;
+  cfg[kind] = id;
+  lsSet(`skam:call:${kind}`, id);
   const s = C.session;
-  if (!s) return;
   if (kind === 'out') {
-    s.peers.forEach((p) => setSink(p, deviceId));
+    s?.peers.forEach((p) => setSink(p, deviceId));
     return;
   }
+  if (kind === 'mic') {
+    // Микрофон, который сейчас слушает проверка в настройках, переключается вместе со звонком.
+    for (const m of mics) {
+      if (m.dead || (s && m === s.pipe)) continue;
+      try { swapRaw(m, await getRawMic(id)); } catch (e) { notice(mediaError(e, 'mic') || 'Не получилось переключить микрофон.'); }
+    }
+  }
+  if (!s) return;
   try {
     if (kind === 'mic') {
-      const t = await getMic(deviceId);
-      if (C.session !== s) { t.stop(); return; }
-      s.mic?.stop();
-      s.mic = t;
-      t.enabled = !s.flags.muted;
-      setTrack(s, MIC, t);
-      dropMeter(s.meter);
-      s.meter = meter(new MediaStream([t]));
+      const m = s.pipe;
+      if (!m) { await retryMic(s); return; }
+      const raw = await getRawMic(id);
+      if (C.session !== s || s.pipe !== m) { raw.stop(); return; }
+      replaceRaw(s, m, raw);
     } else if (s.cam) {
-      const t = await getCam(deviceId);
+      const t = await getCam(id);
       if (C.session !== s) { t.stop(); return; }
       s.cam.stop();
       s.cam = t;
+      t.addEventListener('ended', () => { if (s.cam === t) { s.cam = null; s.flags.camera = false; setTrack(s, CAM, null); stateChanged(s); } });
       setTrack(s, CAM, t);
     }
     emit('call');
@@ -849,10 +1082,16 @@ export async function useDevice(kind: 'mic' | 'cam' | 'out', deviceId: string): 
   }
 }
 
-export async function setNoiseSuppression(on: boolean): Promise<void> {
-  lsSet('skam:call:ns', on ? null : '0');
-  const t = C.session?.mic;
-  if (t) await t.applyConstraints({ ...micConstraints(), deviceId: undefined }).catch(() => {});
+/** Шумоподавление, эхоподавление и автоусиление браузера. */
+export async function setAudioFlag(flag: 'ns' | 'ec' | 'agc', on: boolean): Promise<void> {
+  cfg[flag] = on;
+  lsSet(`skam:call:${flag}`, on ? null : '0');
+  const c = micConstraints();
+  for (const m of mics) await m.raw.applyConstraints({ echoCancellation: c.echoCancellation, noiseSuppression: c.noiseSuppression, autoGainControl: c.autoGainControl }).catch(() => {});
+}
+
+export function setNoiseSuppression(on: boolean): Promise<void> {
+  return setAudioFlag('ns', on);
 }
 
 function setSink(p: Peer, deviceId: string | null): void {
@@ -874,28 +1113,349 @@ function setTrack(s: Session, idx: number, track: MediaStreamTrack | null): void
   tune(s);
 }
 
-/** Потолок битрейта: чем больше людей, тем меньше каждому (соединения «каждый с каждым»). */
+/** Битрейт показа экрана при 1 зрителе, бит/с. */
+const SHARE_BPS: Record<ShareRes, Record<ShareFps, number>> = {
+  '720': { 15: 900_000, 30: 1_500_000, 60: 2_500_000 },
+  '1080': { 15: 1_800_000, 30: 3_000_000, 60: 4_500_000 },
+  src: { 15: 2_500_000, 30: 4_000_000, 60: 6_000_000 },
+};
+
+/** Во сколько раз урезать битрейт, когда зрителей много: своё видео мы отправляем каждому отдельно. */
+function crowd(n: number): number {
+  return n <= 1 ? 1 : n === 2 ? 0.8 : n === 3 ? 0.65 : n === 4 ? 0.5 : n === 5 ? 0.42 : n === 6 ? 0.36 : 0.3;
+}
+
+type Enc = { maxBitrate?: number; maxFramerate?: number; scaleResolutionDownBy?: number };
+
+/** Потолки для камеры и экрана: чем больше людей в звонке, тем меньше каждому (соединения «каждый с каждым»). */
+export function plan(share: ShareOpts | null, scrWidth: number, n: number): { cam: Enc; scr: Enc } {
+  const k = Math.max(1, n);
+  const cam: Enc = {
+    maxBitrate: k <= 1 ? 1_200_000 : k <= 3 ? 600_000 : k <= 5 ? 350_000 : 250_000,
+    maxFramerate: k >= 4 ? 24 : 30,
+    scaleResolutionDownBy: k >= 6 ? 2 : k >= 4 ? 1.5 : 1,
+  };
+  const o = share ?? { res: '1080' as ShareRes, fps: 30 as ShareFps, audio: false };
+  const target = SHARE_SIZE[o.res][0];
+  const scr: Enc = {
+    maxBitrate: Math.max(400_000, Math.round(SHARE_BPS[o.res][o.fps] * crowd(k))),
+    maxFramerate: o.fps,
+    scaleResolutionDownBy: scrWidth > target * 1.02 ? Math.round((scrWidth / target) * 100) / 100 : 1,
+  };
+  return { cam, scr };
+}
+
 function tune(s: Session): void {
-  const n = Math.max(1, s.peers.size);
-  const cam = n <= 1 ? 1_200_000 : n <= 3 ? 600_000 : 300_000;
-  const scr = n <= 1 ? 2_500_000 : n <= 3 ? 1_500_000 : 800_000;
+  const w = s.scr?.getSettings().width ?? 0;
+  const { cam, scr } = plan(s.share, w, s.peers.size);
   s.peers.forEach((p) => {
     if (p.state !== 'connected') return;
     const trs = p.pc.getTransceivers();
-    void setMax(trs[CAM]?.sender, cam);
-    void setMax(trs[SCR]?.sender, scr);
+    void setEnc(trs[CAM]?.sender, cam);
+    void setEnc(trs[SCR]?.sender, scr);
   });
 }
 
-async function setMax(sender: RTCRtpSender | undefined, bps: number): Promise<void> {
+async function setEnc(sender: RTCRtpSender | undefined, want: Enc): Promise<void> {
   if (!sender) return;
   try {
     const prm = sender.getParameters();
-    if (!prm.encodings?.length) return;
-    if (prm.encodings[0].maxBitrate === bps) return;
-    prm.encodings[0].maxBitrate = bps;
-    await sender.setParameters(prm);
+    const e = prm.encodings?.[0];
+    if (!e) return;
+    let changed = false;
+    for (const k of Object.keys(want) as (keyof Enc)[]) {
+      const v = want[k];
+      if (v !== undefined && e[k] !== v) { e[k] = v; changed = true; }
+    }
+    if (changed) await sender.setParameters(prm);
   } catch { /* браузер не умеет — не страшно */ }
+}
+
+// ---------------------------------------------------------------------------
+// Микрофон: громкость, «ворота» по чувствительности, рация
+// ---------------------------------------------------------------------------
+
+/** Все живые микрофоны: в звонке и в проверке из настроек. */
+const mics = new Set<Mic>();
+
+/** Шкала чувствительности 0–100 → громкость (RMS). Ползунок и полоска уровня стоят на одной шкале. */
+export function sensToRms(v: number): number {
+  const x = Math.max(0, Math.min(100, v)) / 100;
+  return 0.004 + x * x * 0.16;
+}
+
+export function rmsToSens(rms: number): number {
+  return Math.min(100, Math.sqrt(Math.max(0, (rms - 0.004) / 0.16)) * 100);
+}
+
+/** Порог голоса сейчас: заданный вручную или подобранный по шуму в комнате. */
+export function threshold(m: Mic | null): number {
+  if (cfg.sens !== null) return sensToRms(cfg.sens);
+  const f = m?.floor ?? 0.004;
+  return Math.min(0.08, Math.max(0.012, f * 2.2 + 0.006));
+}
+
+const ptt = { down: false, upAt: 0 };
+
+function makeMic(raw: MediaStreamTrack): Mic {
+  const m: Mic = {
+    raw, out: raw, ctx: null, src: null, gain: null, an: null, delay: null, gate: null, dst: null, monitor: null, buf: null,
+    open: true, voiceAt: 0, lvl: 0, floor: 0.004, mins: [], winMin: 1, winAt: Date.now(), timer: 0, dead: false,
+  };
+  const c = snd.audioContext();
+  if (c) {
+    try {
+      const src = c.createMediaStreamSource(new MediaStream([raw]));
+      const gain = c.createGain();
+      gain.gain.value = cfg.gain / 100;
+      const an = c.createAnalyser();
+      an.fftSize = 1024;
+      an.smoothingTimeConstant = 0;
+      // Звук чуть задержан (30 мс), чтобы ворота успели открыться до первого слога.
+      const delay = c.createDelay(0.1);
+      delay.delayTime.value = 0.03;
+      const gate = c.createGain();
+      const dst = c.createMediaStreamDestination();
+      src.connect(gain);
+      gain.connect(an);
+      gain.connect(delay);
+      delay.connect(gate);
+      gate.connect(dst);
+      m.ctx = c; m.src = src; m.gain = gain; m.an = an; m.delay = delay; m.gate = gate; m.dst = dst;
+      m.out = dst.stream.getAudioTracks()[0];
+      m.buf = new Float32Array(an.fftSize);
+      m.timer = window.setInterval(() => micTick(m), 25);
+    } catch {
+      m.out = raw; // без обработки — звук уйдёт как есть
+    }
+  }
+  mics.add(m);
+  return m;
+}
+
+function micTick(m: Mic): void {
+  if (m.dead || !m.an || !m.buf || !m.gate || !m.ctx) return;
+  if (m.ctx.state === 'suspended') void m.ctx.resume().catch(() => {});
+  m.an.getFloatTimeDomainData(m.buf);
+  let sum = 0;
+  for (let i = 0; i < m.buf.length; i++) sum += m.buf[i] * m.buf[i];
+  const lvl = Math.sqrt(sum / m.buf.length);
+  m.lvl = lvl;
+  const now = Date.now();
+  // Шум комнаты — самое тихое за последние ~6 секунд.
+  m.winMin = Math.min(m.winMin, lvl);
+  if (now - m.winAt > 1000) {
+    m.mins.push(m.winMin);
+    if (m.mins.length > 6) m.mins.shift();
+    m.floor = Math.max(0.001, Math.min(...m.mins));
+    m.winMin = 1;
+    m.winAt = now;
+  }
+  let open: boolean;
+  if (cfg.mode === 'ptt') {
+    open = ptt.down || now - ptt.upAt < 150;
+  } else if (document.hidden) {
+    open = true; // в фоновой вкладке таймеры замедляются — лучше не обрезать голос
+  } else {
+    if (lvl > threshold(m)) m.voiceAt = now;
+    open = now - m.voiceAt < 350;
+  }
+  if (open !== m.open) {
+    m.open = open;
+    m.gate.gain.setTargetAtTime(open ? 1 : 0, m.ctx.currentTime, open ? 0.006 : 0.03);
+  }
+}
+
+function dropMic(m: Mic): void {
+  if (m.dead) return;
+  m.dead = true;
+  clearInterval(m.timer);
+  mics.delete(m);
+  try { m.src?.disconnect(); m.gain?.disconnect(); m.delay?.disconnect(); m.gate?.disconnect(); m.monitor?.disconnect(); } catch { /* уже */ }
+  m.raw.stop();
+  m.out.stop();
+}
+
+/** Подставить другое устройство под тот же исходящий поток. true — исходящая дорожка сменилась (обработки нет). */
+function swapRaw(m: Mic, raw: MediaStreamTrack): boolean {
+  const old = m.raw;
+  m.raw = raw;
+  old.stop();
+  if (m.ctx && m.src && m.gain) {
+    try { m.src.disconnect(); } catch { /* уже */ }
+    m.src = m.ctx.createMediaStreamSource(new MediaStream([raw]));
+    m.src.connect(m.gain);
+    return false;
+  }
+  m.out = raw;
+  return true;
+}
+
+function replaceRaw(s: Session, m: Mic, raw: MediaStreamTrack): void {
+  if (swapRaw(m, raw)) {
+    s.mic = m.out;
+    m.out.enabled = !s.flags.muted;
+    setTrack(s, MIC, m.out);
+  }
+  watchMic(s, m);
+}
+
+/** Устройство отключили: переходим на микрофон по умолчанию. */
+function watchMic(s: Session, m: Mic): void {
+  const raw = m.raw;
+  raw.addEventListener('ended', () => {
+    if (C.session === s && s.pipe === m && m.raw === raw && !m.dead) void micLost(s, m);
+  });
+}
+
+async function micLost(s: Session, m: Mic): Promise<void> {
+  try {
+    const raw = await getRawMic(null);
+    if (C.session !== s || s.pipe !== m) { raw.stop(); return; }
+    replaceRaw(s, m, raw);
+    notice('Микрофон отключился — переключились на микрофон по умолчанию.');
+    emit('call');
+  } catch {
+    if (C.session !== s || s.pipe !== m) return;
+    dropMic(m);
+    s.pipe = null;
+    s.mic = null;
+    setTrack(s, MIC, null);
+    s.flags.muted = true;
+    notice('Микрофон отключился. Нажмите на значок микрофона, когда подключите другой.');
+    stateChanged(s);
+  }
+}
+
+/** Микрофон звонка (если мы в звонке). */
+export function activeMic(): Mic | null {
+  return C.session?.pipe ?? null;
+}
+
+/** Камера для предпросмотра в настройках (вызывающий сам остановит дорожки). */
+export async function openCamPreview(): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({ video: camConstraints() });
+}
+
+/** Микрофон для проверки в настройках — вне звонка. */
+export async function openTestMic(): Promise<Mic> {
+  return makeMic(await getRawMic());
+}
+
+export function closeTestMic(m: Mic): void {
+  if (m !== C.session?.pipe) dropMic(m);
+}
+
+/** Слышать себя в наушниках (проверка микрофона). */
+export function monitorMic(m: Mic, on: boolean): void {
+  if (!m.ctx || !m.gate) return;
+  if (!m.monitor) {
+    m.monitor = m.ctx.createGain();
+    m.gate.connect(m.monitor);
+    m.monitor.connect(m.ctx.destination);
+  }
+  m.monitor.gain.value = on ? 1 : 0;
+}
+
+export function setInputMode(mode: InputMode): void {
+  cfg.mode = mode;
+  lsSet('skam:call:mode', mode === 'ptt' ? 'ptt' : null);
+  if (mode !== 'ptt') ptt.down = false;
+  emit('call');
+}
+
+export function setPttKey(code: string): void {
+  cfg.ptt = code;
+  lsSet('skam:call:ptt', code === 'KeyV' ? null : code);
+  ptt.down = false;
+  emit('call');
+}
+
+/** Чувствительность: null — подбирать самой, число 0–100 — порог вручную. */
+export function setSensitivity(v: number | null): void {
+  cfg.sens = v === null ? null : Math.round(Math.max(0, Math.min(100, v)));
+  lsSet('skam:call:sens', cfg.sens === null ? null : String(cfg.sens));
+}
+
+/** Громкость микрофона, %. */
+export function setMicGain(percent: number): void {
+  cfg.gain = Math.round(Math.max(0, Math.min(200, percent)));
+  lsSet('skam:call:gain', cfg.gain === 100 ? null : String(cfg.gain));
+  mics.forEach((m) => { if (m.gain) m.gain.gain.value = cfg.gain / 100; });
+}
+
+/** Рация нажата прямо сейчас. */
+export function pttHeld(): boolean {
+  return ptt.down;
+}
+
+/** Как называется клавиша: «V», «Пробел», «Левый Ctrl». */
+export function keyName(code: string): string {
+  const names: Record<string, string> = {
+    Space: 'Пробел', Backquote: '` (Ё)', Tab: 'Tab', CapsLock: 'Caps Lock', ControlLeft: 'Левый Ctrl', ControlRight: 'Правый Ctrl',
+    ShiftLeft: 'Левый Shift', ShiftRight: 'Правый Shift', AltLeft: 'Левый Alt', AltRight: 'Правый Alt', Enter: 'Enter',
+    Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backslash: '\\',
+  };
+  if (names[code]) return names[code];
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  if (/^Numpad/.test(code)) return `Num ${code.slice(6)}`;
+  return code;
+}
+
+function isTyping(t: EventTarget | null): boolean {
+  const e = t as HTMLElement | null;
+  return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.tagName === 'SELECT' || e.isContentEditable);
+}
+
+const MODIFIERS = /^(Control|Shift|Alt|Meta)(Left|Right)$/;
+
+function onPttKey(ev: KeyboardEvent, down: boolean): void {
+  if (cfg.mode !== 'ptt' || ev.code !== cfg.ptt) return;
+  if (down) {
+    if (ev.repeat || ptt.down) return;
+    if (!C.session && !mics.size) return;
+    // Печатаете сообщение — клавиша должна печатать, а не включать микрофон.
+    if (ev.key.length === 1 && isTyping(ev.target)) return;
+    if (!MODIFIERS.test(ev.code) && (ev.ctrlKey || ev.metaKey || ev.altKey)) return;
+    ptt.down = true;
+  } else {
+    if (!ptt.down) return;
+    ptt.down = false;
+    ptt.upAt = Date.now();
+  }
+  emit('call');
+  pttFns.forEach((f) => f());
+}
+
+const pttFns = new Set<() => void>();
+/** Рацию нажали или отпустили. */
+export function onPtt(fn: () => void): () => void {
+  pttFns.add(fn);
+  return () => pttFns.delete(fn);
+}
+
+function releasePtt(): void {
+  if (!ptt.down) return;
+  ptt.down = false;
+  ptt.upAt = Date.now();
+  pttFns.forEach((f) => f());
+  emit('call');
+}
+
+const onKeyDown = (ev: KeyboardEvent) => onPttKey(ev, true);
+const onKeyUp = (ev: KeyboardEvent) => onPttKey(ev, false);
+
+function watchKeys(on: boolean): void {
+  if (on) {
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    window.addEventListener('blur', releasePtt);
+  } else {
+    window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyUp, true);
+    window.removeEventListener('blur', releasePtt);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -932,14 +1492,16 @@ function measureSpeaking(s: Session): void {
   if (C.session !== s) return;
   const now = Date.now();
   let changed = false;
-  const upd = (cur: boolean, lvl: number, loudAt: number, set: (v: boolean, at: number) => void) => {
-    const loud = lvl > 0.03;
+  const upd = (cur: boolean, lvl: number, loudAt: number, set: (v: boolean, at: number) => void, thr = 0.03) => {
+    const loud = lvl > thr;
     const at = loud ? now : loudAt;
     const v = loud || (cur && now - at < 350);
     if (v !== cur) changed = true;
     set(v, at);
   };
-  upd(s.speaking, s.flags.muted ? 0 : level(s.meter), s.loudAt, (v, at) => { s.speaking = v; s.loudAt = at; });
+  // Себя считаем говорящим, когда ворота открыты (голос выше порога или нажата рация) и есть звук.
+  const mine = s.pipe && !s.flags.muted && s.pipe.open ? s.pipe.lvl : 0;
+  upd(s.speaking, mine, s.loudAt, (v, at) => { s.speaking = v; s.loudAt = at; }, 0.012);
   s.peers.forEach((p) => {
     const muted = p.flags?.muted ?? false;
     upd(p.speaking, muted ? 0 : level(p.meter), p.loudAt, (v, at) => { p.speaking = v; p.loudAt = at; });
@@ -998,17 +1560,14 @@ function newPeer(s: Session, uid: string, offerer: boolean, sid: string): Peer {
   const pc = new RTCPeerConnection({ iceServers: iceServers(), bundlePolicy: 'max-bundle' });
   // Канал данных договорён заранее (одинаковый id у обоих) — сразу входит в первое предложение.
   const dc = pc.createDataChannel('skam-state', { negotiated: true, id: 0 });
-  const vol = volumeOf(uid);
   const p: Peer = {
     uid, pc, sid, offerer, dc, ice: [], out: [], ready: false, state: 'connecting', since: Date.now(), fixAt: 0,
     flags: null, voice: null, cam: null, scr: null, audio: audioEl(), audio2: audioEl(), meter: null, speaking: false, loudAt: 0,
   };
-  p.audio.volume = vol;
-  p.audio2.volume = vol;
+  applyVolumes(p);
   p.audio.muted = s.flags.deafened;
   p.audio2.muted = s.flags.deafened;
-  const out = pref.out();
-  if (out) setSink(p, out);
+  if (cfg.out) setSink(p, cfg.out);
   if (offerer) {
     const tracks = localTracks(s);
     KINDS.forEach((kind, i) => pc.addTransceiver(tracks[i] ?? kind, { direction: 'sendrecv' }));
