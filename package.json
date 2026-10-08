@@ -1,7 +1,7 @@
 {
   "name": "skam",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "СКАМ — не развод, а мессенджер. Vite + TypeScript + Supabase.",
   "type": "module",
   "scripts": {

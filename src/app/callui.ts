@@ -799,6 +799,8 @@ export function openCallSettings(): void {
   const gainRow = rangeRow('Громкость микрофона', 0, 200, calls.settings().gain, (v) => `${v}%`, (v) => calls.setMicGain(v), { icon: 'micOn', id: 'set-gain' });
   const micErr = el('p', 'grp-note err');
   micErr.hidden = true;
+  const micNow = grpNote('');
+  micNow.hidden = true;
 
   // ---- режим ввода и полоска уровня с порогом
   const fill = el('div', 'meter-fill');
@@ -935,11 +937,12 @@ export function openCallSettings(): void {
     switchRow('sliders', 'Шумоподавление', 'Убирает фон: клавиатуру, вентилятор', () => calls.settings().ns, (v) => { void calls.setAudioFlag('ns', v); }),
     switchRow('sliders', 'Подавление эха', 'Чтобы собеседник не слышал себя из ваших колонок', () => calls.settings().ec, (v) => { void calls.setAudioFlag('ec', v); }),
     switchRow('sliders', 'Автоусиление', 'Выравнивает громкость голоса', () => calls.settings().agc, (v) => { void calls.setAudioFlag('agc', v); }),
+    switchRow('mic', 'Передавать звук напрямую', 'Включите, если собеседники слышат шум или треск вместо голоса. Громкость микрофона тогда не работает.', () => calls.settings().direct, (v) => { calls.setDirect(v); }),
   );
 
   renderMode();
   body.append(
-    grpLabel('Микрофон'), grp(micRow, gainRow), micErr,
+    grpLabel('Микрофон'), grp(micRow, gainRow), micNow, micErr,
     modeBox,
     grpLabel('Проверка микрофона'), grp(hearRow),
     grpLabel('Камера'), grp(camRow, prevRow),
@@ -953,6 +956,12 @@ export function openCallSettings(): void {
   // ---- живая полоска
   const tickMeter = () => {
     const m = liveMic();
+    const info = calls.micInfo(m);
+    const now = info ? `Сейчас работает: ${info.label || 'микрофон'}${info.rate ? ` · ${Math.round(info.rate / 100) / 10} кГц` : ''}${info.direct ? ' · напрямую' : ''}` : '';
+    if (micNow.textContent !== now) { micNow.textContent = now; micNow.hidden = !now; }
+    const bad = calls.micProblem(m);
+    if (bad) { if (micErr.textContent !== bad) micErr.textContent = bad; micErr.hidden = false; }
+    else if (micErr.dataset.fixed !== '1') micErr.hidden = true;
     if (m) {
       const st = calls.settings();
       fill.style.width = `${Math.round(calls.rmsToSens(m.lvl))}%`;
@@ -992,6 +1001,7 @@ export function openCallSettings(): void {
       } catch {
         micErr.textContent = 'Нет доступа к микрофону — разрешите его в настройках браузера (значок замка рядом с адресом).';
         micErr.hidden = false;
+        micErr.dataset.fixed = '1';
       }
     }
     await refresh();

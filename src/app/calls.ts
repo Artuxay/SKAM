@@ -54,7 +54,22 @@ export type Mic = {
   gate: GainNode | null;
   dst: MediaStreamAudioDestinationNode | null;
   monitor: GainNode | null;
+  /** Откуда слышим себя в проверке микрофона. */
+  monSrc: MediaStreamAudioSourceNode | null;
+  monOn: boolean;
   buf: Float32Array<ArrayBuffer> | null;
+  /**
+   * Звук уходит как есть, дорожкой самого устройства, а не через Web Audio. Громкости микрофона тогда нет,
+   * зато никакая цепочка не может испортить звук; «ворота» открываются и закрываются самой дорожкой.
+   */
+  direct: boolean;
+  /** Устройство, которое открылось на самом деле (а не то, что просили). */
+  label: string;
+  devId: string;
+  rate: number;
+  born: number;
+  /** С какого момента почти тишина (для подсказки «микрофон ничего не слышит»). */
+  hushAt: number;
   /** Ворота открыты: сейчас нас слышат. */
   open: boolean;
   voiceAt: number;
@@ -210,6 +225,8 @@ const cfg = {
   gain: num('skam:call:gain', 100, 0, 200),
   /** Общая громкость звонка, %. */
   outVol: num('skam:call:outvol', 100, 0, 100),
+  /** Микрофон «напрямую»: без Web Audio. */
+  direct: lsGet('skam:call:direct') === '1',
   share: loadShare(),
 };
 
@@ -223,10 +240,11 @@ export type CallSettings = {
   ns: boolean;
   ec: boolean;
   agc: boolean;
+  direct: boolean;
 };
 
 export function settings(): CallSettings {
-  return { mode: cfg.mode, ptt: cfg.ptt, sens: cfg.sens, gain: cfg.gain, outVol: cfg.outVol, ns: cfg.ns, ec: cfg.ec, agc: cfg.agc };
+  return { mode: cfg.mode, ptt: cfg.ptt, sens: cfg.sens, gain: cfg.gain, outVol: cfg.outVol, ns: cfg.ns, ec: cfg.ec, agc: cfg.agc, direct: cfg.direct };
 }
 
 export function noiseSuppression(): boolean {
@@ -235,7 +253,8 @@ export function noiseSuppression(): boolean {
 
 function micConstraints(deviceId = cfg.mic): MediaTrackConstraints {
   return {
-    deviceId: deviceId ? { ideal: deviceId } : undefined,
+    // exact: если выбранного микрофона нет, браузер скажет об этом, а не подсунет другой (системный).
+    deviceId: deviceId ? { exact: deviceId } : undefined,
     echoCancellation: cfg.ec,
     noiseSuppression: cfg.ns,
     autoGainControl: cfg.agc,
@@ -245,7 +264,7 @@ function micConstraints(deviceId = cfg.mic): MediaTrackConstraints {
 
 function camConstraints(deviceId = cfg.cam): MediaTrackConstraints {
   return {
-    deviceId: deviceId ? { ideal: deviceId } : undefined,
+    deviceId: deviceId ? { exact: deviceId } : undefined,
     width: { ideal: 1280 },
     height: { ideal: 720 },
     frameRate: { ideal: 24, max: 30 },
@@ -633,9 +652,29 @@ function mediaError(e: unknown, what: 'mic' | 'cam' | 'screen'): string {
   return what === 'mic' ? 'Не получилось включить микрофон.' : what === 'cam' ? 'Не получилось включить камеру.' : 'Не получилось показать экран.';
 }
 
-async function getRawMic(deviceId?: string | null): Promise<MediaStreamTrack> {
-  const st = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ?? cfg.mic) });
-  return st.getAudioTracks()[0];
+/** Выбранного устройства нет (отключили, сменился адрес) — браузер ответил отказом по «exact». */
+function gone(e: unknown): boolean {
+  const n = (e as { name?: string })?.name;
+  return n === 'OverconstrainedError' || n === 'NotFoundError';
+}
+
+/**
+ * Микрофон. deviceId: undefined — тот, что выбран в настройках; null — системный.
+ * Если выбранного больше нет: при `fallback` берём системный и забываем выбор, иначе — ошибка.
+ */
+async function getRawMic(deviceId?: string | null, fallback = true): Promise<MediaStreamTrack> {
+  const id = deviceId === undefined ? cfg.mic : deviceId;
+  let st: MediaStream;
+  try {
+    st = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(id) });
+  } catch (e) {
+    if (!id || !fallback || !gone(e)) throw e;
+    if (cfg.mic === id) { cfg.mic = null; lsSet('skam:call:mic', null); }
+    notice('Выбранный микрофон не найден — взяли микрофон «Как в системе».');
+    st = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(null) });
+  }
+  const t = st.getAudioTracks()[0];
+  return t;
 }
 
 /** Микрофон с обработкой (громкость, ворота), готовый к отправке. */
@@ -643,8 +682,17 @@ async function getMic(deviceId?: string | null): Promise<Mic> {
   return makeMic(await getRawMic(deviceId));
 }
 
-async function getCam(deviceId?: string | null): Promise<MediaStreamTrack> {
-  const st = await navigator.mediaDevices.getUserMedia({ video: camConstraints(deviceId ?? cfg.cam) });
+async function getCam(deviceId?: string | null, fallback = true): Promise<MediaStreamTrack> {
+  const id = deviceId === undefined ? cfg.cam : deviceId;
+  let st: MediaStream;
+  try {
+    st = await navigator.mediaDevices.getUserMedia({ video: camConstraints(id) });
+  } catch (e) {
+    if (!id || !fallback || !gone(e)) throw e;
+    if (cfg.cam === id) { cfg.cam = null; lsSet('skam:call:cam', null); }
+    notice('Выбранная камера не найдена — взяли камеру «Как в системе».');
+    st = await navigator.mediaDevices.getUserMedia({ video: camConstraints(null) });
+  }
   const t = st.getVideoTracks()[0];
   t.contentHint = 'motion';
   return t;
@@ -1043,33 +1091,38 @@ function stopScreen(s: Session): void {
   stateChanged(s);
 }
 
-/** Сменить микрофон или камеру на лету. */
+/** Сменить микрофон или камеру на лету. Если выбранное устройство не открылось, остаётся прежнее. */
 export async function useDevice(kind: 'mic' | 'cam' | 'out', deviceId: string): Promise<void> {
   const id = deviceId || null;
-  cfg[kind] = id;
-  lsSet(`skam:call:${kind}`, id);
+  const prev = cfg[kind];
+  const save = (v: string | null) => { cfg[kind] = v; lsSet(`skam:call:${kind}`, v); };
+  save(id);
   const s = C.session;
   if (kind === 'out') {
     s?.peers.forEach((p) => setSink(p, deviceId));
     return;
   }
-  if (kind === 'mic') {
-    // Микрофон, который сейчас слушает проверка в настройках, переключается вместе со звонком.
-    for (const m of mics) {
-      if (m.dead || (s && m === s.pipe)) continue;
-      try { swapRaw(m, await getRawMic(id)); } catch (e) { notice(mediaError(e, 'mic') || 'Не получилось переключить микрофон.'); }
-    }
-  }
-  if (!s) return;
+  const fail = (e: unknown) => {
+    save(prev);
+    notice(gone(e) ? 'Это устройство сейчас недоступно — осталось прежнее.' : mediaError(e, kind === 'mic' ? 'mic' : 'cam') || 'Не получилось переключить устройство.');
+    emit('call');
+  };
   try {
     if (kind === 'mic') {
-      const m = s.pipe;
-      if (!m) { await retryMic(s); return; }
-      const raw = await getRawMic(id);
-      if (C.session !== s || s.pipe !== m) { raw.stop(); return; }
-      replaceRaw(s, m, raw);
-    } else if (s.cam) {
-      const t = await getCam(id);
+      const m = s?.pipe ?? null;
+      if (s && m) {
+        const raw = await getRawMic(id, false);
+        if (C.session !== s || s.pipe !== m) { raw.stop(); return; }
+        replaceRaw(s, m, raw);
+      } else if (s) {
+        await retryMic(s);
+      }
+      // Микрофон, который сейчас слушает проверка в настройках, переключается вместе со звонком.
+      for (const t of [...mics]) {
+        if (!t.dead && t !== s?.pipe) swapRaw(t, await getRawMic(id, false));
+      }
+    } else if (s?.cam) {
+      const t = await getCam(id, false);
       if (C.session !== s) { t.stop(); return; }
       s.cam.stop();
       s.cam = t;
@@ -1078,7 +1131,7 @@ export async function useDevice(kind: 'mic' | 'cam' | 'out', deviceId: string): 
     }
     emit('call');
   } catch (e) {
-    notice(mediaError(e, kind === 'mic' ? 'mic' : 'cam') || 'Не получилось переключить устройство.');
+    fail(e);
   }
 }
 
@@ -1197,20 +1250,69 @@ export function threshold(m: Mic | null): number {
 
 const ptt = { down: false, upAt: 0 };
 
-function makeMic(raw: MediaStreamTrack): Mic {
-  const m: Mic = {
-    raw, out: raw, ctx: null, src: null, gain: null, an: null, delay: null, gate: null, dst: null, monitor: null, buf: null,
-    open: true, voiceAt: 0, lvl: 0, floor: 0.004, mins: [], winMin: 1, winAt: Date.now(), timer: 0, dead: false,
-  };
-  const c = snd.audioContext();
-  if (c) {
-    try {
-      const src = c.createMediaStreamSource(new MediaStream([raw]));
+let micCtx: AudioContext | null = null;
+
+/**
+ * Свой AudioContext для микрофона. Общий (со звонками и гудками) привязан к динамикам: стоит наушникам
+ * переключить профиль (Bluetooth уходит в режим гарнитуры) — и звук, который уходит собеседникам, ломается
+ * вместе с ним. Здесь, где браузер умеет, звук считается без устройства вывода вообще.
+ */
+function micContext(): AudioContext | null {
+  try {
+    if (micCtx && micCtx.state !== 'closed') return micCtx;
+    micCtx = null;
+    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return snd.audioContext();
+    const tries: Record<string, unknown>[] = [
+      { latencyHint: 'interactive', sampleRate: 48000, sinkId: { type: 'none' } },
+      { latencyHint: 'interactive', sampleRate: 48000 },
+      { latencyHint: 'interactive' },
+      {},
+    ];
+    for (const o of tries) {
+      try { micCtx = new Ctor(o as AudioContextOptions); break; } catch { /* браузер не знает этих настроек */ }
+    }
+    return micCtx ?? snd.audioContext();
+  } catch {
+    return snd.audioContext();
+  }
+}
+
+/** Что за устройство открылось на самом деле. */
+function noteDevice(m: Mic): void {
+  const st = m.raw.getSettings();
+  m.label = m.raw.label || '';
+  m.devId = st.deviceId ?? '';
+  m.rate = st.sampleRate ?? 0;
+  m.hushAt = 0;
+}
+
+/** Собрать цепочку звука из m.raw: устройство → громкость → задержка → ворота → дорожка (или напрямую). */
+function buildMic(m: Mic): void {
+  m.ctx = null; m.src = null; m.gain = null; m.an = null; m.delay = null; m.gate = null; m.dst = null; m.buf = null;
+  m.out = m.raw;
+  m.direct = true;
+  m.open = true;
+  const c = micContext();
+  if (!c) return;
+  try {
+    const src = c.createMediaStreamSource(new MediaStream([m.raw]));
+    const an = c.createAnalyser();
+    an.fftSize = 1024;
+    an.smoothingTimeConstant = 0;
+    m.ctx = c; m.src = src; m.an = an;
+    m.buf = new Float32Array(an.fftSize);
+    if (cfg.direct) {
+      src.connect(an);
+      // Анализатору нужен приёмник, иначе браузер его не считает; в никуда, звука на выходе нет.
+      const sink = c.createMediaStreamDestination();
+      an.connect(sink);
+      m.dst = sink;
+      // Уходит копия дорожки: ворота её выключают, а слушать голос мы должны и при закрытых воротах.
+      m.out = m.raw.clone();
+    } else {
       const gain = c.createGain();
       gain.gain.value = cfg.gain / 100;
-      const an = c.createAnalyser();
-      an.fftSize = 1024;
-      an.smoothingTimeConstant = 0;
       // Звук чуть задержан (30 мс), чтобы ворота успели открыться до первого слога.
       const delay = c.createDelay(0.1);
       delay.delayTime.value = 0.03;
@@ -1221,20 +1323,43 @@ function makeMic(raw: MediaStreamTrack): Mic {
       gain.connect(delay);
       delay.connect(gate);
       gate.connect(dst);
-      m.ctx = c; m.src = src; m.gain = gain; m.an = an; m.delay = delay; m.gate = gate; m.dst = dst;
+      m.gain = gain; m.delay = delay; m.gate = gate; m.dst = dst;
       m.out = dst.stream.getAudioTracks()[0];
-      m.buf = new Float32Array(an.fftSize);
-      m.timer = window.setInterval(() => micTick(m), 25);
-    } catch {
-      m.out = raw; // без обработки — звук уйдёт как есть
+      m.direct = false;
     }
+    m.timer = window.setInterval(() => micTick(m), 25);
+  } catch {
+    // без обработки — звук уйдёт как есть
+    m.ctx = null; m.src = null; m.gain = null; m.an = null; m.delay = null; m.gate = null; m.dst = null; m.buf = null;
+    m.out = m.raw;
+    m.direct = true;
   }
+  if (m.monOn) hear(m);
+}
+
+/** Разобрать цепочку (устройство не трогаем). */
+function unbuildMic(m: Mic): void {
+  clearInterval(m.timer);
+  try { m.src?.disconnect(); m.gain?.disconnect(); m.delay?.disconnect(); m.gate?.disconnect(); m.an?.disconnect(); } catch { /* уже */ }
+  try { m.monSrc?.disconnect(); } catch { /* уже */ }
+  m.monSrc = null;
+  if (m.out !== m.raw) m.out.stop();
+}
+
+function makeMic(raw: MediaStreamTrack): Mic {
+  const m: Mic = {
+    raw, out: raw, ctx: null, src: null, gain: null, an: null, delay: null, gate: null, dst: null, monitor: null, monSrc: null, monOn: false,
+    buf: null, direct: true, label: '', devId: '', rate: 0, born: Date.now(), hushAt: 0,
+    open: true, voiceAt: 0, lvl: 0, floor: 0.004, mins: [], winMin: 1, winAt: Date.now(), timer: 0, dead: false,
+  };
+  noteDevice(m);
+  buildMic(m);
   mics.add(m);
   return m;
 }
 
 function micTick(m: Mic): void {
-  if (m.dead || !m.an || !m.buf || !m.gate || !m.ctx) return;
+  if (m.dead || !m.an || !m.buf || !m.ctx) return;
   if (m.ctx.state === 'suspended') void m.ctx.resume().catch(() => {});
   m.an.getFloatTimeDomainData(m.buf);
   let sum = 0;
@@ -1251,6 +1376,9 @@ function micTick(m: Mic): void {
     m.winMin = 1;
     m.winAt = now;
   }
+  // Полная тишина дольше нескольких секунд — микрофон ничего не слышит.
+  if (lvl > 0.0006) m.hushAt = 0;
+  else if (!m.hushAt) m.hushAt = now;
   let open: boolean;
   if (cfg.mode === 'ptt') {
     open = ptt.down || now - ptt.upAt < 150;
@@ -1260,7 +1388,12 @@ function micTick(m: Mic): void {
     if (lvl > threshold(m)) m.voiceAt = now;
     open = now - m.voiceAt < 350;
   }
-  if (open !== m.open) {
+  if (m.direct) {
+    // Уходит копия дорожки устройства: ворота — это её «включена»; «выключить микрофон» тоже она.
+    const muted = !!C.session && C.session.pipe === m && C.session.flags.muted;
+    m.out.enabled = open && !muted;
+    m.open = open;
+  } else if (open !== m.open && m.gate) {
     m.open = open;
     m.gate.gain.setTargetAtTime(open ? 1 : 0, m.ctx.currentTime, open ? 0.006 : 0.03);
   }
@@ -1269,11 +1402,26 @@ function micTick(m: Mic): void {
 function dropMic(m: Mic): void {
   if (m.dead) return;
   m.dead = true;
-  clearInterval(m.timer);
+  unbuildMic(m);
+  try { m.monitor?.disconnect(); } catch { /* уже */ }
   mics.delete(m);
-  try { m.src?.disconnect(); m.gain?.disconnect(); m.delay?.disconnect(); m.gate?.disconnect(); m.monitor?.disconnect(); } catch { /* уже */ }
   m.raw.stop();
   m.out.stop();
+}
+
+/** Микрофон тихий или молчит — для подсказки в настройках. */
+export function micProblem(m: Mic | null): string {
+  if (!m || m.dead) return '';
+  if (m.raw.readyState !== 'live') return 'Микрофон отключился.';
+  if (m.raw.muted) return 'Браузер не получает звук с этого микрофона. Проверьте, что он включён и не выключен кнопкой на гарнитуре.';
+  if (m.hushAt && (cfg.gain > 0 || m.direct) && Date.now() - m.hushAt > 4000) return 'С этого микрофона идёт полная тишина — он выключен или не подключён. Выберите другой в списке.';
+  return '';
+}
+
+/** Какое устройство и в каком режиме работает. */
+export function micInfo(m: Mic | null): { label: string; rate: number; direct: boolean } | null {
+  if (!m || m.dead) return null;
+  return { label: m.label, rate: m.rate, direct: m.direct };
 }
 
 /** Подставить другое устройство под тот же исходящий поток. true — исходящая дорожка сменилась (обработки нет). */
@@ -1281,14 +1429,42 @@ function swapRaw(m: Mic, raw: MediaStreamTrack): boolean {
   const old = m.raw;
   m.raw = raw;
   old.stop();
-  if (m.ctx && m.src && m.gain) {
+  noteDevice(m);
+  if (m.ctx && m.src && (m.direct ? m.an : m.gain)) {
     try { m.src.disconnect(); } catch { /* уже */ }
     m.src = m.ctx.createMediaStreamSource(new MediaStream([raw]));
-    m.src.connect(m.gain);
-    return false;
+    m.src.connect((m.direct ? m.an : m.gain)!);
   }
-  m.out = raw;
-  return true;
+  if (m.direct) {
+    const prevOut = m.out;
+    m.out = m.ctx ? raw.clone() : raw;
+    if (prevOut !== old) prevOut.stop();
+    if (m.monOn) hear(m);
+    return true;
+  }
+  return false;
+}
+
+/** Передавать звук напрямую (без Web Audio) или через обработку. Меняется на лету, в том числе в звонке. */
+export function setDirect(on: boolean): void {
+  if (cfg.direct === on) return;
+  cfg.direct = on;
+  lsSet('skam:call:direct', on ? '1' : null);
+  const s = C.session;
+  for (const m of [...mics]) {
+    if (m.dead) continue;
+    const prev = m.out;
+    unbuildMic(m);
+    // Старая дорожка обработки сама остановилась в unbuild; устройство продолжает работать.
+    buildMic(m);
+    m.mins = []; m.floor = 0.004; m.winMin = 1; m.winAt = Date.now();
+    if (s && s.pipe === m && m.out !== prev) {
+      s.mic = m.out;
+      m.out.enabled = !s.flags.muted;
+      setTrack(s, MIC, m.out);
+    }
+  }
+  emit('call');
 }
 
 function replaceRaw(s: Session, m: Mic, raw: MediaStreamTrack): void {
@@ -1346,15 +1522,26 @@ export function closeTestMic(m: Mic): void {
   if (m !== C.session?.pipe) dropMic(m);
 }
 
-/** Слышать себя в наушниках (проверка микрофона). */
+/** Слышать себя в наушниках (проверка микрофона): берём то, что уходит собеседникам. */
 export function monitorMic(m: Mic, on: boolean): void {
-  if (!m.ctx || !m.gate) return;
-  if (!m.monitor) {
-    m.monitor = m.ctx.createGain();
-    m.gate.connect(m.monitor);
-    m.monitor.connect(m.ctx.destination);
-  }
-  m.monitor.gain.value = on ? 1 : 0;
+  m.monOn = on;
+  if (on) hear(m);
+  else if (m.monitor) m.monitor.gain.value = 0;
+}
+
+function hear(m: Mic): void {
+  const c = snd.audioContext();
+  if (!c) return;
+  try {
+    m.monSrc?.disconnect();
+    if (!m.monitor) {
+      m.monitor = c.createGain();
+      m.monitor.connect(c.destination);
+    }
+    m.monSrc = c.createMediaStreamSource(new MediaStream([m.out]));
+    m.monSrc.connect(m.monitor);
+    m.monitor.gain.value = 1;
+  } catch { /* не получилось — не слышим */ }
 }
 
 export function setInputMode(mode: InputMode): void {
