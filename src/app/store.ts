@@ -3,9 +3,9 @@ import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type {
   Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, Profile,
-  Reaction, ReactionKey,
+  Reaction, ReactionKey, SuperStatus,
 } from '../lib/database.types';
-import { uuid } from '../lib/dom';
+import { lsGet, lsSet, uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
 import * as e2e from './e2e';
 import {
@@ -56,6 +56,8 @@ export const PAGE = 50;
 export const REACTIONS: { k: ReactionKey; e: string }[] = [
   { k: 'like', e: '👍' }, { k: 'lol', e: '😂' }, { k: 'fire', e: '🔥' }, { k: 'wow', e: '😱' }, { k: 'clown', e: '🤡' },
 ];
+/** Сколько реакций один человек может поставить на одно сообщение (так же проверяет сервер). */
+export const MAX_REACTIONS = 3;
 
 export const S = {
   user: null as User | null,
@@ -159,6 +161,7 @@ export function resetState(): void {
   S.cur = null;
   S.feeds.clear();
   S.reactions.clear();
+  superCache.clear();
   S.members.clear();
   S.inChat.clear();
   S.typing.clear();
@@ -934,10 +937,12 @@ async function fetchPreviewPage(chatId: string, before?: Msg) {
   if (error) throw error;
   const rows = (data ?? []).reverse();
   for (const r of rows) {
-    // Реакции — только числа: кто их поставил, до подписки не видно.
+    // Реакции — только числа: кто их поставил, до подписки не видно. Супер-реакции — с «*» на конце ключа.
     const list: Reaction[] = [];
-    Object.entries(r.reacts ?? {}).forEach(([emoji, n]) => {
-      for (let i = 0; i < (n ?? 0); i++) list.push({ message_id: r.id, user_id: '', emoji: emoji as ReactionKey, chat_id: chatId, created_at: '' });
+    Object.entries(r.reacts ?? {}).forEach(([key, n]) => {
+      const sup = key.endsWith('*');
+      const emoji = (sup ? key.slice(0, -1) : key) as ReactionKey;
+      for (let i = 0; i < (n ?? 0); i++) list.push({ message_id: r.id, user_id: '', emoji, chat_id: chatId, created_at: '', super: sup });
     });
     S.reactions.set(r.id, list);
   }
@@ -1327,7 +1332,9 @@ export async function deleteMessage(m: Msg): Promise<void> {
 
 export function addReaction(r: Reaction): void {
   const list = S.reactions.get(r.message_id) ?? [];
-  if (!list.some((x) => x.user_id === r.user_id && x.emoji === r.emoji)) list.push(r);
+  const i = list.findIndex((x) => x.user_id === r.user_id && x.emoji === r.emoji);
+  if (i < 0) list.push(r);
+  else list[i] = { ...list[i], super: !!r.super };
   S.reactions.set(r.message_id, list);
 }
 
@@ -1337,28 +1344,83 @@ export function removeReaction(messageId: string, userId: string, emoji: string)
   S.reactions.set(messageId, list.filter((x) => !(x.user_id === userId && x.emoji === emoji)));
 }
 
-export async function toggleReaction(m: Msg, key: ReactionKey): Promise<void> {
+/**
+ * Нажали на реакцию: такая же моя (того же вида) — убрать; иначе поставить. sup — супер-реакция.
+ * Если та же эмодзи стоит, но другого вида (обычная ↔ супер), вид меняется.
+ */
+export async function toggleReaction(m: Msg, key: ReactionKey, sup = false): Promise<void> {
   const me = meId();
-  const has = (S.reactions.get(m.id) ?? []).some((r) => r.user_id === me && r.emoji === key);
-  if (has) {
+  const list = S.reactions.get(m.id) ?? [];
+  const cur = list.find((r) => r.user_id === me && r.emoji === key);
+  if (cur && !!cur.super === sup) {
     removeReaction(m.id, me, key);
     emit('feed');
     const { error } = await sb.from('reactions').delete().match({ message_id: m.id, user_id: me, emoji: key });
     if (error) {
-      addReaction({ message_id: m.id, user_id: me, emoji: key, chat_id: m.chat_id, created_at: new Date().toISOString() });
+      addReaction(cur);
       emit('feed');
       throw error;
     }
-  } else {
-    addReaction({ message_id: m.id, user_id: me, emoji: key, chat_id: m.chat_id, created_at: new Date().toISOString() });
-    emit('feed');
-    const { error } = await sb.from('reactions').insert({ message_id: m.id, emoji: key });
-    if (error && error.code !== '23505') {
-      removeReaction(m.id, me, key);
-      emit('feed');
-      throw error;
-    }
+    if (sup) dropSuperStatus(m.chat_id);
+    return;
   }
+  if (!cur && list.filter((r) => r.user_id === me).length >= MAX_REACTIONS) {
+    throw new Error(`На одно сообщение — не больше ${MAX_REACTIONS} реакций. Уберите одну из своих`);
+  }
+  addReaction({ message_id: m.id, user_id: me, emoji: key, chat_id: m.chat_id, created_at: new Date().toISOString(), super: sup });
+  emit('feed');
+  const { error } = await sb.rpc('set_reaction', { p_message: m.id, p_emoji: key, p_super: sup });
+  if (error) {
+    if (cur) addReaction(cur);
+    else removeReaction(m.id, me, key);
+    emit('feed');
+    throw error;
+  }
+  if (sup || cur?.super) dropSuperStatus(m.chat_id);
+}
+
+// ---------------------------------------------------------------------------
+// Супер-реакции и активность в группах и каналах
+// ---------------------------------------------------------------------------
+
+const superCache = new Map<string, { at: number; st: SuperStatus }>();
+
+/** Можно ли мне супер-реакцию в этом чате (кэш на минуту). */
+export async function superStatus(chatId: string, force = false): Promise<SuperStatus | null> {
+  const hit = superCache.get(chatId);
+  if (hit && !force && Date.now() - hit.at < 60_000) return hit.st;
+  const { data, error } = await sb.rpc('super_reaction_status', { p_chat: chatId });
+  if (error) throw error;
+  const st = (data ?? null) as SuperStatus | null;
+  if (st) superCache.set(chatId, { at: Date.now(), st });
+  return st;
+}
+
+export function cachedSuperStatus(chatId: string): SuperStatus | null {
+  return superCache.get(chatId)?.st ?? null;
+}
+
+export function dropSuperStatus(chatId: string): void {
+  superCache.delete(chatId);
+}
+
+/** День по Москве — как считает сервер. */
+function mskDay(): string {
+  return new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** Открыл группу или канал — засчитать день активности (раз в день на чат, с этого устройства). */
+export function noteVisit(chatId: string): void {
+  const c = S.chats.get(chatId);
+  if (!c || c.preview || (c.kind !== 'group' && c.kind !== 'channel')) return;
+  const day = mskDay();
+  let seen: Record<string, string> = {};
+  try { seen = JSON.parse(lsGet('skam:visit') ?? '{}') as Record<string, string>; } catch { /* пусто */ }
+  if (seen[chatId] === day) return;
+  for (const k of Object.keys(seen)) if (seen[k] !== day) delete seen[k];
+  seen[chatId] = day;
+  lsSet('skam:visit', JSON.stringify(seen));
+  sb.rpc('chat_visit', { p_chat: chatId }).then(() => {}, () => {});
 }
 
 // ---------------------------------------------------------------------------

@@ -1,25 +1,29 @@
 // Интерфейс мессенджера: список чатов, лента, композер и диалоги.
 import type { User } from '@supabase/supabase-js';
 import { avatarUrl, sb } from '../lib/supabase';
-import type { Attachment, ChatCard, CommonGroup, Forward, MyChat, ReactionKey } from '../lib/database.types';
+import type { Attachment, ChatCard, CommonGroup, Forward, MyChat } from '../lib/database.types';
 import {
   $, APP_ICON_HERO, BRAND_AVATAR, ICONS, LOGO, MARK_SVG, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
-  listTime, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, verifiedMark, wideMQ,
+  listTime, lsGet, lsSet, openDialog, plural, textHooks, timeLabel, toast, touchMQ, verifiedMark, wideMQ,
 } from '../lib/dom';
+import {
+  BASIC_EMOJI, emojiByRef, emojiForInput, emojiOnly, emojiPacks, emojiUrl, encodeEmoji, plainEmoji, recentEmoji, rememberEmoji,
+} from '../lib/emoji';
 import {
   PACKS, customPacks, findSticker, recentStickers, rememberSticker, stickerUrl, stickersForEmoji, type Sticker,
 } from '../lib/stickers';
 import {
-  loadMyPacks, mountStickerPacks, openStickerManager, openStickerPack, resetStickerPacks,
+  loadMyEmojiPacks, loadMyPacks, mountStickerPacks, openEmojiManager, openStickerManager, openStickerPack, resetStickerPacks,
 } from './stickerpacks';
+import { mountReactions, quickReactions, reactionChips, reactionPacksChanged } from './reactions';
 import { isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
 import {
-  NoProfileError, REACTIONS, S, USERNAME_RE, usernameRequired, deleteMessage, discardMessage, emit, ensureProfiles,
+  NoProfileError, S, USERNAME_RE, usernameRequired, deleteMessage, discardMessage, emit, ensureProfiles, noteVisit,
   feedOf, joinByInvite, loadFeed, loadMe, loadOlder, markRead, meId,
   normUsername, on, openDirect, previewInvite, removeAvatar, resetState, retryMessage,
-  SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, toggleReaction, totalUnread, ts,
+  SEARCH_MIN, searchNorm, searchUsers, sendMessage, sendRecorded, sendSticker, sortedChats, totalUnread, ts,
   updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
@@ -132,7 +136,7 @@ const SHELL = `
       <div class="block-bar" id="blockBar" hidden></div>
       <div class="composer" id="composer">
         <p class="composer-note" id="composerNote" hidden>Это канал: писать могут только администраторы. А реакции — пожалуйста 🔥</p>
-        <div class="sticker-panel" id="stickerPanel" role="dialog" aria-label="Стикеры" hidden></div>
+        <div class="sticker-panel" id="stickerPanel" role="dialog" aria-label="Эмодзи и стикеры" hidden></div>
         <div class="sticker-suggest" id="stickerSuggest" role="listbox" aria-label="Стикеры к эмодзи" hidden></div>
         <div class="select-bar" id="selectBar" hidden></div>
         <div class="reply-bar" id="replyBar" hidden></div>
@@ -141,7 +145,7 @@ const SHELL = `
           <input type="file" id="fileInput" multiple hidden>
           <div class="input-wrap">
             <textarea class="input" id="input" rows="1" maxlength="${MAX_LEN}" placeholder="Сообщение" aria-label="Сообщение"></textarea>
-            <button class="cbtn smile" id="stickerBtn" type="button" aria-label="Стикеры" title="Стикеры" aria-expanded="false" aria-controls="stickerPanel">${ICONS.smile}</button>
+            <button class="cbtn smile" id="stickerBtn" type="button" aria-label="Эмодзи и стикеры" title="Эмодзи и стикеры" aria-expanded="false" aria-controls="stickerPanel">${ICONS.smile}</button>
           </div>
           <div class="rec-bar" id="recBar" hidden></div>
           <button class="send" id="sendBtn" type="button" aria-label="Отправить" disabled hidden>${ICONS.send}</button>
@@ -194,8 +198,8 @@ const SHELL = `
     </header>
     <form class="sh-body stack" id="linkForm" novalidate>
       <input class="txt" id="linkInput" maxlength="300" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"
-        placeholder="Ссылка, код приглашения или @канал" aria-label="Ссылка-приглашение, код или @имя канала">
-      <p class="hint">Например, skam-messenger.ru/?join=… — приглашение в группу или канал, или @имя публичного канала.</p>
+        placeholder="Ссылка, код приглашения или @имя" aria-label="Ссылка-приглашение, код или @имя человека или канала">
+      <p class="hint">Например, skam-messenger.ru/?join=… — приглашение в группу или канал, или @имя человека или публичного канала.</p>
       <p class="err" id="linkErr"></p>
       <button class="btn primary" id="linkGo" type="submit">Открыть</button>
     </form>
@@ -216,6 +220,7 @@ const SHELL = `
 <dialog id="supportDlg" class="support-dlg" aria-label="Поддержка"></dialog>
 <dialog id="rateDlg" class="rate-dlg" aria-label="Оценить СКАМ"></dialog>
 <dialog id="stickerDlg" class="sticker-dlg" aria-label="Стикеры"></dialog>
+<dialog id="reactDlg" class="sheet react-dlg" aria-label="Реакция"></dialog>
 <dialog id="folderDlg" class="folder-dlg" aria-label="Папка"></dialog>
 <dialog id="folderPickDlg" class="pick-dlg" aria-label="Выбор чатов"></dialog>
 <dialog id="foldersDlg" class="folders-dlg" aria-label="Папки с чатами"></dialog>
@@ -408,7 +413,7 @@ function setBanner(text: string | null): void {
 
 /** Текст с вложениями: «🖼 Фото», «🖼 подпись», «📎 отчёт.pdf». */
 function contentPreview(text: string, files: { kind?: unknown; name?: unknown }[]): string {
-  const t = text.replace(/\s+/g, ' ').trim();
+  const t = plainEmoji(text).replace(/\s+/g, ' ').trim();
   if (!files.length) return t || '…';
   const label = filesLabel(files);
   return t ? `${label.split(' ')[0]} ${t}` : label;
@@ -423,7 +428,7 @@ function kindText(kind: string | null, body: string | null, files: { kind?: unkn
     case 'e2e': return '🔒 Зашифрованное сообщение';
     case 'media': return contentPreview(body ?? '', files);
     case 'call': return '📞 Звонок';
-    default: return body || '…';
+    default: return plainEmoji(body ?? '') || '…';
   }
 }
 
@@ -1152,14 +1157,6 @@ function renderHead(): void {
   sub.textContent = parts.join(', ');
 }
 
-function reactionCounts(m: Msg) {
-  const list = S.reactions.get(m.id) ?? [];
-  return REACTIONS.map((R) => {
-    const rs = list.filter((r) => r.emoji === R.k);
-    return { k: R.k, e: R.e, n: rs.length, on: rs.some((r) => r.user_id === meId()), who: rs.filter((r) => r.user_id).map((r) => who(r.user_id).name) };
-  }).filter((x) => x.n > 0);
-}
-
 /**
  * «Подпрыгивает» только стикер, который вы только что отправили с этого устройства, и только один раз.
  * Полученные и старые стикеры — неподвижны.
@@ -1233,7 +1230,14 @@ function messageBody(b: HTMLElement, m: Msg, author: string): HTMLElement {
     case 'video_note': b.append(videoNoteEl(m)); return b;
     default: {
       const content: Content = m.content ?? { text: m.body, files: [] };
-      if (!content.files.length) { fillText(b, content.text); return b; }
+      if (!content.files.length) {
+        // Только свои эмодзи (1–3) — крупно, как в Telegram.
+        const n = emojiOnly(content.text);
+        const big = n > 0 && n <= 3;
+        if (big) b.classList.add('emoji-only');
+        fillText(b, content.text, big);
+        return b;
+      }
       b.append(renderAttachments(m, content.files, author));
       if (!content.text) return b;
       const cap = el('div', 'caption');
@@ -1319,8 +1323,8 @@ function oneLine(k: string, text: string, files: { kind?: unknown; name?: unknow
     case 'sticker': return `${text ? `${text} ` : ''}Стикер`;
     case 'voice': return '🎤 Голосовое сообщение';
     case 'video_note': return '⚪ Кружочек';
-    case 'media': case 'e2e': return files.length ? contentPreview(text, files) : text || '…';
-    default: return text || '…';
+    case 'media': case 'e2e': return files.length ? contentPreview(text, files) : plainEmoji(text) || '…';
+    default: return plainEmoji(text) || '…';
   }
 }
 
@@ -1503,32 +1507,14 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   }
 
   if (!deleted && !m.pending && !m.failed) {
-    const counts = reactionCounts(m);
-    if (counts.length) {
-      const rs = el('div', 'reacts');
-      counts.forEach((c) => {
-        const chip = el('button', `chip${c.on ? ' on' : ''}`);
-        chip.type = 'button';
-        chip.append(el('span', 'e', c.e), el('span', 'n', String(c.n)));
-        chip.setAttribute('aria-label', `${c.e} ${c.n}`);
-        chip.setAttribute('aria-pressed', String(c.on));
-        chip.title = c.who.join(', ');
-        if (chat.preview) chip.disabled = true;
-        else chip.addEventListener('click', () => react(m, c.k));
-        rs.append(chip);
-      });
-      wrap.append(rs);
-    }
+    const rs = reactionChips(m, chat);
+    if (rs) wrap.append(rs);
     b.tabIndex = 0;
     if (!selecting) {
       // Над сообщением (при наведении): реакции, «Ответить», «Переслать», «Удалить».
       const act = el('div', 'actions');
       if (!chat.preview) {
-        REACTIONS.forEach((R) => {
-          const btn = button(null, R.e, (ev) => { ev.stopPropagation(); U.openMsg = null; react(m, R.k); });
-          btn.setAttribute('aria-label', `Реакция ${R.e}`);
-          act.append(btn);
-        });
+        act.append(...quickReactions(m, chat, () => { U.openMsg = null; }));
         act.append(el('span', 'act-sep'));
       }
       if (canPost(chat)) act.append(iconAction('reply', 'Ответить', () => setReply(m)));
@@ -1580,10 +1566,6 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   }
   row.append(wrap);
   return row;
-}
-
-function react(m: Msg, key: ReactionKey): void {
-  toggleReaction(m, key).catch((e) => toast(errText(e, 'Не получилось поставить реакцию.')));
 }
 
 function renderFeed(): void {
@@ -1700,6 +1682,44 @@ function requestOlder(): void {
 function markVisibleRead(): void {
   const id = S.visibleChat();
   if (id && feedOf(id).loaded) markRead(id);
+  if (id) noteVisit(id);
+}
+
+/** Своё эмодзи в тексте: картинка; нажатие — открыть набор (добавить к себе). Нет картинки — :название:. */
+function customEmojiEl(name: string, ref: string, big: boolean): Node {
+  const b = el('button', `ce${big ? ' big' : ''}`);
+  b.type = 'button';
+  const img = el('img');
+  img.src = emojiUrl(ref);
+  img.alt = `:${name}:`;
+  img.draggable = false;
+  img.addEventListener('error', () => b.replaceWith(document.createTextNode(`:${name}:`)), { once: true });
+  b.append(img);
+  b.title = `:${name}:`;
+  b.setAttribute('aria-label', `Эмодзи :${name}: — открыть набор`);
+  b.addEventListener('click', (ev) => { ev.stopPropagation(); openStickerPack(ref.split('/')[0]); });
+  return b;
+}
+
+/** Нажали на @username в сообщении: свой профиль, чат из списка, профиль человека или канал. */
+async function openUsername(raw: string): Promise<void> {
+  const u = normUsername(raw);
+  if (!USERNAME_RE.test(u)) return;
+  closeMenu();
+  if (S.me?.username === u) { openProfile(); return; }
+  const mine = [...S.chats.values()].find((c) => c.username === u);
+  if (mine) { openChat(mine.id); return; }
+  const known = [...S.profiles.values()].find((p) => p.username === u);
+  if (known) { openPerson(known.id); return; }
+  try {
+    const [people, card] = await Promise.all([searchUsers(`@${u}`, 5), chatByUsername(u)]);
+    const person = people.find((p) => p.username === u);
+    if (person) { rememberProfiles([person]); openPerson(person.id); return; }
+    if (card) { openCard(card); return; }
+    toast(`@${u} не найден: такого имени нет или его сменили.`);
+  } catch (e) {
+    toast(errText(e, `Не получилось открыть @${u}.`));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1731,6 +1751,8 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
     inp.value = U.drafts.get(id) ?? '';
     loadFeed(id).catch(() => toast('Не удалось загрузить сообщения.'));
   }
+  // Открыл группу или канал — день активности (для супер-реакций).
+  noteVisit(id);
   joinChatChannel(isConversation(chatById(id)) ? id : null);
   if (!wideMQ.matches && !document.body.classList.contains('chat-open')) {
     history.pushState({ skamChat: id }, '');
@@ -1839,10 +1861,15 @@ async function send(): Promise<void> {
   const text = inp.value.trim();
   const id = S.cur;
   const ed = id ? U.edit.get(id) : undefined;
-  if (id && ed) { await saveEdit(id, ed, text); return; }
+  if (id && ed) { await saveEdit(id, ed, encodeEmoji(text)); return; }
   const fw = id ? U.fwd.get(id) : undefined;
   if (!id || (!text && !fw)) return;
-  if (text.length > MAX_LEN) { toast(`Слишком длинное сообщение — до ${MAX_LEN} символов.`); return; }
+  // :название: своих эмодзи → метки (в поле ввода остаётся как было, пока не отправится).
+  const out = encodeEmoji(text);
+  if (out.length > MAX_LEN) {
+    toast(out.length > text.length ? `Слишком длинное сообщение — свои эмодзи тоже занимают место (до ${MAX_LEN} символов).` : `Слишком длинное сообщение — до ${MAX_LEN} символов.`);
+    return;
+  }
   inp.value = '';
   U.drafts.delete(id);
   const reply = takeReply(id);
@@ -1853,7 +1880,7 @@ async function send(): Promise<void> {
   U.stick = true;
   try {
     // Как в Telegram: сначала комментарий, потом пересланные сообщения.
-    if (text) await sendMessage(id, text, [], { reply });
+    if (out) await sendMessage(id, out, [], { reply });
     if (fw) await forwardMessages(id, fw.msgs, fw.hide, { getBlob: (m) => mediaBlob(m.media_path!), onLocal: setLocalMedia });
   } catch (e) {
     toast(sendErr(e, id, fw ? 'Не получилось переслать.' : 'Сообщение не отправилось. Нажмите «Повторить».'));
@@ -1874,7 +1901,7 @@ function startEdit(m: Msg): void {
   U.edit.set(m.chat_id, m);
   U.reply.delete(m.chat_id);
   U.fwd.delete(m.chat_id);
-  inp.value = m.content?.text ?? m.body;
+  inp.value = emojiForInput(m.content?.text ?? m.body);
   renderComposerBar();
   autosize();
   inp.focus();
@@ -2173,7 +2200,7 @@ function copyText(m: Msg): string {
   if (m.deleted_at || m.locked) return '';
   const view = viewKind(m);
   if (view === 'sticker' || view === 'voice' || view === 'video_note') return '';
-  return (m.content?.text ?? m.body ?? '').trim();
+  return plainEmoji(m.content?.text ?? m.body ?? '').trim();
 }
 
 function closeMenu(): void {
@@ -2190,11 +2217,7 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
   const own = m.user_id === meId() && m.kind !== 'system';
   const rs = el('div', 'cm-reacts');
   rs.hidden = !!chat.preview;
-  REACTIONS.forEach((R) => {
-    const b = button(null, R.e, () => { closeMenu(); react(m, R.k); });
-    b.setAttribute('aria-label', `Реакция ${R.e}`);
-    rs.append(b);
-  });
+  rs.append(...quickReactions(m, chat, closeMenu));
   const items = el('div', 'cm-items');
   const item = (ic: keyof typeof ICONS, label: string, fn: () => void, cls = '') => {
     const b = button(`cm-item${cls ? ` ${cls}` : ''}`, null, fn);
@@ -2267,7 +2290,7 @@ async function sendFiles(chatId: string, caption: string, prepared: Prepared[]):
   for (let i = 0; i < prepared.length; i += MAX_ALBUM) {
     const chunk = prepared.slice(i, i + MAX_ALBUM);
     try {
-      await sendMessage(chatId, i === 0 ? caption : '', chunk, i === 0 ? { reply } : {});
+      await sendMessage(chatId, i === 0 ? encodeEmoji(caption) : '', chunk, i === 0 ? { reply } : {});
     } catch (e) {
       toast(sendErr(e, chatId, 'Не получилось отправить. Нажмите «Повторить».'));
     }
@@ -2357,8 +2380,130 @@ function stickerButton(s: Sticker, cls: string, onPick: (s: Sticker) => void): H
   return b;
 }
 
+/** Что открыто в панели у поля ввода: эмодзи или стикеры (запоминается на устройстве). */
+function panelMode(): 'emoji' | 'stickers' {
+  return lsGet('skam:sp-mode') === 'emoji' ? 'emoji' : 'stickers';
+}
+
+function panelModes(mode: 'emoji' | 'stickers'): HTMLElement {
+  const box = el('div', 'sp-modes');
+  box.setAttribute('role', 'tablist');
+  ([['emoji', 'Эмодзи'], ['stickers', 'Стикеры']] as const).forEach(([m, label]) => {
+    const b = button(`sp-mode${m === mode ? ' on' : ''}`, label, () => {
+      if (m === panelMode()) return;
+      lsSet('skam:sp-mode', m);
+      if (m === 'emoji') void loadMyEmojiPacks().catch(() => {});
+      renderStickerPanel();
+    });
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', String(m === mode));
+    box.append(b);
+  });
+  return box;
+}
+
+/** Вставить в поле ввода там, где курсор. Своё эмодзи (:название:) отделяется пробелами. */
+function insertIntoInput(text: string, spaced: boolean): void {
+  const inp = $<HTMLTextAreaElement>('input');
+  const a = inp.selectionStart ?? inp.value.length;
+  const b = inp.selectionEnd ?? a;
+  const before = inp.value.slice(0, a);
+  const after = inp.value.slice(b);
+  let ins = text;
+  if (spaced) {
+    if (before && !/\s$/.test(before)) ins = ` ${ins}`;
+    if (!after || !/^\s/.test(after)) ins = `${ins} `;
+  }
+  if (inp.value.length - (b - a) + ins.length > MAX_LEN) { toast(`Слишком длинное сообщение — до ${MAX_LEN} символов.`); return; }
+  inp.value = before + ins + after;
+  const pos = (before + ins).length;
+  if (!touchMQ.matches) inp.focus({ preventScroll: true });
+  inp.setSelectionRange(pos, pos);
+  if (S.cur && !U.edit.has(S.cur)) U.drafts.set(S.cur, inp.value);
+  autosize();
+  onType();
+}
+
+function renderEmojiPanel(panel: HTMLElement): void {
+  const tabs = el('div', 'sp-tabs');
+  tabs.setAttribute('aria-label', 'Наборы эмодзи');
+  const body = el('div', 'sp-body ep-body');
+  const tab = (id: string, label: string, content: Node) => {
+    const t = button('sp-tab', null, () => {
+      document.getElementById(`ep-${id}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+    t.setAttribute('aria-label', label);
+    t.title = label;
+    t.append(content);
+    tabs.append(t);
+  };
+  const section = (id: string, title: string, cells: HTMLElement[], extra?: HTMLElement) => {
+    const sec = el('section', 'sp-sec');
+    sec.id = `ep-${id}`;
+    const h = el('h3', 'sp-title', title);
+    if (extra) h.append(extra);
+    const grid = el('div', 'ep-grid');
+    grid.append(...cells);
+    sec.append(h, grid);
+    body.append(sec);
+  };
+  const customCell = (ref: string, name: string, key: string) => {
+    const b = button('ep-item ep-c', null, () => { rememberEmoji(ref); insertIntoInput(`:${key}:`, true); });
+    const img = el('img');
+    img.src = emojiUrl(ref);
+    img.alt = '';
+    img.loading = 'lazy';
+    img.draggable = false;
+    b.append(img);
+    b.title = `:${key}:`;
+    b.setAttribute('aria-label', `Эмодзи :${name}:`);
+    return b;
+  };
+  const packs = emojiPacks();
+  const recent = recentEmoji().map((ref) => emojiByRef(ref)).filter((e): e is NonNullable<typeof e> => !!e).slice(0, 16);
+  if (recent.length) {
+    section('recent', 'Недавние', recent.map((e) => customCell(e.ref, e.name, e.key)));
+    tab('recent', 'Недавние', html('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'));
+  }
+  section('basic', 'Обычные', BASIC_EMOJI.map((e) => {
+    const b = button('ep-item ep-std', e, () => insertIntoInput(e, false));
+    b.setAttribute('aria-label', e);
+    return b;
+  }));
+  tab('basic', 'Обычные', el('span', 'ep-tab-e', '🙂'));
+  for (const p of packs) {
+    if (!p.emojis.length && !p.mine) continue;
+    const more = button('sp-more', null, () => { closeStickers(); openStickerPack(p.id); });
+    more.append(html(p.mine ? ICONS.edit : ICONS.next));
+    more.title = p.mine ? 'Изменить набор' : 'О наборе';
+    more.setAttribute('aria-label', `${more.title}: ${p.title}`);
+    section(p.id, p.title, p.emojis.map((e) => customCell(e.ref, e.name, e.key)), more);
+    if (!p.emojis.length) {
+      body.lastElementChild?.append(button('btn ghost small sp-empty', 'Пока пусто — добавить эмодзи', () => { closeStickers(); openStickerPack(p.id); }));
+    }
+    const cover = p.emojis[0] ? el('img') : el('span', 'sp-letter', p.title.trim().charAt(0).toUpperCase() || '?');
+    if (cover instanceof HTMLImageElement) { cover.src = emojiUrl(p.emojis[0].ref); cover.alt = ''; }
+    tab(p.id, p.title, cover);
+  }
+  if (!packs.length) {
+    const sec = el('section', 'sp-sec ep-none');
+    sec.append(
+      el('p', 'hint', 'Своих эмодзи пока нет. Сделайте набор из картинок — и вставляйте их в сообщения как :название: и ставьте реакцией.'),
+      button('btn ghost small', 'Создать свои эмодзи', () => { closeStickers(); openEmojiManager(); }),
+    );
+    body.append(sec);
+  }
+  const add = button('sp-tab sp-add', null, () => { closeStickers(); openEmojiManager(); });
+  add.append(html(ICONS.plus));
+  add.title = 'Свои эмодзи';
+  add.setAttribute('aria-label', 'Свои эмодзи: создать набор');
+  tabs.append(add);
+  panel.replaceChildren(panelModes('emoji'), tabs, body);
+}
+
 function renderStickerPanel(): void {
   const panel = $('stickerPanel');
+  if (panelMode() === 'emoji') { renderEmojiPanel(panel); return; }
   const tabs = el('div', 'sp-tabs');
   tabs.setAttribute('aria-label', 'Наборы стикеров');
   const body = el('div', 'sp-body');
@@ -2417,7 +2562,7 @@ function renderStickerPanel(): void {
   add.title = 'Свои стикеры';
   add.setAttribute('aria-label', 'Свои стикеры: создать набор');
   tabs.append(add);
-  panel.replaceChildren(tabs, body);
+  panel.replaceChildren(panelModes('stickers'), tabs, body);
 }
 
 function stickersOpen(): boolean {
@@ -2428,6 +2573,7 @@ function openStickers(): void {
   if (!canPost(currentChat())) return;
   // Наборы могли добавить на другом устройстве — освежаем тихо.
   void loadMyPacks().catch(() => {});
+  void loadMyEmojiPacks().catch(() => {});
   renderStickerPanel();
   $('stickerPanel').hidden = false;
   $('stickerBtn').setAttribute('aria-expanded', 'true');
@@ -2525,8 +2671,8 @@ function newView(view: 'home' | 'find' | 'link'): void {
 }
 
 /**
- * «Войти по ссылке»: ссылка-приглашение (…?join=КОД), публичный канал (…?c=имя или @имя),
- * набор стикеров (…?stickers=…) или просто код приглашения.
+ * «Войти по ссылке»: ссылка-приглашение (…?join=КОД), публичный канал (…?c=имя), @имя человека или канала,
+ * набор стикеров или эмодзи (…?stickers=… / …?emoji=…) или просто код приглашения.
  */
 function openByLink(): void {
   const raw = $<HTMLInputElement>('linkInput').value.trim();
@@ -2541,12 +2687,17 @@ function openByLink(): void {
     if (/[./]/.test(raw)) {
       join = u.searchParams.get('join');
       pub = u.searchParams.get('c');
-      pack = u.searchParams.get('stickers');
+      pack = u.searchParams.get('stickers') ?? u.searchParams.get('emoji');
     }
   } catch { /* не ссылка */ }
   if (!join && !pub && !pack) {
-    if (/^@[A-Za-z][A-Za-z0-9_]{4,31}$/.test(raw)) pub = raw;
-    else if (/^[A-Za-z0-9_-]{6,64}$/.test(raw)) join = raw;
+    // @имя — человек или публичный канал (как нажать на @имя в сообщении).
+    if (/^@[A-Za-z][A-Za-z0-9_]{4,31}$/.test(raw)) {
+      closeDialog($<HTMLDialogElement>('newDlg'));
+      void openUsername(raw);
+      return;
+    }
+    if (/^[A-Za-z0-9_-]{6,64}$/.test(raw)) join = raw;
   }
   if (pub && /^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(pub)) lsSet('skam:open', pub.replace(/^@/, '').toLowerCase());
   else if (pack && /^u[0-9a-f]{11}$/.test(pack)) lsSet('skam:stickers', pack);
@@ -4122,8 +4273,12 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   mountStickerPacks({
     canSend: () => !!S.cur && canPost(currentChat()),
     send: (st) => void pickSticker(st),
-    changed: () => { if (stickersOpen()) renderStickerPanel(); updateSuggest(); },
+    changed: () => { if (stickersOpen()) renderStickerPanel(); updateSuggest(); reactionPacksChanged(); },
   });
+  mountReactions({ whoName: (uid) => who(uid).name });
+  // @username в тексте — открыть профиль человека или канал; свои эмодзи — картинкой.
+  textHooks.mention = (u) => void openUsername(u);
+  textHooks.emoji = customEmojiEl;
   unsubs.push(mountCallUI({
     who: (uid) => who(uid),
     avatar: (uid, cls) => avatarEl(who(uid), cls),
@@ -4176,6 +4331,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
 
   void loadAppOwner().catch(() => {});
   void loadMyPacks().catch(() => {});
+  void loadMyEmojiPacks().catch(() => {});
   // Папки, закреплённые, ники, блокировки и «без звука» — параллельно с чатами.
   void loadLayout(true).catch(() => {});
   void loadNicknames(true).catch(() => {});
@@ -4214,6 +4370,8 @@ export function unmountApp(): void {
   dropNotes(null);
   U.stickerImgs.clear();
   resetStickerPacks();
+  textHooks.mention = undefined;
+  textHooks.emoji = undefined;
   resetLayout();
   resetNicks();
   resetStories();

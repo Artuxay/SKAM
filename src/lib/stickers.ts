@@ -82,12 +82,12 @@ export function packFromInfo(info: StickerPackInfo): StickerPack {
     title: info.title,
     official: false,
     mine: info.mine,
-    stickers: info.stickers.map((x) => ({ ref: `${info.id}/${x.id}`, pack: info.id, label: info.title, emoji: x.emoji, emojis: [x.emoji] })),
+    stickers: info.stickers.map((x) => ({ ref: `${info.id}/${x.id}`, pack: info.id, label: info.title, emoji: x.emoji ?? '', emojis: x.emoji ? [x.emoji] : [] })),
   };
 }
 
 export function setCustomPacks(list: StickerPackInfo[]): void {
-  custom = list.filter((p) => CUSTOM_PACK_RE.test(p.id)).map(packFromInfo);
+  custom = list.filter((p) => CUSTOM_PACK_RE.test(p.id) && p.kind !== 'emoji').map(packFromInfo);
   reindex();
 }
 

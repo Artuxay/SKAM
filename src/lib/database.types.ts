@@ -6,15 +6,31 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 
 export type ChatKind = 'group' | 'direct' | 'channel' | 'bot';
 
-/** Неофициальный набор стикеров: картинки — storage stickers/<id>/<стикер>. */
+/** Неофициальный набор стикеров или своих эмодзи: картинки — storage stickers/<id>/<стикер>. */
 export type StickerPackInfo = {
   id: string;
   title: string;
+  /** sticker — стикеры (у каждого эмодзи), emoji — свои эмодзи (у каждого название). Старые ответы — без kind. */
+  kind?: 'sticker' | 'emoji';
   /** Мой набор (я его автор). */
   mine: boolean;
   /** Набор добавлен в мою панель стикеров. */
   added: boolean;
-  stickers: { id: string; emoji: string }[];
+  /** У стикера — emoji, у своего эмодзи — name (:кот:). */
+  stickers: { id: string; emoji?: string; name?: string }[];
+};
+
+/** Можно ли мне супер-реакцию в группе или канале (super_reaction_status). */
+export type SuperStatus = {
+  available: boolean;
+  eligible: boolean;
+  score: number;
+  need: number;
+  member_days: number;
+  need_days: number;
+  active_days: number;
+  per_day: number;
+  left: number;
 };
 
 
@@ -303,6 +319,8 @@ export type Database = {
           emoji: ReactionKey;
           chat_id: string;
           created_at: string;
+          /** Супер-реакция (выделяется цветом). */
+          super?: boolean;
         };
         Insert: {
           message_id: string;
@@ -459,6 +477,13 @@ export type Database = {
       /** Неофициальные наборы стикеров. */
       sticker_pack: { Args: { p_pack: string }; Returns: StickerPackInfo | null };
       my_sticker_packs: { Args: Record<PropertyKey, never>; Returns: StickerPackInfo[] };
+      my_emoji_packs: { Args: Record<PropertyKey, never>; Returns: StickerPackInfo[] };
+      create_emoji_pack: { Args: { p_title: string }; Returns: string };
+      add_custom_emoji: { Args: { p_pack: string; p_id: string; p_name: string }; Returns: undefined };
+      rename_custom_emoji: { Args: { p_pack: string; p_id: string; p_name: string }; Returns: undefined };
+      set_reaction: { Args: { p_message: string; p_emoji: string; p_super?: boolean }; Returns: undefined };
+      super_reaction_status: { Args: { p_chat: string }; Returns: SuperStatus | null };
+      chat_visit: { Args: { p_chat: string }; Returns: undefined };
       create_sticker_pack: { Args: { p_title: string }; Returns: string };
       rename_sticker_pack: { Args: { p_pack: string; p_title: string }; Returns: undefined };
       add_sticker: { Args: { p_pack: string; p_id: string; p_emoji: string }; Returns: undefined };
@@ -540,7 +565,8 @@ export type Database = {
   };
 };
 
-export type ReactionKey = 'like' | 'lol' | 'fire' | 'wow' | 'clown';
+/** Обычная реакция ('like'…) или своё эмодзи: 'c:<набор>/<эмодзи>'. */
+export type ReactionKey = 'like' | 'lol' | 'fire' | 'wow' | 'clown' | `c:${string}`;
 /**
  * Вид сообщения: text/system — текст; sticker, voice (голосовое), video_note (кружочек);
  * e2e — зашифрованное (содержимое внутри enc); media — вложения там, где E2E нет (канал, бот);

@@ -10,13 +10,13 @@ import { registerServiceWorker } from './app/pwa';
 applyTheme();
 registerServiceWorker();
 
-// Ссылка-приглашение ?join=КОД, публичный канал ?c=имя и стикеры ?stickers=<id>: запоминаем и чистим адресную строку.
+// Ссылка-приглашение ?join=КОД, публичный канал ?c=имя, стикеры ?stickers=<id> и эмодзи ?emoji=<id>: запоминаем и чистим адресную строку.
 const url = new URL(location.href);
 const join = url.searchParams.get('join');
 // Публичный канал ?c=имя — откроем после входа.
 const pub = url.searchParams.get('c');
-// Набор стикеров ?stickers=<id> — покажем после входа с кнопкой «Добавить».
-const pack = url.searchParams.get('stickers');
+// Набор стикеров ?stickers=<id> или своих эмодзи ?emoji=<id> — покажем после входа с кнопкой «Добавить».
+const pack = url.searchParams.get('stickers') ?? url.searchParams.get('emoji');
 // Чат ?chat=<id> — из уведомления, когда СКАМ был закрыт.
 const chat = url.searchParams.get('chat');
 if (join || pub || pack || chat) {
@@ -28,6 +28,7 @@ if (join || pub || pack || chat) {
   url.searchParams.delete('chat');
   url.searchParams.delete('c');
   url.searchParams.delete('stickers');
+  url.searchParams.delete('emoji');
   history.replaceState(history.state, '', url.pathname + url.search + url.hash);
 }
 

@@ -218,19 +218,47 @@ export function errText(e: unknown, fallback = 'Не получилось. Пр�
   return fallback;
 }
 
-/** Текст с кликабельными ссылками — без innerHTML. */
-export function fillText(node: HTMLElement, text: string): void {
-  const re = /https?:\/\/[^\s<>"']+/g;
+/**
+ * Что делать с @username и своими эмодзи в тексте — задаёт приложение (здесь нет доступа к профилям и наборам).
+ * mention: нажали на @username. emoji: нарисовать своё эмодзи по метке <:название:набор/эмодзи>.
+ */
+export const textHooks: {
+  mention?: (username: string) => void;
+  emoji?: (name: string, ref: string, big: boolean) => Node;
+} = {};
+
+// Ссылка; метка своего эмодзи; @username (не часть почты и не внутри слова).
+const TEXT_RE = /(https?:\/\/[^\s<>"']+)|<:([a-z0-9_а-яё]{2,32}):(u[0-9a-f]{11}\/[a-z0-9]{10})>|(?<![\p{L}\p{N}_@./\\])@([A-Za-z][A-Za-z0-9_]{4,31})(?![\p{L}\p{N}_])/gu;
+
+/** Текст сообщения: ссылки, @username и свои эмодзи. big — только эмодзи (1–3 штуки), рисуем крупно. */
+export function fillText(node: HTMLElement, text: string, big = false): void {
   let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
+  TEXT_RE.lastIndex = 0;
+  while ((m = TEXT_RE.exec(text))) {
     node.append(text.slice(last, m.index));
-    const a = el('a', null, m[0]);
-    a.href = m[0];
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    node.append(a);
     last = m.index + m[0].length;
+    if (m[1]) {
+      const a = el('a', null, m[1]);
+      a.href = m[1];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      node.append(a);
+    } else if (m[3]) {
+      node.append(textHooks.emoji ? textHooks.emoji(m[2], m[3], big) : `:${m[2]}:`);
+    } else if (m[4]) {
+      const u = m[4].toLowerCase();
+      if (!textHooks.mention) { node.append(m[0]); continue; }
+      const a = el('a', 'mention', m[0]);
+      a.href = `#@${u}`;
+      a.title = `Открыть @${u}`;
+      a.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        textHooks.mention?.(u);
+      });
+      node.append(a);
+    }
   }
   node.append(text.slice(last));
 }
