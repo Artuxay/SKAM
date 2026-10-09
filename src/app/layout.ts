@@ -106,6 +106,7 @@ export function folderById(id: string | null | undefined): ChatFolder | undefine
 
 /** Бот — в «Личных»: это переписка один на один. */
 export function kindOf(c: MyChat): KindTab {
+  // Бот и «Избранное» — во вкладке «Личные».
   return c.kind === 'group' ? 'group' : c.kind === 'channel' ? 'channel' : 'direct';
 }
 

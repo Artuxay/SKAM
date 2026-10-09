@@ -55,7 +55,9 @@ export function mediaUrl(path: string): Promise<string> {
 /** Файл голосового или кружочка целиком (расшифрованный) — например, чтобы переслать. */
 export async function mediaBlob(path: string): Promise<Blob> {
   const url = await mediaUrl(path);
-  const res = await fetch(url);
+  // Мимо кэша: <audio>/<video> уже скачали этот адрес без CORS, и ответ из кэша (без
+  // Access-Control-Allow-Origin) ломал fetch — пересылка голосового или кружочка падала с «Нет связи».
+  const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error('Не получилось скачать запись — возможно, её удалили.');
   return res.blob();
 }

@@ -41,9 +41,9 @@ export function myPublicKey(): string | null {
   return me?.pub ?? null;
 }
 
-/** Сквозное шифрование — в обычных чатах: личных и группах. Канал и бот — без него, как в Telegram. */
+/** Сквозное шифрование — в обычных чатах: личных, группах и «Избранном». Канал и бот — без него, как в Telegram. */
 export function isE2EKind(kind: string | null | undefined): boolean {
-  return kind === 'direct' || kind === 'group';
+  return kind === 'direct' || kind === 'group' || kind === 'saved';
 }
 
 const localKey = (uid: string) => `identity:${uid}`;

@@ -40,6 +40,9 @@ export const APP_ICON =
 export const APP_ICON_HERO = APP_ICON.replace('class="appicon"', 'class="appicon hero"');
 export const BRAND_AVATAR =
   '<svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="100" fill="url(#skamGrad)"/><use href="#skamMark" x="52" y="47" width="96" height="104.8" fill="#000"/></svg>';
+/** Расшифровка: Свободный Конфиденциальный Автономный Мессенджер (с 0.3.6). */
+export const SKAM_FULL = 'Свободный Конфиденциальный Автономный Мессенджер';
+export const SKAM_FULL_HTML = '<p class="expansion"><b>С</b>вободный <b>К</b>онфиденциальный <b>А</b>втономный <b>М</b>ессенджер</p>';
 export const LOGO = `<span class="logo">${APP_ICON}<span class="wordmark">СКАМ</span></span>`;
 
 export const ICONS = {
@@ -89,6 +92,8 @@ export const ICONS = {
   star: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.9l2.8 5.7 6.3.9-4.6 4.5 1.1 6.3L12 17.3l-5.6 3 1.1-6.3-4.6-4.5 6.3-.9z"/></svg>',
   starFill: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" d="M12 2.9l2.8 5.7 6.3.9-4.6 4.5 1.1 6.3L12 17.3l-5.6 3 1.1-6.3-4.6-4.5 6.3-.9z"/></svg>',
   done: '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7.5 12.5l3 3 6-6.5"/></svg>',
+  /** Закладка — «Избранное». */
+  bookmark: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 3.5h11a1 1 0 0 1 1 1v16l-6.5-4.2-6.5 4.2v-16a1 1 0 0 1 1-1z"/></svg>',
   edit: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>',
   search: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3"/><path d="M20 20l-4.6-4.6"/></svg>',
   pin: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 3.5l6 6-2.2.8-3.6 3.6.4 3.9-1.6 1.6-3.3-3.3L5 21l-.1-.1 4.8-5.2-3.3-3.3L8 10.8l3.9.4 3.6-3.6z"/></svg>',

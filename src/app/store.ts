@@ -109,6 +109,26 @@ export function chatById(id: string | null | undefined): MyChat | undefined {
   return S.chats.get(id) ?? (S.preview?.id === id ? S.preview : undefined);
 }
 
+/** Моё «Избранное» из списка чатов (null — ещё не создано или список не загружен). */
+export function savedChat(): MyChat | null {
+  for (const c of S.chats.values()) if (c.kind === 'saved') return c;
+  return null;
+}
+
+let savedOpening: Promise<string> | null = null;
+/** id «Избранного»: из списка или создать на сервере (один раз на всех вызывающих). */
+export function ensureSaved(): Promise<string> {
+  const have = savedChat();
+  if (have) return Promise.resolve(have.id);
+  savedOpening ??= (async () => {
+    const { data, error } = await sb.rpc('open_saved');
+    if (error) throw error;
+    if (!S.chats.has(data)) await loadChats();
+    return data;
+  })().finally(() => { savedOpening = null; });
+  return savedOpening;
+}
+
 /** Есть ли у меня право в чате (у владельца — все). */
 export function hasRight(c: MyChat | null | undefined, r: ChatRight): boolean {
   return !!c && !c.preview && (c.rights ?? []).includes(r);

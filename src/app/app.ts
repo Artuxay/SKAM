@@ -3,7 +3,7 @@ import type { User } from '@supabase/supabase-js';
 import { avatarUrl, sb } from '../lib/supabase';
 import type { Attachment, ChatCard, CommonGroup, Forward, MyChat } from '../lib/database.types';
 import {
-  $, APP_ICON_HERO, BRAND_AVATAR, ICONS, LOGO, MARK_SVG, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
+  $, APP_ICON_HERO, BRAND_AVATAR, ICONS, LOGO, MARK_SVG, SKAM_FULL_HTML, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
   listTime, lsGet, lsSet, openDialog, plural, textHooks, timeLabel, toast, touchMQ, verifiedMark, wideMQ,
 } from '../lib/dom';
 import {
@@ -27,7 +27,7 @@ import {
   updateMyProfile, uploadAvatar, usernameAvailable, viewKind, onUploadProgress, type Content, type FoundUser, type Msg,
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
-  loadAppOwner, rememberProfiles, setVerified, BIO_MAX, normBio, userBio, chatMuted, peerBlocked,
+  loadAppOwner, rememberProfiles, setVerified, BIO_MAX, normBio, userBio, chatMuted, peerBlocked, ensureSaved, savedChat,
 } from './store';
 import { NICK_MAX, loadNicknames, nickHits, nickOf, resetNicks, setNickname } from './nicks';
 import {
@@ -356,6 +356,7 @@ function personAvatar(uid: string | null, cls = '', clickable = false): HTMLElem
 
 function chatTitle(c: MyChat): string {
   if (c.kind === 'direct') return c.peer_id ? who(c.peer_id).name : 'Личный чат';
+  if (c.kind === 'saved') return 'Избранное';
   return c.name ?? 'Без названия';
 }
 
@@ -433,7 +434,7 @@ function kindText(kind: string | null, body: string | null, files: { kind?: unkn
 }
 
 function previewText(c: MyChat): string {
-  if (!c.last_id) return c.kind === 'direct' ? 'Напишите первым' : 'Пока пусто';
+  if (!c.last_id) return c.kind === 'direct' ? 'Напишите первым' : c.kind === 'saved' ? 'Сохраняйте сюда сообщения и заметки' : 'Пока пусто';
   if (c.last_deleted) return 'Сообщение удалено';
   let t: string;
   if (c.last_kind === 'call') return callPreview(c);
@@ -446,7 +447,7 @@ function previewText(c: MyChat): string {
     t = kindText(c.last_kind, c.last_body, Array.isArray(c.last_files) ? c.last_files : []);
   }
   t = t.replace(/\s+/g, ' ');
-  if (c.kind === 'channel') return t;
+  if (c.kind === 'channel' || c.kind === 'saved') return t;
   if (c.last_user_id === meId()) return `Вы: ${t}`;
   if (c.kind === 'group' && c.last_kind !== 'system') return `${who(c.last_user_id).name}: ${t}`;
   return t;
@@ -796,7 +797,7 @@ function matchScore(c: MyChat, q: { at: boolean; s: string; toks: string[] }): n
   const real = c.kind === 'direct' && nickOf(c.peer_id) ? searchNorm(S.profiles.get(c.peer_id!)?.name ?? '') : '';
   if (real && real.startsWith(q.s)) return 85;
   // Бота находят и по слову «бот».
-  const extra = c.kind === 'bot' ? ['бот', 'bot'] : [];
+  const extra = c.kind === 'bot' ? ['бот', 'bot'] : c.kind === 'saved' ? ['сохранённые', 'сохраненные', 'заметки', 'закладки', 'saved'] : [];
   const split = (v: string) => v.split(/[\s\-—–«»"'.,:;!?()]+/);
   const words = [...split(title), ...split(real), ...users, ...extra].filter(Boolean);
   if (q.toks.every((t) => words.some((w) => w.startsWith(t)))) return 70;
@@ -956,6 +957,9 @@ function chatTileEl(c: MyChat, cls = ''): HTMLElement {
     tile = el('span', `tile person ${cls} ${ringClass(c.peer_id)}`.trim());
     tile.append(avatarEl(who(c.peer_id)));
     if (c.peer_id && isOnline(S.profiles.get(c.peer_id))) tile.append(el('span', 'on-dot'));
+  } else if (c.kind === 'saved') {
+    tile = el('span', `tile saved ${cls}`.trim());
+    tile.append(html(ICONS.bookmark));
   } else if (isOfficial(c)) {
     tile = el('span', `tile official ${c.kind === 'bot' ? 'mark' : ''} ${cls}`.trim());
     tile.append(officialMark(c));
@@ -1081,6 +1085,11 @@ function renderHead(): void {
     emoji.style.background = 'transparent';
     const rc = ringClass(c.peer_id);
     if (rc) emoji.className = `conv-emoji ${rc}`;
+  } else if (c.kind === 'saved') {
+    emoji.replaceChildren(html(ICONS.bookmark));
+    emoji.classList.add('saved');
+    emoji.style.border = '';
+    emoji.style.background = '';
   } else if (isOfficial(c)) {
     emoji.replaceChildren(officialMark(c));
     emoji.classList.add('official');
@@ -1145,6 +1154,7 @@ function renderHead(): void {
   }
   sub.classList.remove('online');
   if (c.kind === 'bot') { sub.textContent = 'бот'; return; }
+  if (c.kind === 'saved') { sub.textContent = 'сохранённые сообщения и заметки · видите только вы'; return; }
   if (c.kind === 'channel') {
     sub.textContent = `${c.username ? 'публичный канал' : 'канал'} · ${countLabel(c)}`;
     return;
@@ -1453,7 +1463,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
     row.append(mark);
   }
   // В личном чате и с ботом — без аватарок и имён: и так понятно, кто пишет (как в Telegram).
-  const oneToOne = chat.kind === 'direct' || chat.kind === 'bot';
+  const oneToOne = chat.kind === 'direct' || chat.kind === 'bot' || chat.kind === 'saved';
   if (!oneToOne) {
     const slot = el('div', 'avslot');
     if (first && !mine) slot.append(avatarEl(w, '', !selecting));
@@ -1520,6 +1530,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
       if (canPost(chat)) act.append(iconAction('reply', 'Ответить', () => setReply(m)));
       if (canEdit(m, chat)) act.append(iconAction('edit', 'Изменить', () => startEdit(m)));
       if (canForward(m)) act.append(iconAction('forward', 'Переслать', () => openForward([m])));
+      if (canForward(m) && chat.kind !== 'saved') act.append(iconAction('bookmark', 'В избранное', () => void saveToFavorites([m])));
       if (!chat.preview) act.append(iconAction('check', 'Выбрать', () => startSelect(m)));
       if (canDelete(m, chat)) {
         const armed = U.armedDelete === m.id;
@@ -1584,7 +1595,10 @@ function renderFeed(): void {
     inner.append(el('p', 'feed-note', 'Не удалось загрузить сообщения.'));
   } else if (!f.msgs.length) {
     const q = el('div', 'quiet');
-    if (c.kind === 'direct' || c.kind === 'bot') {
+    if (c.kind === 'saved') {
+      q.append(el('strong', null, 'Ваше Избранное'),
+        'Пишите сюда заметки, ссылки и списки, кидайте файлы. Любое сообщение из другого чата можно сохранить: правый клик (на телефоне — долгое нажатие) → «В избранное». Видите только вы — на всех своих устройствах.');
+    } else if (c.kind === 'direct' || c.kind === 'bot') {
       q.append(el('strong', null, 'Здесь пока тихо'), 'Напишите первое сообщение — обещаем, это не развод.');
     } else if (c.kind === 'channel') {
       if (canPost(c)) {
@@ -2116,7 +2130,14 @@ function renderSelectBar(): void {
   const fwd = button('btn primary small sb-btn', null, () => openForward(list));
   fwd.append(html(ICONS.forward), el('span', null, 'Переслать'));
   fwd.disabled = !list.length || !list.every(canForward);
-  bar.replaceChildren(cancel, count, el('span', 'sb-spacer'), fwd);
+  bar.replaceChildren(cancel, count, el('span', 'sb-spacer'));
+  if (c.kind !== 'saved') {
+    const keep = button('btn ghost small sb-btn', null, () => { const all = selectedMsgs(); exitSelect(); void saveToFavorites(all); });
+    keep.append(html(ICONS.bookmark), el('span', null, 'В избранное'));
+    keep.disabled = fwd.disabled;
+    bar.append(keep);
+  }
+  bar.append(fwd);
   const own = list.length > 0 && !!c && list.every((m) => canDelete(m, c));
   if (own) {
     const del = button('btn danger small sb-btn', U.armedSel ? 'Точно удалить?' : 'Удалить', () => {
@@ -2138,6 +2159,7 @@ function renderSelectBar(): void {
 
 function chatKindLabel(c: MyChat): string {
   if (c.kind === 'direct') return 'личный чат';
+  if (c.kind === 'saved') return 'сохранённые сообщения';
   if (c.kind === 'bot') return 'бот';
   if (c.kind === 'channel') return 'канал';
   return plural(c.member_count, 'участник', 'участника', 'участников');
@@ -2161,7 +2183,9 @@ function openForward(msgs: Msg[]): void {
   hideRow.append(hide, el('span', null, 'Скрыть имя отправителя'));
   const fill = () => {
     const needle = searchNorm(q.value);
-    const chats = listChats(null).filter((c) => canPost(c) && (!needle || searchNorm(chatTitle(c)).includes(needle)));
+    const chats = listChats(null).filter((c) => canPost(c) && (!needle || searchNorm(chatTitle(c)).includes(needle)))
+      // «Избранное» — первым, как в Telegram.
+      .sort((a, b) => Number(b.kind === 'saved') - Number(a.kind === 'saved'));
     if (!chats.length) { box.replaceChildren(el('p', 'list-empty', 'Такого чата нет')); return; }
     box.replaceChildren(...chats.map((c) => {
       const b = button('fwd-chat', null, () => pickForward(c, list, hide.checked));
@@ -2182,6 +2206,28 @@ function openForward(msgs: Msg[]): void {
   dlg.replaceChildren(head, q, box, hideRow);
   openDialog(dlg);
   if (!touchMQ.matches) q.focus();
+}
+
+/** Сохранить сообщения в «Избранное» (пересылкой с «Переслано от …»), не уходя из чата. */
+async function saveToFavorites(msgs: Msg[]): Promise<void> {
+  const list = msgs.filter(canForward);
+  if (!list.length) { toast('Эти сообщения нельзя сохранить.'); return; }
+  try {
+    const id = await ensureSaved();
+    await forwardMessages(id, list, false, { getBlob: (m) => mediaBlob(m.media_path!), onLocal: setLocalMedia });
+    toast(list.length === 1 ? 'Сохранено в Избранное' : `В Избранное: ${plural(list.length, 'сообщение', 'сообщения', 'сообщений')}`);
+  } catch (e) {
+    toast(errText(e, 'Не получилось сохранить в Избранное.'));
+  }
+}
+
+/** Открыть «Избранное» (создать, если его ещё нет). */
+async function openSaved(): Promise<void> {
+  try {
+    openChat(await ensureSaved());
+  } catch (e) {
+    toast(errText(e, 'Не получилось открыть Избранное.'));
+  }
 }
 
 function pickForward(c: MyChat, list: Msg[], hide: boolean): void {
@@ -2236,6 +2282,7 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
     });
   }
   if (canForward(m)) item('forward', 'Переслать', () => openForward([m]));
+  if (canForward(m) && chat.kind !== 'saved') item('bookmark', 'В избранное', () => { closeMenu(); void saveToFavorites([m]); });
   if (!chat.preview) item('check', 'Выбрать', () => startSelect(m));
   if (canDelete(m, chat)) {
     let armed = false;
@@ -2308,7 +2355,7 @@ function hasFiles(e: DragEvent): boolean {
 function openEncryptionInfo(c: MyChat): void {
   const dlg = $<HTMLDialogElement>('keyDlg');
   const stack = el('div', 'stack');
-  const where = c.kind === 'direct' ? 'в этом чате' : 'в этой группе';
+  const where = c.kind === 'direct' ? 'в этом чате' : c.kind === 'saved' ? 'в Избранном' : 'в этой группе';
   stack.append(
     el('p', null, `Сообщения, фото, видео, файлы, стикеры, голосовые и кружочки ${where} шифруются прямо на устройствах участников и расшифровываются только у них. На сервере СКАМ лежит лишь шифротекст.`),
   );
@@ -3026,6 +3073,7 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
     hero,
     grp(
       row({ icon: 'edit', label: 'Изменить профиль', chev: true, fn: () => profGo('edit') }),
+      row({ icon: 'bookmark', label: 'Избранное', chev: true, fn: () => { closeDialog(dlg); void openSaved(); } }),
       row({ icon: 'storyAdd', label: 'Мои истории', em: mine ? String(mine) : 'Добавить', chev: true, fn: () => profGo('stories') }),
       row({
         icon: 'folder', label: 'Папки с чатами', em: L.folders.length ? String(L.folders.length) : null, chev: true,
@@ -3293,7 +3341,7 @@ function profNotify(dlg: HTMLDialogElement): HTMLElement[] {
 
 function profAbout(dlg: HTMLDialogElement): HTMLElement[] {
   const hero = el('div', 'sh-hero about');
-  hero.append(html(APP_ICON_HERO), el('span', 'wordmark', 'СКАМ'), el('p', 'sh-sub', 'Не развод, а мессенджер'),
+  hero.append(html(APP_ICON_HERO), el('span', 'wordmark', 'СКАМ'), html(SKAM_FULL_HTML), el('p', 'sh-sub', 'Не развод, а мессенджер'),
     el('p', 'sh-sub', `Версия ${__SKAM_VERSION__}`));
   const linkRow = (a: HTMLAnchorElement, icon: IconName, text: string) => {
     a.className = 'lr';
@@ -3728,7 +3776,32 @@ function openChatInfo(): void {
     openBotCard();
     return;
   }
+  if (c.kind === 'saved') {
+    openSavedCard();
+    return;
+  }
   openChatAdmin(c.id);
+}
+
+/** Карточка «Избранного»: что это и как туда сохранять. */
+function openSavedCard(): void {
+  const dlg = $<HTMLDialogElement>('personDlg');
+  personUid = null;
+  dlg.classList.remove('sub');
+  const hero = el('div', 'sh-hero');
+  const av = el('div', 'sh-av');
+  const tile = el('span', 'tile saved xxl');
+  tile.append(html(ICONS.bookmark));
+  av.append(tile);
+  hero.append(av, el('h2', 'sh-name', 'Избранное'), el('p', 'sh-sub', 'видите только вы'));
+  dlg.replaceChildren(
+    sheetHead(dlg, null), hero,
+    grp(
+      row({ icon: 'bookmark', label: 'Любое сообщение из любого чата: правый клик (на телефоне — долгое нажатие) → «В избранное». Несколько — «Выбрать» → «В избранное».', sub: 'Как сохранять' }),
+      row({ icon: 'lock', label: 'Сквозное шифрование, как в личных чатах: сервер видит только шифротекст. Открывается на всех ваших устройствах после пароля шифрования.', sub: 'Кто видит' }),
+    ),
+  );
+  if (!dlg.open) openDialog(dlg);
 }
 
 function openBotCard(): void {
@@ -3766,7 +3839,7 @@ function openBotCard(): void {
 // ---------------------------------------------------------------------------
 
 function infoLabel(c: MyChat): string {
-  return c.kind === 'direct' ? 'Профиль' : c.kind === 'bot' ? 'О боте' : c.kind === 'channel' ? 'О канале' : 'О группе';
+  return c.kind === 'direct' ? 'Профиль' : c.kind === 'bot' ? 'О боте' : c.kind === 'channel' ? 'О канале' : c.kind === 'saved' ? 'Об Избранном' : 'О группе';
 }
 
 /** «Без звука»: сроки, как в Telegram. */
@@ -3781,7 +3854,7 @@ function openMuteMenu(c: MyChat, x: number, y: number, back?: () => void): void 
 /** Пункты про звук и блокировку — в меню «⋮» и в меню чата в списке. */
 function muteBlockItems(c: MyChat, x: number, y: number, back: () => void): MenuItem[] {
   const items: MenuItem[] = [];
-  if (c.preview) return items;
+  if (c.preview || c.kind === 'saved') return items;
   if (chatMuted(c.id)) items.push({ icon: 'bell', label: 'Включить звук', fn: () => setMute(c.id, null) });
   else items.push({ icon: 'bellOff', label: 'Без звука…', fn: () => openMuteMenu(c, x, y, back) });
   if (c.kind === 'direct' && c.peer_id) {
@@ -4348,6 +4421,8 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   autoOpen();
   renderAll();
   calls.startCalls();
+  // «Избранное» есть у каждого: создаём при первом запуске новой версии.
+  if (!savedChat()) void ensureSaved().catch(() => {});
 
   startRealtime(
     (ok) => setBanner(ok ? null : 'Нет живого соединения — новые сообщения подтягиваются раз в несколько секунд.'),

@@ -2,7 +2,7 @@
 // Или одной кнопкой — через Яндекс ID или VK ID (те, что настроены в функции oauth-login).
 import type { AuthError } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
-import { $, APP_ICON_HERO, button, el, html, lsGet, lsSet } from '../lib/dom';
+import { $, APP_ICON_HERO, SKAM_FULL_HTML, button, el, html, lsGet, lsSet } from '../lib/dom';
 import { OAUTH, authSettings, finishOAuth, knownSettings, lastProvider, oauthReturn, signInWith, type OAuthId } from '../lib/oauth';
 import { privacyLink, termsLink } from '../lib/legal';
 
@@ -26,6 +26,7 @@ export function mountLogin(root: HTMLElement, notice?: string | null): void {
       <div class="auth-card">
         ${APP_ICON_HERO}
         <span class="wordmark">СКАМ</span>
+        ${SKAM_FULL_HTML}
         <h1>Не развод, а мессенджер</h1>
         <p class="lead" id="authLead">Войдите или создайте аккаунт.</p>
         <div id="authBody"></div>

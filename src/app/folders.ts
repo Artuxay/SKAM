@@ -425,7 +425,7 @@ function chipList(ids: string[], remove: (id: string) => void): HTMLElement {
 // ---------------------------------------------------------------------------
 
 function kindLabel(c: MyChat): string {
-  return c.kind === 'direct' ? 'личный чат' : c.kind === 'bot' ? 'бот' : c.kind === 'channel' ? 'канал'
+  return c.kind === 'direct' ? 'личный чат' : c.kind === 'bot' ? 'бот' : c.kind === 'channel' ? 'канал' : c.kind === 'saved' ? 'сохранённые сообщения'
     : plural(c.member_count, 'участник', 'участника', 'участников');
 }
 

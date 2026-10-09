@@ -146,7 +146,7 @@ ${meta ? `<p class="meta">${esc(meta)}</p>` : ''}
 <nav class="toc" aria-label="Содержание"><b>Содержание</b><ol>${toc.map((t) => `<li><a href="#${t.id}">${inline(t.text.replace(/^\d+\.\s*/, ''))}</a></li>`).join('')}</ol></nav>
 ${body}
 </main>
-<footer>СКАМ — не развод, а мессенджер · <a href="./">Открыть СКАМ</a> · <a href="./${other.href}">${esc(other.label)}</a></footer>
+<footer>СКАМ — Свободный Конфиденциальный Автономный Мессенджер · <a href="./">Открыть СКАМ</a> · <a href="./${other.href}">${esc(other.label)}</a></footer>
 </body>
 </html>
 `;

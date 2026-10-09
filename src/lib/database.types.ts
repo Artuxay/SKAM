@@ -4,7 +4,8 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
-export type ChatKind = 'group' | 'direct' | 'channel' | 'bot';
+/** saved — «Избранное»: личный чат с самим собой (с 0.3.6). */
+export type ChatKind = 'group' | 'direct' | 'channel' | 'bot' | 'saved';
 
 /** Неофициальный набор стикеров или своих эмодзи: картинки — storage stickers/<id>/<стикер>. */
 export type StickerPackInfo = {
@@ -484,6 +485,8 @@ export type Database = {
       set_reaction: { Args: { p_message: string; p_emoji: string; p_super?: boolean }; Returns: undefined };
       super_reaction_status: { Args: { p_chat: string }; Returns: SuperStatus | null };
       chat_visit: { Args: { p_chat: string }; Returns: undefined };
+      /** Моё «Избранное»: найти или создать. */
+      open_saved: { Args: Record<PropertyKey, never>; Returns: string };
       create_sticker_pack: { Args: { p_title: string }; Returns: string };
       rename_sticker_pack: { Args: { p_pack: string; p_title: string }; Returns: undefined };
       add_sticker: { Args: { p_pack: string; p_id: string; p_emoji: string }; Returns: undefined };

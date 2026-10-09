@@ -1918,3 +1918,14 @@ dialog.react-dlg{width:min(420px,calc(100% - 24px))}
 .emj-name-in{min-width:0;flex:1}
 .emj-up-list .spk-up-img{width:48px;height:48px}
 .spk-up .emj-name-in{width:auto;flex:1;max-width:220px}
+
+/* 0.3.6: «Избранное» — закладка на тёплом градиенте */
+.tile.saved,.conv-emoji.saved{background:var(--grad-warm);color:#000;border:0;display:grid;place-items:center}
+.tile.saved svg,.conv-emoji.saved svg{width:48%;height:48%;stroke-width:2.4}
+.tile.saved.xxl svg{width:44%;height:44%}
+/* Расшифровка СКАМ: первые буквы — акцентом */
+.expansion{margin:0;font-size:12.5px;line-height:1.35;color:var(--muted);letter-spacing:.01em}
+.expansion b{color:var(--accent-text);font-weight:800}
+.auth-card .wordmark{margin-bottom:6px}
+.auth-card .expansion{margin:0 0 14px}
+.sh-hero.about .expansion{margin-top:-4px}
