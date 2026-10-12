@@ -1,7 +1,7 @@
 // Service worker СКАМ: оболочка приложения работает офлайн и открывается мгновенно.
 // Запросы к Supabase (API, Realtime, Storage) никогда не кэшируются.
 // Все пути считаются от области действия SW: сайт может жить и в корне, и в подпапке (GitHub Pages).
-const CACHE = 'skam-v7';
+const CACHE = 'skam-v8';
 // Кэш зашифрованных вложений ведёт само приложение (расшифровать их без ключа нельзя) — его не трогаем.
 const KEEP = (k) => k === CACHE || k.startsWith('skam-media');
 const BASE = new URL('./', self.registration.scope).pathname; // например '/' или '/skam/'
@@ -27,6 +27,28 @@ async function networkFirst(req, fallbackUrl) {
     return res;
   } catch {
     return (await cache.match(fallbackUrl || req)) || Response.error();
+  }
+}
+
+// Статья /a/<адрес>: у всех статей одна и та же страница a/index.html (её и кэшируем под одним адресом).
+// Если сервер ещё не знает адресов /a/… (ответил 404), отдаём ту же страницу — статью она загрузит сама.
+async function articlePage(req) {
+  const cache = await caches.open(CACHE);
+  const shell = BASE + 'a/';
+  try {
+    const res = await fetch(req);
+    if (res.ok) {
+      cache.put(shell, res.clone());
+      return res;
+    }
+    const alt = await fetch(shell);
+    if (alt.ok) {
+      cache.put(shell, alt.clone());
+      return alt;
+    }
+    return res;
+  } catch {
+    return (await cache.match(shell)) || Response.error();
   }
 }
 
@@ -60,6 +82,7 @@ self.addEventListener('fetch', (event) => {
     // Само приложение кэшируется под одним адресом BASE (с любыми ?join=… и т.п.);
     // отдельные страницы (соглашение, политика) — под своими адресами.
     const app = url.pathname === BASE || url.pathname === BASE + 'index.html';
+    if (url.pathname.startsWith(BASE + 'a/')) { event.respondWith(articlePage(req)); return; }
     event.respondWith(app ? networkFirst(req, BASE) : networkFirst(req));
     return;
   }

@@ -2,8 +2,8 @@
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type {
-  Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, Profile,
-  Reaction, ReactionKey, SuperStatus,
+  Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, PollState,
+  Profile, Reaction, ReactionKey, SuperStatus,
 } from '../lib/database.types';
 import { lsGet, lsSet, uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
@@ -35,7 +35,20 @@ export type Msg = Message & {
   local?: Map<string, string>;
   /** Слепок сообщения, на которое ответили (у зашифрованных — из шифротекста). */
   replySnap?: ReplySnap | null;
+  /** Опрос: вопрос и варианты (в зашифрованном чате — из шифротекста; в канале варианты приходят с poll_state). */
+  poll?: { q: string; o: string[] } | null;
+  /** Опрос, который ещё отправляется: его настройки (для повторной попытки). */
+  pollSend?: PollSpec;
 };
+
+/** Новый опрос: вопрос, 2–12 вариантов и настройки, как в Telegram. correct — номер правильного (викторина). */
+export type PollSpec = {
+  q: string; o: string[]; multiple: boolean; anonymous: boolean; quiz: boolean; correct: number | null; solution: string;
+};
+export const POLL_Q_MAX = 255;
+export const POLL_OPT_MAX = 100;
+export const POLL_SOLUTION_MAX = 200;
+export const POLL_MAX_OPTIONS = 12;
 
 /** Как выглядело сообщение, на которое ответили: автор, вид и коротко текст. */
 export type ReplySnap = { uid: string | null; k: MessageKind; text: string };
@@ -89,6 +102,8 @@ export const S = {
   blocks: new Map<string, BlockedUser>(),
   /** Чаты без звука: до какого момента (мс); Infinity — навсегда. */
   mutes: new Map<string, number>(),
+  /** Опросы (по id сообщения): числа голосов, мой голос, ответ викторины. */
+  polls: new Map<string, PollState>(),
 };
 
 /** Чат без звука: не звенит, не показывает уведомления, его непрочитанные — серые и не в общем счёте. */
@@ -192,6 +207,7 @@ export function resetState(): void {
   S.appOwner = false;
   S.blocks.clear();
   S.mutes.clear();
+  S.polls.clear();
   e2e.reset();
   listeners.clear();
   pending.clear();
@@ -450,6 +466,9 @@ e2e.onKeysArrived((chatId) => {
     const f = S.feeds.get(chatId);
     const waiting = f?.msgs.filter((m) => m.locked === 'nokey') ?? [];
     await Promise.all(waiting.map((m) => prepareMsg(m)));
+    // Расшифровались опросы — нужны их голоса.
+    const polls = waiting.filter(isPoll).map((m) => m.id);
+    if (polls.length) void loadPollStates(polls).catch(() => {});
     const c = S.chats.get(chatId);
     if (c?.last_id && S.previews.get(c.last_id) === 'locked') {
       S.previews.delete(c.last_id);
@@ -869,7 +888,7 @@ function cleanFiles(list: unknown): Attachment[] {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SNAP_KINDS = new Set<MessageKind>(['text', 'system', 'sticker', 'voice', 'video_note', 'e2e', 'media']);
+const SNAP_KINDS = new Set<MessageKind>(['text', 'system', 'sticker', 'voice', 'video_note', 'e2e', 'media', 'poll']);
 
 /** «Переслано от …» из чужого сообщения: только имя, id и время, остальное отбрасываем. */
 export function cleanFwd(raw: unknown): Forward | null {
@@ -903,6 +922,16 @@ export function snapOf(m: Msg): ReplySnap {
   return { uid: m.user_id, k, text: (text || files[0]?.name || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
 }
 
+/** Опрос из шифротекста: вопрос и 2–12 непустых вариантов, иначе это не опрос. */
+function cleanPoll(raw: unknown): { q: string; o: string[] } | null {
+  const p = raw as { q?: unknown; o?: unknown } | null;
+  if (!p || typeof p !== 'object' || typeof p.q !== 'string' || !Array.isArray(p.o)) return null;
+  const q = p.q.replace(/\s+/g, ' ').trim().slice(0, POLL_Q_MAX);
+  const o = p.o.slice(0, POLL_MAX_OPTIONS).map((x) => (typeof x === 'string' ? x.replace(/\s+/g, ' ').trim().slice(0, POLL_OPT_MAX) : ''));
+  if (!q || o.length < 2 || o.some((x) => !x)) return null;
+  return { q, o };
+}
+
 /** Разложить расшифрованное содержимое по полям сообщения (только в памяти). */
 function applyPayload(m: Msg, p: e2e.Payload): void {
   m.content = { text: typeof p.text === 'string' ? p.text.slice(0, 4000) : '', files: cleanFiles(p.files) };
@@ -911,6 +940,13 @@ function applyPayload(m: Msg, p: e2e.Payload): void {
   m.reply_to = reply?.id ?? null;
   m.replySnap = reply?.snap ?? null;
   m.fwd = cleanFwd(p.fwd);
+  const poll = cleanPoll(p.poll);
+  if (poll) {
+    m.view = 'poll';
+    m.poll = poll;
+    m.content = { text: poll.q, files: [] };
+    return;
+  }
   if (typeof p.sticker === 'string' && STICKER_RE.test(p.sticker)) {
     m.view = 'sticker';
     m.sticker = p.sticker;
@@ -942,6 +978,10 @@ export async function prepareMsg(m: Msg): Promise<Msg> {
     }
   } else if (m.kind === 'media') {
     m.content = { text: m.body, files: cleanFiles(m.files) };
+  } else if (m.kind === 'poll') {
+    // Опрос в канале или чате с ботом: вопрос — в сообщении, варианты — с poll_state.
+    m.content = { text: m.body, files: [] };
+    m.poll = { q: m.body, o: S.polls.get(m.id)?.options ?? [] };
   } else {
     m.content = { text: m.body, files: [] };
   }
@@ -1021,6 +1061,7 @@ export async function loadFeed(chatId: string, force = false): Promise<void> {
     await Promise.all([
       preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)),
       ensureProfiles([...rows.map((r) => r.user_id), ...people]),
+      loadPollStates(rows.filter(isPoll).map((r) => r.id)).catch(() => {}),
     ]);
   } catch (e) {
     f.loaded = true;
@@ -1042,7 +1083,11 @@ export async function loadOlder(chatId: string): Promise<void> {
     rows.forEach((m) => upsertMessage(m));
     f.hasMore = rows.length === PAGE;
     const preview = S.preview?.id === chatId;
-    await Promise.all([preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)), ensureProfiles(rows.map((r) => r.user_id))]);
+    await Promise.all([
+      preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)),
+      ensureProfiles(rows.map((r) => r.user_id)),
+      loadPollStates(rows.filter(isPoll).map((r) => r.id)).catch(() => {}),
+    ]);
   } finally {
     f.loadingOlder = false;
     emit('feed');
@@ -1134,6 +1179,7 @@ export function onUploadProgress(fn: (m: Msg) => void): void {
 /** Загрузить файлы (вложения, голосовое, кружочек), зашифровать и записать сообщение. */
 async function pushMessage(m: Msg): Promise<void> {
   try {
+    if (m.pollSend) { await pushPoll(m, m.pollSend); return; }
     const up = m.upload;
     if (up) {
       if (up.ctrl.signal.aborted) up.ctrl = new AbortController();
@@ -1495,6 +1541,8 @@ export async function loadUntil(chatId: string, id: string, maxPages = 40): Prom
 export function canForward(m: Msg): boolean {
   if (m.deleted_at || m.locked || m.pending || m.failed || m.kind === 'call') return false;
   const view = viewKind(m);
+  // Опрос живёт в своём чате (голоса — там), переслать его нельзя.
+  if (view === 'poll') return false;
   if (view === 'voice' || view === 'video_note') return !!m.media_path;
   return true;
 }
@@ -1561,5 +1609,129 @@ export async function forwardMessages(chatId: string, list: Msg[], hideSender: b
         await post(draftFor(chatId, 'text', { body: text, content: { text, files: [] } }, opts));
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Опросы (0.4.0)
+// ---------------------------------------------------------------------------
+
+export function isPoll(m: Msg): boolean {
+  return !m.deleted_at && viewKind(m) === 'poll';
+}
+
+/** Состояния опросов с сервера (до 200 за раз). Варианты опросов из канала подставляются в сообщения. */
+export async function loadPollStates(ids: string[]): Promise<void> {
+  const list = [...new Set(ids)];
+  for (let i = 0; i < list.length; i += 200) {
+    const { data, error } = await sb.rpc('poll_state', { p_ids: list.slice(i, i + 200) });
+    if (error) throw error;
+    (data ?? []).forEach(putPollState);
+  }
+  if (list.length) emit('feed');
+}
+
+/** Новое состояние опроса (после голоса, из Realtime или опроса сервера). */
+export function putPollState(st: PollState): void {
+  S.polls.set(st.id, st);
+  if (st.options) {
+    const m = S.feeds.get(st.chat_id)?.msgs.find((x) => x.id === st.id);
+    if (m && m.kind === 'poll') m.poll = { q: m.body, o: st.options };
+  }
+}
+
+const pollWanted = new Set<string>();
+let pollTimer = 0;
+/** Освежить опросы чуть позже (голоса приходят пачками — один запрос на всех). */
+export function refreshPollSoon(id: string): void {
+  pollWanted.add(id);
+  clearTimeout(pollTimer);
+  pollTimer = window.setTimeout(() => {
+    const ids = [...pollWanted];
+    pollWanted.clear();
+    void loadPollStates(ids).catch(() => {});
+  }, 250);
+}
+
+/** Отправить опрос. В зашифрованном чате вопрос и варианты уходят внутри шифротекста. */
+export async function sendPoll(chatId: string, spec: PollSpec): Promise<void> {
+  const secret = secretFor(chatId);
+  const m = draftFor(chatId, 'poll', { body: secret ? '' : spec.q, content: { text: spec.q, files: [] } });
+  m.poll = { q: spec.q, o: spec.o };
+  m.pollSend = spec;
+  S.polls.set(m.id, {
+    id: m.id, chat_id: chatId, n: spec.o.length, options: secret ? null : spec.o, multiple: spec.multiple && !spec.quiz,
+    anonymous: spec.anonymous || chatById(chatId)?.kind === 'channel', quiz: spec.quiz,
+    counts: spec.o.map(() => 0), voters: 0, closed: false, mine: [], correct: null, solution: null, recent: null,
+    can_close: false, can_vote: false,
+  });
+  await post(m);
+}
+
+async function pushPoll(m: Msg, sp: PollSpec): Promise<void> {
+  const e2eChat = m.kind === 'e2e';
+  let enc: string | null = null;
+  let keyId: string | null = null;
+  let solution: string | null = sp.quiz && sp.solution.trim() ? sp.solution.trim() : null;
+  if (e2eChat) {
+    ({ enc, key_id: keyId } = await e2e.encryptMessage(m.chat_id, m.id, { v: 1, poll: { q: sp.q, o: sp.o } }));
+    if (solution) solution = await e2e.sealPollSolution(m.chat_id, m.id, solution);
+  }
+  const { data, error } = await sb.rpc('send_poll', {
+    p_id: m.id, p_chat: m.chat_id, p_question: e2eChat ? null : sp.q, p_options: e2eChat ? null : sp.o,
+    p_enc: enc, p_key_id: keyId, p_count: sp.o.length, p_multiple: sp.multiple, p_anonymous: sp.anonymous,
+    p_quiz: sp.quiz, p_correct: sp.quiz ? sp.correct : null, p_solution: solution,
+  });
+  if (error) throw error;
+  const row = (data ?? [])[0];
+  if (row) {
+    const saved = Object.assign(row as Msg, {
+      content: m.content ?? null, view: m.view, locked: null, poll: m.poll, body: e2eChat ? m.body : row.body,
+    });
+    upsertMessage(saved);
+    bumpChat(saved);
+  } else {
+    m.pending = false;
+  }
+  await loadPollStates([m.id]).catch(() => {});
+  emit('feed', 'chats');
+}
+
+/** Проголосовать: номера вариантов (пусто — отменить голос). */
+export async function votePoll(id: string, options: number[]): Promise<void> {
+  const { data, error } = await sb.rpc('poll_vote', { p_message: id, p_options: options });
+  if (error) throw error;
+  putPollState(data);
+  emit('feed');
+}
+
+export async function closePoll(id: string): Promise<void> {
+  const { data, error } = await sb.rpc('poll_close', { p_message: id });
+  if (error) throw error;
+  putPollState(data);
+  emit('feed');
+}
+
+/** Кто голосовал в открытом опросе (по вариантам). */
+export async function pollVoters(id: string): Promise<{ user_id: string; option: number; voted_at: string }[]> {
+  const { data, error } = await sb.rpc('poll_voters', { p_message: id, p_limit: 500 });
+  if (error) throw error;
+  await ensureProfiles((data ?? []).map((v) => v.user_id));
+  return data ?? [];
+}
+
+/** Пояснение к викторине: в зашифрованном чате — расшифровать (кэшируется на сообщении). */
+const solutions = new Map<string, string>();
+export async function pollSolution(m: Msg, st: PollState): Promise<string | null> {
+  if (!st.solution) return null;
+  if (m.kind !== 'e2e') return st.solution;
+  const have = solutions.get(m.id);
+  if (have !== undefined) return have;
+  try {
+    const t = await e2e.openPollSolution(m.chat_id, m.id, m.user_id ?? '', st.solution);
+    solutions.set(m.id, t);
+    return t;
+  } catch {
+    return null;
   }
 }

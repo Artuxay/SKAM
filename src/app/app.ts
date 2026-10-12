@@ -28,6 +28,7 @@ import {
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
   loadAppOwner, rememberProfiles, setVerified, BIO_MAX, normBio, userBio, chatMuted, peerBlocked, ensureSaved, savedChat,
+  isPoll,
 } from './store';
 import { NICK_MAX, loadNicknames, nickHits, nickOf, resetNicks, setNickname } from './nicks';
 import {
@@ -62,6 +63,9 @@ import {
 import { askPermission, chime, mountNotify, notifyPermission, testNotify } from './notify';
 import { unlock as soundUnlock } from './sounds';
 import { actionTile, grp, grpLabel, grpNote, row, sheetHead, toggleRow, type IconName } from './sheet';
+import { articleLinks, slugFromUrl } from '../lib/article';
+import { articleCardEl, articleTitle, mountArticles, openArticle, openArticleEditor, openMyArticles } from './articles';
+import { mountPolls, openPollCreator, pollEl, pollLine, stopPoll } from './polls';
 
 const MAX_LEN = 4000;
 
@@ -140,8 +144,9 @@ const SHELL = `
         <div class="sticker-suggest" id="stickerSuggest" role="listbox" aria-label="Стикеры к эмодзи" hidden></div>
         <div class="select-bar" id="selectBar" hidden></div>
         <div class="reply-bar" id="replyBar" hidden></div>
+        <div class="link-bar" id="linkBar" hidden></div>
         <div class="composer-inner">
-          <button class="cbtn attach" id="attachBtn" type="button" aria-label="Прикрепить фото, видео или файл" title="Фото, видео или файл">${ICONS.clip}</button>
+          <button class="cbtn attach" id="attachBtn" type="button" aria-label="Прикрепить: фото, видео, файл, опрос или статью" title="Прикрепить" aria-haspopup="menu">${ICONS.clip}</button>
           <input type="file" id="fileInput" multiple hidden>
           <div class="input-wrap">
             <textarea class="input" id="input" rows="1" maxlength="${MAX_LEN}" placeholder="Сообщение" aria-label="Сообщение"></textarea>
@@ -173,6 +178,7 @@ const SHELL = `
     </div>
     <div class="grp">
       <button class="lr" id="newStoryBtn" type="button"><span class="lr-ic acc">${ICONS.storyAdd}</span><span class="lr-t"><span class="lr-l">Новая история</span><span class="lr-sub">Фото, видео или текст на сутки</span></span><span class="lr-chev">${ICONS.chev}</span></button>
+      <button class="lr" id="newArticleBtn" type="button"><span class="lr-ic acc">${ICONS.article}</span><span class="lr-t"><span class="lr-l">Новая статья</span><span class="lr-sub">Как в Telegraph — со своей ссылкой</span></span><span class="lr-chev">${ICONS.chev}</span></button>
     </div>
   </div>
   <div class="nd-view" id="newFind" hidden>
@@ -226,6 +232,8 @@ const SHELL = `
 <dialog id="foldersDlg" class="folders-dlg" aria-label="Папки с чатами"></dialog>
 <dialog id="storyDlg" class="story-dlg" aria-label="История"></dialog>
 <dialog id="storyNewDlg" class="story-new" aria-label="Новая история"></dialog>
+<dialog id="articleDlg" class="article-dlg" aria-label="Статья"></dialog>
+<dialog id="pollDlg" class="sheet poll-dlg" aria-label="Опрос"></dialog>
 <div class="ctx-menu" id="ctxMenu" role="menu" hidden></div>
 <div class="vol-pop" id="volPop" hidden></div>
 <div class="ring-box" id="ringBox" role="alertdialog" aria-live="assertive" hidden></div>
@@ -412,10 +420,14 @@ function setBanner(text: string | null): void {
 // Боковая панель
 // ---------------------------------------------------------------------------
 
-/** Текст с вложениями: «🖼 Фото», «🖼 подпись», «📎 отчёт.pdf». */
+/** Текст с вложениями: «🖼 Фото», «🖼 подпись», «📎 отчёт.pdf». Сообщение — только ссылка на статью: «📰 Заголовок». */
 function contentPreview(text: string, files: { kind?: unknown; name?: unknown }[]): string {
   const t = plainEmoji(text).replace(/\s+/g, ' ').trim();
-  if (!files.length) return t || '…';
+  if (!files.length) {
+    const only = onlyArticle(t);
+    if (only) return `📰 ${articleTitle(only) || 'Статья'}`;
+    return t || '…';
+  }
   const label = filesLabel(files);
   return t ? `${label.split(' ')[0]} ${t}` : label;
 }
@@ -429,6 +441,7 @@ function kindText(kind: string | null, body: string | null, files: { kind?: unkn
     case 'e2e': return '🔒 Зашифрованное сообщение';
     case 'media': return contentPreview(body ?? '', files);
     case 'call': return '📞 Звонок';
+    case 'poll': return pollLine(plainEmoji(body ?? ''));
     default: return plainEmoji(body ?? '') || '…';
   }
 }
@@ -1238,9 +1251,27 @@ function messageBody(b: HTMLElement, m: Msg, author: string): HTMLElement {
     case 'sticker': b.append(stickerEl(m)); return b;
     case 'voice': b.append(voiceEl(m)); return b;
     case 'video_note': b.append(videoNoteEl(m)); return b;
+    case 'poll': {
+      const chat = chatById(m.chat_id);
+      b.classList.add('poll-msg');
+      if (chat) b.append(pollEl(m, chat));
+      return b;
+    }
     default: {
       const content: Content = m.content ?? { text: m.body, files: [] };
       if (!content.files.length) {
+        // Ссылка на статью СКАМ — карточкой с мгновенным просмотром (как превью ссылки в Telegram).
+        // Сообщение из одной ссылки (прикрепили статью) — только карточка.
+        const links = m.kind === 'system' ? [] : articleLinks(content.text).slice(0, 3);
+        if (links.length) {
+          const only = onlyArticle(content.text);
+          if (only) b.classList.add('art-only');
+          else fillText(b, content.text);
+          const cardsBox = el('div', 'art-cards');
+          links.forEach((l) => cardsBox.append(articleCardEl(l.slug)));
+          b.append(cardsBox);
+          return b;
+        }
         // Только свои эмодзи (1–3) — крупно, как в Telegram.
         const n = emojiOnly(content.text);
         const big = n > 0 && n <= 3;
@@ -1256,6 +1287,12 @@ function messageBody(b: HTMLElement, m: Msg, author: string): HTMLElement {
       return cap;
     }
   }
+}
+
+/** Сообщение — только ссылка на статью СКАМ (так выглядит прикреплённая статья): её адрес. */
+function onlyArticle(text: string): string | null {
+  const t = text.trim();
+  return /\s/.test(t) ? null : slugFromUrl(t);
 }
 
 /** Долгое нажатие на телефоне открывает меню сообщения (обычное касание кружочка его включает). */
@@ -1333,6 +1370,7 @@ function oneLine(k: string, text: string, files: { kind?: unknown; name?: unknow
     case 'sticker': return `${text ? `${text} ` : ''}Стикер`;
     case 'voice': return '🎤 Голосовое сообщение';
     case 'video_note': return '⚪ Кружочек';
+    case 'poll': return pollLine(plainEmoji(text));
     case 'media': case 'e2e': return files.length ? contentPreview(text, files) : plainEmoji(text) || '…';
     default: return plainEmoji(text) || '…';
   }
@@ -1666,6 +1704,8 @@ function renderFeed(): void {
   }
   U.lastCount = f.msgs.length;
   markVisibleRead();
+  // Заголовок статьи в превью над полем ввода мог только что прийти с сервера.
+  if (!$('linkBar').hidden || articleLinks($<HTMLTextAreaElement>('input').value).length) renderLinkBar();
 }
 
 function e2eNote(c: MyChat, where: 'top' | 'from' | 'next'): HTMLElement {
@@ -1836,6 +1876,46 @@ function autosize(): void {
   inp.style.height = 'auto';
   if (inp.scrollHeight > 0) inp.style.height = `${Math.min(inp.scrollHeight + 3, 160)}px`;
   updateSendBtn();
+  renderLinkBar();
+}
+
+/** Над полем ввода — карточка статьи, ссылка на которую уже в сообщении (как превью ссылки в Telegram). */
+function renderLinkBar(): void {
+  const bar = $('linkBar');
+  const inp = $<HTMLTextAreaElement>('input');
+  const c = currentChat();
+  const link = c && canPost(c) && !U.edit.has(c.id) ? articleLinks(inp.value)[0] : undefined;
+  if (!link) {
+    if (!bar.hidden) { bar.hidden = true; bar.replaceChildren(); }
+    return;
+  }
+  const title = articleTitle(link.slug);
+  const key = `${link.slug}|${title ?? ''}|${title === null}`;
+  if (!bar.hidden && bar.dataset.key === key) return;
+  bar.dataset.key = key;
+  const ic = el('span', 'lb-ic');
+  ic.append(html(ICONS.article));
+  const t = button('lb-t', null, () => void openArticle(link.slug));
+  t.append(el('span', 'lb-l', 'Статья · будет карточкой в сообщении'),
+    el('span', 'lb-s', title === undefined ? 'Загружаем…' : title === null ? 'Статья не найдена' : title));
+  const x = button('icon-btn lb-x', null, () => {
+    inp.value = inp.value.replace(link.url, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    autosize();
+    inp.focus();
+  });
+  x.append(html(ICONS.close));
+  x.setAttribute('aria-label', 'Убрать статью из сообщения');
+  bar.replaceChildren(ic, t, x);
+  bar.hidden = false;
+}
+
+/** Прикрепить статью: ссылка — в поле ввода открытого чата (с новой строки), карточка — над полем. */
+function attachLink(url: string): void {
+  const inp = $<HTMLTextAreaElement>('input');
+  const cur = inp.value.replace(/\s+$/, '');
+  if (!cur.includes(url)) inp.value = cur ? `${cur}\n${url}` : url;
+  autosize();
+  inp.focus();
 }
 
 /** Есть текст — кнопка «Отправить», пусто — микрофон/кружочек (как в Telegram). */
@@ -2281,6 +2361,17 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
       navigator.clipboard.writeText(text).then(() => toast('Текст скопирован'), () => toast('Не получилось скопировать'));
     });
   }
+  const art = !m.deleted_at && !m.locked && viewKind(m) !== 'poll' ? articleLinks(m.content?.text ?? '')[0] : undefined;
+  if (art) item('article', 'Открыть статью', () => { closeMenu(); void openArticle(art.slug); });
+  const pst = isPoll(m) ? S.polls.get(m.id) : undefined;
+  if (pst?.can_close) {
+    let armed = false;
+    const stop = item('stop', 'Завершить опрос', () => {
+      if (!armed) { armed = true; stop.querySelector('span')!.textContent = 'Завершить? Голосовать будет нельзя'; return; }
+      closeMenu();
+      void stopPoll(m);
+    });
+  }
   if (canForward(m)) item('forward', 'Переслать', () => openForward([m]));
   if (canForward(m) && chat.kind !== 'saved') item('bookmark', 'В избранное', () => { closeMenu(); void saveToFavorites([m]); });
   if (!chat.preview) item('check', 'Выбрать', () => startSelect(m));
@@ -2309,6 +2400,63 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
 // ---------------------------------------------------------------------------
 // Вложения: скрепка, перетаскивание, вставка из буфера
 // ---------------------------------------------------------------------------
+
+/** Скрепка, как в Telegram: фото или видео, файл, опрос, статья. */
+function openAttachMenu(): void {
+  const c = currentChat();
+  if (!c || !canPost(c)) return;
+  closeStickers();
+  const r = $('attachBtn').getBoundingClientRect();
+  const fileInput = $<HTMLInputElement>('fileInput');
+  const pick = (accept: string) => { fileInput.accept = accept; fileInput.click(); };
+  showMenu([
+    { icon: 'photo', label: 'Фото или видео', fn: () => pick('image/*,video/*') },
+    { icon: 'file', label: 'Файл', fn: () => pick('') },
+    { icon: 'poll', label: 'Опрос', fn: () => openPollCreator(c) },
+    { icon: 'article', label: 'Статья', fn: () => void openMyArticles('attach') },
+  ], r.left, r.top - 6);
+}
+
+/** Отправить ссылку (на статью) в чат по выбору: ссылка встанет в поле ввода выбранного чата. */
+function openShareLink(url: string): void {
+  closeMenu();
+  const dlg = $<HTMLDialogElement>('fwdDlg');
+  const head = dlgHead('Отправить в чат', dlg);
+  const q = el('input', 'txt fwd-q');
+  q.placeholder = 'Кому отправить…';
+  q.setAttribute('aria-label', 'Поиск чата');
+  q.autocomplete = 'off';
+  const box = el('div', 'fwd-list');
+  box.setAttribute('role', 'list');
+  const fill = () => {
+    const needle = searchNorm(q.value);
+    const chats = listChats(null).filter((c) => canPost(c) && (!needle || searchNorm(chatTitle(c)).includes(needle)))
+      .sort((a, b) => Number(b.kind === 'saved') - Number(a.kind === 'saved'));
+    if (!chats.length) { box.replaceChildren(el('p', 'list-empty', 'Такого чата нет')); return; }
+    box.replaceChildren(...chats.map((c) => {
+      const b = button('fwd-chat', null, () => {
+        closeDialog(dlg);
+        openChat(c.id);
+        attachLink(url);
+      });
+      b.setAttribute('role', 'listitem');
+      const text = el('span', 'fwd-text');
+      text.append(el('span', 'name', chatTitle(c)), el('span', 'sub', chatKindLabel(c)));
+      b.append(chatTileEl(c, 'small'), text);
+      return b;
+    }));
+  };
+  q.addEventListener('input', fill);
+  q.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    box.querySelector<HTMLButtonElement>('.fwd-chat')?.click();
+  });
+  fill();
+  dlg.replaceChildren(head, q, box);
+  openDialog(dlg);
+  if (!touchMQ.matches) q.focus();
+}
 
 function startSendFiles(files: File[]): void {
   const c = currentChat();
@@ -3075,6 +3223,7 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
       row({ icon: 'edit', label: 'Изменить профиль', chev: true, fn: () => profGo('edit') }),
       row({ icon: 'bookmark', label: 'Избранное', chev: true, fn: () => { closeDialog(dlg); void openSaved(); } }),
       row({ icon: 'storyAdd', label: 'Мои истории', em: mine ? String(mine) : 'Добавить', chev: true, fn: () => profGo('stories') }),
+      row({ icon: 'article', label: 'Мои статьи', sub: 'Как в Telegraph — со своей ссылкой', chev: true, fn: () => { closeDialog(dlg); void openMyArticles(); } }),
       row({
         icon: 'folder', label: 'Папки с чатами', em: L.folders.length ? String(L.folders.length) : null, chev: true,
         fn: () => { closeDialog(dlg); openFolderSettings(); },
@@ -3979,13 +4128,8 @@ async function handlePendingJoin(): Promise<void> {
   const pub = lsGet('skam:open');
   if (pub) {
     lsSet('skam:open', null);
-    try {
-      const card = await chatByUsername(pub);
-      if (!card) toast(`Канал @${pub} не найден.`);
-      else openCard(card);
-    } catch (e) {
-      toast(errText(e, 'Не получилось открыть канал.'));
-    }
+    // Человек или публичный канал (ссылка автора статьи @username ведёт сюда же).
+    await openUsername(pub);
   }
   const code = lsGet('skam:join');
   if (!code) return;
@@ -4108,10 +4252,12 @@ function wire(): void {
     if (files.length) { e.preventDefault(); startSendFiles(files); }
   });
   const fileInput = $<HTMLInputElement>('fileInput');
-  listen($('attachBtn'), 'click', () => fileInput.click());
+  listen($('attachBtn'), 'click', (e: MouseEvent) => { e.stopPropagation(); openAttachMenu(); });
+  listen($('newArticleBtn'), 'click', () => { closeDialog($<HTMLDialogElement>('newDlg')); openArticleEditor(null); });
   listen(fileInput, 'change', () => {
     const files = [...(fileInput.files ?? [])];
     fileInput.value = '';
+    fileInput.accept = '';
     startSendFiles(files);
   });
   // Перетаскивание файлов в беседу.
@@ -4352,6 +4498,28 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   // @username в тексте — открыть профиль человека или канал; свои эмодзи — картинкой.
   textHooks.mention = (u) => void openUsername(u);
   textHooks.emoji = customEmojiEl;
+  // Ссылка на статью СКАМ — мгновенный просмотр прямо в приложении.
+  textHooks.link = (url) => {
+    const slug = slugFromUrl(url);
+    if (!slug) return false;
+    void openArticle(slug);
+    return true;
+  };
+  mountArticles({
+    attachTarget: () => {
+      const c = currentChat();
+      return c && canPost(c) && !U.edit.has(c.id) ? (url: string) => attachLink(url) : null;
+    },
+    shareToChat: (url) => openShareLink(url),
+    openUsername: (u) => void openUsername(u),
+    myName: () => S.me?.name ?? '',
+    rerender: () => emit('feed', 'chats'),
+  });
+  mountPolls({
+    avatar: (uid, cls) => avatarEl(who(uid), cls),
+    name: (uid) => who(uid).name,
+    openPerson: (uid) => openPerson(uid),
+  });
   unsubs.push(mountCallUI({
     who: (uid) => who(uid),
     avatar: (uid, cls) => avatarEl(who(uid), cls),
@@ -4447,6 +4615,7 @@ export function unmountApp(): void {
   resetStickerPacks();
   textHooks.mention = undefined;
   textHooks.emoji = undefined;
+  textHooks.link = undefined;
   resetLayout();
   resetNicks();
   resetStories();

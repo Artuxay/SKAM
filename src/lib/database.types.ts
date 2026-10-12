@@ -330,6 +330,27 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      /** Опрос (0.4.0): числа голосов видят участники чата — по ним Realtime сообщает об изменениях. */
+      polls: {
+        Row: {
+          message_id: string;
+          chat_id: string;
+          author_id: string | null;
+          options: string[] | null;
+          n: number;
+          multiple: boolean;
+          anonymous: boolean;
+          quiz: boolean;
+          counts: number[];
+          voters: number;
+          closed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -562,6 +583,34 @@ export type Database = {
       like_story: { Args: { p_story: string; p_on: boolean }; Returns: undefined };
       pin_story: { Args: { p_story: string; p_on: boolean }; Returns: undefined };
       delete_story: { Args: { p_story: string }; Returns: undefined };
+      // Статьи (0.4.0)
+      article_image_slot: { Args: { p_ext: string }; Returns: string };
+      article_save: {
+        Args: { p_id: string | null; p_title: string; p_author_name: string | null; p_author_url: string | null; p_content: Json };
+        Returns: { id: string; slug: string };
+      };
+      article_get: { Args: { p_slug: string }; Returns: ArticleFull | null };
+      article_view: { Args: { p_slug: string }; Returns: undefined };
+      article_cards: { Args: { p_slugs: string[] }; Returns: ArticleCard[] };
+      my_articles: { Args: { p_limit?: number; p_offset?: number }; Returns: (ArticleCard & { id: string; updated_at: string; hidden: boolean })[] };
+      article_delete: { Args: { p_id: string }; Returns: string[] };
+      article_hide: { Args: { p_id: string; p_on: boolean }; Returns: undefined };
+      // Опросы (0.4.0)
+      send_poll: {
+        Args: {
+          p_id: string; p_chat: string; p_question: string | null; p_options: string[] | null; p_enc: string | null;
+          p_key_id: string | null; p_count: number | null; p_multiple: boolean; p_anonymous: boolean; p_quiz: boolean;
+          p_correct: number | null; p_solution: string | null;
+        };
+        Returns: Message[];
+      };
+      poll_vote: { Args: { p_message: string; p_options: number[] }; Returns: PollState };
+      poll_close: { Args: { p_message: string }; Returns: PollState };
+      poll_state: { Args: { p_ids: string[] }; Returns: PollState[] };
+      poll_voters: {
+        Args: { p_message: string; p_option?: number | null; p_limit?: number; p_offset?: number };
+        Returns: { user_id: string; option: number; voted_at: string }[];
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -573,9 +622,9 @@ export type ReactionKey = 'like' | 'lol' | 'fire' | 'wow' | 'clown' | `c:${strin
 /**
  * Вид сообщения: text/system — текст; sticker, voice (голосовое), video_note (кружочек);
  * e2e — зашифрованное (содержимое внутри enc); media — вложения там, где E2E нет (канал, бот);
- * call — запись о звонке (что со звонком — в calls).
+ * call — запись о звонке (что со звонком — в calls); poll — опрос там, где E2E нет (вопрос в body, варианты — в polls).
  */
-export type MessageKind = 'text' | 'system' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media' | 'call';
+export type MessageKind = 'text' | 'system' | 'sticker' | 'voice' | 'video_note' | 'e2e' | 'media' | 'call' | 'poll';
 export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
 export type Profile = Tables<'profiles'>;
 export type Chat = Tables<'chats'>;
@@ -651,4 +700,30 @@ export type Story = {
   /** Только у своих: сколько посмотрели и сколько поставили сердечко. */
   views: number | null;
   likes: number | null;
+};
+
+/** Узел статьи в формате Telegraph: текст или элемент с тегом, атрибутами (href у ссылки, src у картинки) и детьми. */
+export type ArticleNode = string | { tag: string; attrs?: { href?: string; src?: string }; children?: ArticleNode[] };
+
+/** Карточка статьи — для ссылок в чатах и списка «Мои статьи». cover — картинка в бакете articles. */
+export type ArticleCard = {
+  slug: string; title: string; description: string; cover: string | null; author_name: string | null; views: number;
+  created_at: string;
+};
+
+/** Статья целиком (article_get). mine — я автор; moderator — я из команды СКАМ (могу скрыть статью). */
+export type ArticleFull = ArticleCard & {
+  id: string; author_url: string | null; content: ArticleNode[]; updated_at: string; mine: boolean; hidden: boolean;
+  moderator: boolean;
+};
+
+/**
+ * Опрос глазами спрашивающего (poll_state). options — тексты, только там, где нет E2E (иначе внутри сообщения).
+ * correct и solution приходят только после своего голоса или когда опрос завершён; recent — последние голосовавшие
+ * (только в открытом опросе).
+ */
+export type PollState = {
+  id: string; chat_id: string; n: number; options: string[] | null; multiple: boolean; anonymous: boolean; quiz: boolean;
+  counts: number[]; voters: number; closed: boolean; mine: number[]; correct: number | null; solution: string | null;
+  recent: string[] | null; can_close: boolean; can_vote: boolean;
 };

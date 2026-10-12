@@ -1,8 +1,12 @@
 # Дописывается в конец volumes/proxy/caddy/Caddyfile (блок api.skam-messenger.ru там уже есть).
 # Сайт собирает build.sh в /opt/skam-test/site, в контейнер он смонтирован как /srv/skam-test.
+# Статьи (0.4.0): любой путь /a/... отдаёт /a/index.html — строки @skamArticle добавляет server/apply-caddy.sh.
 
 skam-messenger.ru {
     root * /srv/skam-test
+    @skamArticle path /a/*
+    rewrite @skamArticle /a/index.html
+    header @skamArticle Cache-Control "no-cache"
     encode zstd gzip
     file_server
     @fresh path / /index.html *.html /sw.js /manifest.webmanifest
@@ -17,6 +21,9 @@ www.skam-messenger.ru {
 
 test.skam-messenger.ru {
     root * /srv/skam-test
+    @skamArticle path /a/*
+    rewrite @skamArticle /a/index.html
+    header @skamArticle Cache-Control "no-cache"
     encode zstd gzip
     file_server
     header X-Robots-Tag "noindex, nofollow"

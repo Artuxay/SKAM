@@ -1,6 +1,7 @@
 #!/bin/sh
-# Applies managed.sql (trigger and policies in auth, storage, realtime) as supabase_admin
-# and installs the stories cleanup (cron every 15 minutes). Safe to run again.
+# Applies managed.sql (trigger and policies in auth, storage, realtime) as supabase_admin,
+# installs the stories cleanup (cron every 15 minutes) and article links /a/<slug> in Caddy.
+# Safe to run again.
 #   sh /opt/skam-test/src/server/apply-managed.sh
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,3 +21,4 @@ echo '*/15 * * * * root /bin/sh /opt/skam-stories/cleanup.sh >> /opt/skam-storie
 chmod 644 /etc/cron.d/skam-stories
 sh /opt/skam-stories/cleanup.sh
 echo 'Stories cleanup: /etc/cron.d/skam-stories, log /opt/skam-stories/cleanup.log'
+sh "$HERE/apply-caddy.sh"

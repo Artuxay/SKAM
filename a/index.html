@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Статья — СКАМ</title>
+<meta name="description" content="Статья в СКАМ — Свободном Конфиденциальном Автономном Мессенджере.">
+<!-- Статьи открыты всем по ссылке, но в поисковики не попадают (как и весь СКАМ, где переписка — личное дело). -->
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E0E0E" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/fonts/fonts.css">
+<script>
+  // Тема как в приложении — до отрисовки, чтобы не мигало.
+  try { var t = localStorage.getItem('skam:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+</head>
+<body>
+<svg class="defs" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="skamGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFAB1A"/><stop offset=".5" stop-color="#E85002"/><stop offset="1" stop-color="#66EA1B"/>
+    </linearGradient>
+    <symbol id="skamMark" viewBox="-1 -1 131 143"><path fill-rule="evenodd" d="M9.84 98.75A64.5 64.5 0 1 1 39.9 124.1L0.5 140.5Z M34 64.5A30.5 30.5 0 1 0 95 64.5A30.5 30.5 0 1 0 34 64.5Z"/></symbol>
+  </defs>
+</svg>
+<header class="ap-bar">
+  <a class="ap-logo" href="/" title="Открыть СКАМ">
+    <svg class="ap-icon" viewBox="0 0 200 200" aria-hidden="true"><rect width="200" height="200" rx="46" fill="url(#skamGrad)"/><use href="#skamMark" x="54.3" y="50.3" width="91.7" height="100.1" fill="#000"/></svg>
+    <span class="ap-word">СКАМ</span>
+  </a>
+  <span class="ap-spacer"></span>
+  <div class="ap-actions" id="actions"></div>
+</header>
+<main id="page" aria-live="polite"><p class="ap-note">Загружаем статью…</p></main>
+<div class="ap-toast" id="toast" role="status" hidden></div>
+<script type="module" src="/src/article/page.ts"></script>
+</body>
+</html>

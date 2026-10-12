@@ -364,6 +364,8 @@ export type Payload = {
   reply?: { id: unknown; uid?: unknown; text?: unknown; k?: unknown };
   /** «Переслано от …» — внутри шифротекста, сервер не знает, откуда переслали. */
   fwd?: { name: unknown; from?: unknown; kind?: unknown; at?: unknown };
+  /** Опрос (0.4.0): вопрос и варианты. Голоса, настройки и правильный ответ викторины — на сервере (только номера). */
+  poll?: { q: unknown; o: unknown };
 };
 
 const msgAad = (chatId: string, msgId: string, userId: string) => `skam/msg/v1|${chatId}|${msgId}|${userId}`;
@@ -375,6 +377,26 @@ export async function encryptMessage(chatId: string, msgId: string, payload: Pay
 }
 
 export class NoKeyError extends Error {}
+
+// Пояснение к викторине шифруется отдельно от опроса: сервер отдаёт его только тем, кто уже ответил.
+const solAad = (chatId: string, msgId: string, userId: string) => `skam/poll-solution/v1|${chatId}|${msgId}|${userId}`;
+
+/** Зашифровать пояснение викторины ключом чата: «<ключ>:<шифротекст>». */
+export async function sealPollSolution(chatId: string, msgId: string, text: string): Promise<string> {
+  if (!me) throw new Error('Шифрование не настроено');
+  const k = await sendKey(chatId);
+  return `${k.id}:${await sealJson(k.key, { t: text }, solAad(chatId, msgId, me.userId))}`;
+}
+
+/** Расшифровать пояснение викторины (автор опроса — userId). */
+export async function openPollSolution(chatId: string, msgId: string, userId: string, sealed: string): Promise<string> {
+  const i = sealed.indexOf(':');
+  if (i < 0) throw new Error('bad solution');
+  const k = await chatKey(sealed.slice(0, i));
+  if (!k) throw new NoKeyError('no key');
+  const p = await openJson<{ t?: unknown }>(k.key, sealed.slice(i + 1), solAad(chatId, msgId, userId));
+  return typeof p.t === 'string' ? p.t.slice(0, 200) : '';
+}
 
 /** Расшифровать сообщение. NoKeyError — ключа пока нет (придёт, когда кто-то из участников будет в сети). */
 export async function decryptMessage(m: { id: string; chat_id: string; user_id: string | null; enc: string | null; key_id: string | null }): Promise<Payload> {

@@ -5,6 +5,7 @@ import type { Call, CallMember, CallSignal, Chat, KeyShare, Member, Message, Pro
 import {
   S, addReaction, bumpChat, chatMuted, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
   putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
+  isPoll, refreshPollSoon,
 } from './store';
 import { loadLayout } from './layout';
 import { loadPrefs, notifyPrefs } from './prefs';
@@ -74,6 +75,8 @@ function onMessageReady(m: Msg): void {
   const f = S.feeds.get(m.chat_id);
   const isNew = f ? !f.msgs.some((x) => x.id === m.id) : true;
   if (f) upsertMessage(m);
+  // Новый опрос в открытом чате: числа голосов и варианты (в канале) — отдельным запросом.
+  if (f && isPoll(m) && !S.polls.has(m.id)) refreshPollSoon(m.id);
   const c = S.chats.get(m.chat_id);
   if (!c) { reloadChatsSoon(); return; }
   const newer = ts(m.created_at) > ts(c.last_at);
@@ -276,6 +279,13 @@ export async function startRealtime(onStatus: (ok: boolean) => void, onIdentityR
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (p) => onMessageUpdate(p.new as Message))
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'reactions' }, (p) => onReactionInsert(p.new as Reaction))
     .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'reactions' }, (p) => onReactionDelete(p.old as Partial<Reaction>))
+    // Опросы: пришли голоса или опрос завершили — освежаем его (кто голосовал и мой голос знает только сервер).
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'polls' }, (p) => {
+      const row = (p.new ?? {}) as { message_id?: string; chat_id?: string };
+      if (row.message_id && row.chat_id && S.feeds.get(row.chat_id)?.msgs.some((x) => x.id === row.message_id)) {
+        refreshPollSoon(row.message_id);
+      }
+    })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_members' }, (p) =>
       onMember(p.eventType, (p.eventType === 'DELETE' ? p.old : p.new) as Partial<Member>))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, (p) =>

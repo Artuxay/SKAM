@@ -46,6 +46,14 @@ export const SKAM_FULL_HTML = '<p class="expansion"><b>С</b>вободный <b
 export const LOGO = `<span class="logo">${APP_ICON}<span class="wordmark">СКАМ</span></span>`;
 
 export const ICONS = {
+  /** Опрос (0.4.0). */
+  poll: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 6.5h9M5 12h14M5 17.5h6"/></svg>',
+  /** Статья (0.4.0). */
+  article: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="3" width="15" height="18" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/></svg>',
+  /** Открыть во внешнем окне. */
+  external: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></svg>',
+  /** Завершить (опрос). */
+  stop: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>',
   /** Официальная галочка: розетка в цветах логотипа и тёмная галочка. */
   verified: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6L14.23 3.69L17.2 2.99L18.08 5.92L21.01 6.8L20.31 9.77L22.4 12L20.31 14.23L21.01 17.2L18.08 18.08L17.2 21.01L14.23 20.31L12 22.4L9.77 20.31L6.8 21.01L5.92 18.08L2.99 17.2L3.69 14.23L1.6 12L3.69 9.77L2.99 6.8L5.92 5.92L6.8 2.99L9.77 3.69Z" fill="url(#skamGrad)" stroke="url(#skamGrad)" stroke-width="2" stroke-linejoin="round"/><path d="M7.7 12.3l2.9 2.9 5.8-6.2" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   plus: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
@@ -230,6 +238,8 @@ export function errText(e: unknown, fallback = 'Не получилось. Пр�
 export const textHooks: {
   mention?: (username: string) => void;
   emoji?: (name: string, ref: string, big: boolean) => Node;
+  /** Нажали на ссылку: true — приложение открыло её само (например, статью СКАМ — мгновенным просмотром). */
+  link?: (url: string, ev: MouseEvent) => boolean;
 } = {};
 
 // Ссылка; метка своего эмодзи; @username (не часть почты и не внутри слова).
@@ -245,9 +255,14 @@ export function fillText(node: HTMLElement, text: string, big = false): void {
     last = m.index + m[0].length;
     if (m[1]) {
       const a = el('a', null, m[1]);
-      a.href = m[1];
+      const url = m[1];
+      a.href = url;
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
+      a.addEventListener('click', (ev) => {
+        if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.button !== 0) return;
+        if (textHooks.link?.(url, ev)) { ev.preventDefault(); ev.stopPropagation(); }
+      });
       node.append(a);
     } else if (m[3]) {
       node.append(textHooks.emoji ? textHooks.emoji(m[2], m[3], big) : `:${m[2]}:`);

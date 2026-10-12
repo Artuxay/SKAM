@@ -69,6 +69,18 @@ drop policy if exists "skam stories: delete own" on storage.objects;
 create policy "skam stories: delete own" on storage.objects for delete to authenticated
   using (bucket_id = 'stories' and (storage.foldername(name))[1] = (select auth.uid())::text);
 
+-- Articles (0.4.0): public bucket with random file names; the owner of a file is in private.article_images
+-- (a place for a file is given by public.article_image_slot). Reading is public (bucket is public).
+drop policy if exists "skam articles: upload" on storage.objects;
+create policy "skam articles: upload" on storage.objects for insert to authenticated
+  with check (bucket_id = 'articles' and private.article_image_mine(name));
+drop policy if exists "skam articles: read own" on storage.objects;
+create policy "skam articles: read own" on storage.objects for select to authenticated
+  using (bucket_id = 'articles' and private.article_image_mine(name));
+drop policy if exists "skam articles: delete own" on storage.objects;
+create policy "skam articles: delete own" on storage.objects for delete to authenticated
+  using (bucket_id = 'articles' and private.article_image_mine(name));
+
 drop policy if exists "skam: realtime read" on realtime.messages;
 create policy "skam: realtime read" on realtime.messages for select to authenticated
   using (exists (select 1 from public.chat_members m
