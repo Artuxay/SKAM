@@ -1,10 +1,12 @@
 // Supabase Realtime: изменения в базе, «печатает…» (broadcast), а также пульс «в сети» (ping).
+// Время захода других людей Realtime не приносит (0.4.1): его отдаёт user_presence с учётом
+// настроек конфиденциальности — опрашиваем раз в 30 секунд вместе с перерисовкой статусов.
 import type { RealtimeChannel, RealtimeChannelOptions } from '@supabase/supabase-js';
 import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
 import type { Call, CallMember, CallSignal, Chat, KeyShare, Member, Message, Profile, Reaction, UserKey } from '../lib/database.types';
 import {
   S, addReaction, bumpChat, chatMuted, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
-  putProfile, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
+  putProfile, refreshPresence, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
   isPoll, refreshPollSoon,
 } from './store';
 import { loadLayout } from './layout';
@@ -211,13 +213,6 @@ async function resync(withProfiles = false): Promise<void> {
 function ping(online: boolean): void {
   sb.rpc('ping', { p_online: online }).then(() => {}, () => {});
   sb.auth.getSession().then(({ data }) => { lastToken = data.session?.access_token ?? null; }, () => {});
-  const me = S.me;
-  if (me) {
-    const now = Date.now();
-    me.last_seen_at = new Date(now).toISOString();
-    me.online_until = new Date(online ? now + 75_000 : now).toISOString();
-    emit('me');
-  }
 }
 
 /** Перед выходом из аккаунта: сразу «был(а) в сети». */
@@ -241,7 +236,7 @@ function onPageHide(): void {
 function onVisibility(): void {
   if (document.visibilityState === 'visible') {
     ping(true);
-    if (chatChannel) void chatChannel.track({ user_id: meId() });
+    void refreshPresence();
     // Телефон мог «усыпить» сокет — догоняем пропущенное.
     if (hiddenAt && Date.now() - hiddenAt > 30_000) void resync();
     hiddenAt = 0;
@@ -249,7 +244,6 @@ function onVisibility(): void {
     hiddenAt = Date.now();
     sendTyping(false);
     ping(false);
-    void chatChannel?.untrack();
   }
 }
 
@@ -318,8 +312,12 @@ export async function startRealtime(onStatus: (ok: boolean) => void, onIdentityR
   pingTimer = window.setInterval(() => { if (document.visibilityState === 'visible') ping(true); }, PING_MS);
   e2e.sweepSoon(800);
   sweepTimer = window.setInterval(() => { if (document.visibilityState === 'visible') e2e.sweepSoon(0); }, SWEEP_MS);
-  // Статусы «в сети» истекают и «N минут назад» растёт — перерисовываем раз в 30 секунд.
-  statusTick = window.setInterval(() => emit('online', 'head', 'chats', 'members'), 30_000);
+  // Статусы «в сети» истекают и «N минут назад» растёт — перерисовываем и освежаем раз в 30 секунд.
+  void refreshPresence(true);
+  statusTick = window.setInterval(() => {
+    emit('online', 'head', 'chats', 'members');
+    if (document.visibilityState === 'visible') void refreshPresence(true);
+  }, 30_000);
   window.addEventListener('pagehide', onPageHide);
   document.addEventListener('visibilitychange', onVisibility);
   typingSweep = window.setInterval(() => {
@@ -349,7 +347,8 @@ export async function stopRealtime(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Канал открытого чата: кто сейчас в чате и кто печатает
+// Канал открытого чата: кто печатает. Кто сейчас в чате (presence), с 0.4.1 не сообщаем —
+// это выдавало бы «в сети» тем, от кого человек его скрыл.
 // ---------------------------------------------------------------------------
 
 export function joinChatChannel(chatId: string | null): void {
@@ -357,20 +356,14 @@ export function joinChatChannel(chatId: string | null): void {
   if (chatChannel) void sb.removeChannel(chatChannel);
   chatChannel = null;
   chatTopicId = chatId;
-  S.inChat.clear();
   S.typing.clear();
   S.typingWhat.clear();
   emit('head');
   if (!chatId) return;
   chatChannel = channel(
     `chat:${chatId}`,
-    { presence: { key: meId() }, broadcast: { self: false } },
+    { broadcast: { self: false } },
     (ch) => ch
-      .on('presence', { event: 'sync' }, () => {
-        if (chatTopicId !== chatId) return;
-        S.inChat = new Set(Object.keys(ch.presenceState()));
-        emit('head');
-      })
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         const uid = typeof payload?.user_id === 'string' ? payload.user_id : null;
         if (chatTopicId !== chatId || !uid || uid === meId()) return;
@@ -386,7 +379,7 @@ export function joinChatChannel(chatId: string | null): void {
         void ensureProfiles([uid]);
         emit('head');
       }),
-    (ch) => { if (document.visibilityState === 'visible') void ch.track({ user_id: meId() }); },
+    () => {},
   );
 }
 

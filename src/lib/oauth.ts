@@ -6,6 +6,8 @@
 // функция меняет код на профиль, находит или создаёт аккаунт и отдаёт одноразовый токен входа.
 // Кнопки показываются только для провайдеров, чьи ключи заданы в секретах функции:
 // задали — кнопка появилась сама, пересобирать сайт не нужно.
+// С 0.4.1 Яндекс ID и VK ID можно привязать к уже существующему аккаунту («Конфиденциальность» →
+// «Способы входа»): тот же переход к провайдеру, но функция не входит, а привязывает (mode = link).
 import type { User } from '@supabase/supabase-js';
 import { SUPABASE_KEY, SUPABASE_URL, sb } from './supabase';
 import { lsGet, lsSet } from './dom';
@@ -81,7 +83,7 @@ const PENDING_KEY = 'skam:oauth-pending';
 /** Сколько ждём возвращения от провайдера. */
 const PENDING_TTL = 30 * 60 * 1000;
 
-type Pending = { p: OAuthId; state: string; verifier: string; redirect: string; at: number };
+type Pending = { p: OAuthId; state: string; verifier: string; redirect: string; at: number; link?: boolean };
 
 /** Через какого провайдера входили на этом устройстве в прошлый раз. */
 export function lastProvider(): OAuthId | null {
@@ -104,21 +106,26 @@ async function challengeOf(verifier: string): Promise<string> {
   return b64url(new Uint8Array(hash));
 }
 
+/** Привязать Яндекс ID или VK ID к открытому аккаунту: уходим к провайдеру, вернёмся с кодом. */
+export function linkWith(p: OAuthId): Promise<string | null> {
+  return signInWith(p, true);
+}
+
 /**
  * Уводит на страницу входа провайдера. Возвращает текст ошибки, если уйти не получилось.
  * Обратно провайдер вернёт на главную страницу сайта с ?code=…&state=… — там вход и завершится.
  */
-export async function signInWith(p: OAuthId): Promise<string | null> {
+export async function signInWith(p: OAuthId, link = false): Promise<string | null> {
   const st = await authSettings();
   const cfg = st.oauth.find((x) => x.id === p);
-  if (!cfg) return `Вход через ${LABEL[p]} сейчас недоступен. Войдите по почте.`;
+  if (!cfg) return link ? `${LABEL[p]} пока не подключён к СКАМ.` : `Вход через ${LABEL[p]} сейчас недоступен. Войдите по почте.`;
   if (!crypto?.subtle) return 'Браузер не поддерживает безопасный вход. Откройте сайт по https.';
   const state = randomString(32);
   const verifier = randomString(48);
   const redirect = redirectUri();
-  const pend: Pending = { p, state, verifier, redirect, at: Date.now() };
+  const pend: Pending = { p, state, verifier, redirect, at: Date.now(), ...(link ? { link: true } : {}) };
   lsSet(PENDING_KEY, JSON.stringify(pend));
-  lsSet(LAST_KEY, p);
+  if (!link) lsSet(LAST_KEY, p);
 
   const url = new URL(p === 'yandex' ? 'https://oauth.yandex.ru/authorize' : 'https://id.vk.ru/authorize');
   url.search = new URLSearchParams({
@@ -193,6 +200,8 @@ function cleanUrl(): void {
 
 const ERRORS: Record<string, string> = {
   not_configured: 'Этот способ входа сейчас отключён. Войдите по почте.',
+  taken: 'Этот аккаунт уже привязан к другому аккаунту СКАМ. Войдите в тот аккаунт и отвяжите его там.',
+  unauthorized: 'Сессия устарела. Войдите заново и привяжите ещё раз.',
   provider_rejected: 'Сервис входа не подтвердил вход. Попробуйте ещё раз.',
   provider_unavailable: 'Сервис входа не отвечает. Попробуйте позже или войдите по почте.',
   bad_redirect: 'Вход с этого адреса сайта не настроен.',
@@ -226,6 +235,57 @@ export async function finishOAuth(r: Extract<OAuthReturn, { ok: true }>): Promis
     return `Не получилось войти через ${r.label}. Попробуйте ещё раз.`;
   }
   return null;
+}
+
+/** Вернулись после «Привязать»: функция привязывает аккаунт провайдера к тому, кто вошёл. null — готово. */
+export async function finishLink(r: Extract<OAuthReturn, { ok: true }>): Promise<string | null> {
+  const { data } = await sb.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) return ERRORS.unauthorized;
+  let res: Response;
+  try {
+    res = await fetch(FN_URL, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'link',
+        provider: r.provider,
+        code: r.code,
+        codeVerifier: r.pending.verifier,
+        redirectUri: r.pending.redirect,
+        deviceId: r.deviceId,
+        state: r.state,
+      }),
+    });
+  } catch {
+    return 'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.';
+  }
+  const j = await res.json().catch(() => null) as { linked?: string; error?: string } | null;
+  if (!res.ok || j?.linked !== r.provider) return ERRORS[j?.error ?? ''] ?? `Не получилось привязать ${r.label}. Попробуйте ещё раз.`;
+  // В токене — список способов входа (app_metadata): обновим, чтобы он был свежим.
+  await sb.auth.refreshSession().catch(() => {});
+  return null;
+}
+
+export type OAuthLink = { provider: OAuthId; created_at: string; last_login_at: string };
+
+/** Привязанные Яндекс ID и VK ID этого аккаунта. */
+export async function myOAuthLinks(): Promise<OAuthLink[]> {
+  const { data, error } = await sb.rpc('my_oauth_links');
+  if (error) throw error;
+  return (data ?? []).flatMap((l) => (isOAuth(l.provider) ? [{ ...l, provider: l.provider }] : []));
+}
+
+/** Отвязать. Последний способ входа отвязать нельзя — тогда ошибка с текстом для человека. */
+export async function unlinkOAuth(p: OAuthId): Promise<void> {
+  const { error } = await sb.rpc('oauth_unlink', { p_provider: p });
+  if (error) {
+    if (error.hint === 'last_method' || /last sign-in method/.test(error.message)) {
+      throw new Error(`Это единственный способ войти в аккаунт: сначала привяжите другой, потом отвязывайте ${LABEL[p]}.`);
+    }
+    throw error;
+  }
+  await sb.auth.refreshSession().catch(() => {});
 }
 
 // ---------------------------------------------------------------------------

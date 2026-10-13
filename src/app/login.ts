@@ -36,7 +36,9 @@ export function mountLogin(root: HTMLElement, notice?: string | null): void {
   const known = knownSettings();
   const ret = returned;
   returned = null;
-  if (ret?.ok) {
+  // Привязку начинали в аккаунте, а вернулись без входа (сессия кончилась) — не входим чужим способом.
+  if (ret?.ok && ret.pending.link) notice = `Привязка ${ret.label} не завершена: войдите в аккаунт и привяжите его ещё раз в «Конфиденциальности».`;
+  else if (ret?.ok) {
     void finishStep(ret, saved);
     return;
   }

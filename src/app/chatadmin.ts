@@ -5,12 +5,12 @@ import { avatarUrl } from '../lib/supabase';
 import {
   $, ICONS, button, closeDialog, dlgHead, el, errText, fillText, html, openDialog, plural, toast, touchMQ, verifiedMark,
 } from '../lib/dom';
-import { isOnline, statusText } from '../lib/status';
+import { isOnline, seenRank, statusText } from '../lib/status';
 import {
   S, SEARCH_MIN, USERNAME_RE, addMembers, bannedList, channelLink, chatById, chatUsernameAvailable, createChat,
   deleteChat, hasRight, inviteLink, isAdmin, joinChannel, leaveChat, memberList, meId, myContacts, normUsername, removeAdmin,
   removeChatAvatar, removeMember, resetInvite, searchNorm, searchUsers, setAdmin, setChatUsername, setVerified,
-  transferOwner, unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact,
+  transferOwner, unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact, presenceOf,
 } from './store';
 import { nickOf } from './nicks';
 
@@ -181,7 +181,7 @@ function personRow(uid: string, sub: string, onClick: (() => void) | null, extra
   if (b instanceof HTMLButtonElement) { b.type = 'button'; b.addEventListener('click', onClick!); }
   const text = el('span', 'pr-text');
   const p = S.profiles.get(uid);
-  const on = uid !== meId() && isOnline(p);
+  const on = uid !== meId() && isOnline(presenceOf(uid));
   const nm = el('span', 'nm');
   nm.append(el('span', 'nm-t', uid === meId() ? `${env.name(uid)} (вы)` : env.name(uid)));
   if (p?.verified) nm.append(verifiedMark());
@@ -193,7 +193,7 @@ function personRow(uid: string, sub: string, onClick: (() => void) | null, extra
 }
 
 function statusOf(uid: string): string {
-  return uid === meId() ? 'в сети' : statusText(S.profiles.get(uid));
+  return uid === meId() ? 'в сети' : statusText(presenceOf(uid));
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@ function pageMain(c: MyChat): HTMLElement {
     top.append(tile);
   }
   const members = S.members.get(c.id) ?? [];
-  const online = members.filter((m) => m.user_id !== meId() && isOnline(S.profiles.get(m.user_id))).length;
+  const online = members.filter((m) => m.user_id !== meId() && isOnline(presenceOf(m.user_id))).length;
   const title = el('h2', 'person-name', env.chatTitle(c));
   if (c.verified) title.append(verifiedMark('channel'));
   top.append(title,
@@ -452,8 +452,8 @@ function roleLabel(m: Target): string {
 
 function memberUl(c: MyChat, list: Target[]): HTMLElement {
   const ul = el('ul', 'members');
-  const onl = (uid: string) => uid === meId() || isOnline(S.profiles.get(uid));
-  const seen = (uid: string) => Date.parse(S.profiles.get(uid)?.last_seen_at ?? '') || 0;
+  const onl = (uid: string) => uid === meId() || isOnline(presenceOf(uid));
+  const seen = (uid: string) => seenRank(presenceOf(uid));
   const rank = (r: string) => (r === 'owner' ? 0 : r === 'admin' ? 1 : 2);
   const sorted = [...list].sort((a, b) =>
     Number(onl(b.user_id)) - Number(onl(a.user_id)) || rank(a.role) - rank(b.role)
@@ -921,7 +921,7 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
     cb.disabled = state !== 'free';
     cb.addEventListener('change', () => { if (cb.checked) picked.add(uid); else picked.delete(uid); syncBtn(); });
     const text = el('span', 'pr-text');
-    const on = isOnline(S.profiles.get(uid));
+    const on = isOnline(presenceOf(uid));
     const nm = el('span', 'nm');
     nm.append(el('span', 'nm-t', env.name(uid)));
     if (S.profiles.get(uid)?.verified) nm.append(verifiedMark());
@@ -958,7 +958,7 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
       try {
         const got = await searchUsers(raw);
         if (my !== seq) return;
-        got.forEach((g) => { if (!S.profiles.has(g.id)) S.profiles.set(g.id, { id: g.id, name: g.name, first_name: g.name, last_name: null, username: g.username, username_optional: false, avatar_path: g.avatar_path, color: g.color, last_seen_at: null, online_until: null, verified: g.verified, bio: null, created_at: '', updated_at: '' }); });
+        got.forEach((g) => { if (!S.profiles.has(g.id)) S.profiles.set(g.id, { id: g.id, name: g.name, first_name: g.name, last_name: null, username: g.username, username_optional: false, avatar_path: g.avatar_path, color: g.color, verified: g.verified, bio: null, created_at: '', updated_at: '' }); });
         found = got.map((g) => ({ id: g.id, is_contact: g.is_contact }));
         draw();
       } catch { /* поиск — не главное */ }

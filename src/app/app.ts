@@ -1,7 +1,7 @@
 // Интерфейс мессенджера: список чатов, лента, композер и диалоги.
 import type { User } from '@supabase/supabase-js';
 import { avatarUrl, sb } from '../lib/supabase';
-import type { Attachment, ChatCard, CommonGroup, Forward, MyChat } from '../lib/database.types';
+import type { Attachment, ChatCard, CommonGroup, Forward, LastSeenPrivacy, MyChat, PersonalChannel } from '../lib/database.types';
 import {
   $, APP_ICON_HERO, BRAND_AVATAR, ICONS, LOGO, MARK_SVG, SKAM_FULL_HTML, button, closeDialog, dayKey, dayLabel, dlgHead, el, errText, fillText, html,
   listTime, lsGet, lsSet, openDialog, plural, textHooks, timeLabel, toast, touchMQ, verifiedMark, wideMQ,
@@ -16,7 +16,7 @@ import {
   loadMyEmojiPacks, loadMyPacks, mountStickerPacks, openEmojiManager, openStickerManager, openStickerPack, resetStickerPacks,
 } from './stickerpacks';
 import { mountReactions, quickReactions, reactionChips, reactionPacksChanged } from './reactions';
-import { isOnline, statusText } from '../lib/status';
+import { isApprox, isOnline, statusText } from '../lib/status';
 import { getTheme, setTheme, type Theme } from '../lib/theme';
 import { mountRegister } from './register';
 import {
@@ -28,7 +28,7 @@ import {
   canForward, forwardMessages, forwardOf, loadQuoted, loadUntil, quotedMsg, snapOf,
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
   loadAppOwner, rememberProfiles, setVerified, BIO_MAX, normBio, userBio, chatMuted, peerBlocked, ensureSaved, savedChat,
-  isPoll,
+  isPoll, presenceOf, loadPresence, loadPrivacy, setLastSeenPrivacy, personalChannel, knownPersonalChannel, setPersonalChannel,
 } from './store';
 import { NICK_MAX, loadNicknames, nickHits, nickOf, resetNicks, setNickname } from './nicks';
 import {
@@ -49,7 +49,10 @@ import {
 import {
   emptyFolderNote, foldersOf, layoutChanged, mountFolders, openFolderEditor, openFolderSettings, renderFolderBar, type MenuItem,
 } from './folders';
-import { loginMethods, providerProfile, realEmail } from '../lib/oauth';
+import {
+  OAUTH, authSettings, finishLink, linkWith, loginMethods, myOAuthLinks, oauthReturn, providerLabel, providerProfile, realEmail,
+  unlinkOAuth, type OAuthId, type OAuthLink,
+} from '../lib/oauth';
 import { LEGAL_VERSION, acceptedVersion, privacyLink, termsLink } from '../lib/legal';
 import { mountTerms } from './terms';
 import { ST, resetStories, storyState } from '../lib/stories';
@@ -62,7 +65,7 @@ import {
 } from './prefs';
 import { askPermission, chime, mountNotify, notifyPermission, testNotify } from './notify';
 import { unlock as soundUnlock } from './sounds';
-import { actionTile, grp, grpLabel, grpNote, row, sheetHead, toggleRow, type IconName } from './sheet';
+import { actionTile, grp, grpLabel, grpNote, radioRow, row, sheetHead, toggleRow, type IconName } from './sheet';
 import { articleLinks, slugFromUrl } from '../lib/article';
 import { articleCardEl, articleTitle, mountArticles, openArticle, openArticleEditor, openMyArticles } from './articles';
 import { mountPolls, openPollCreator, pollEl, pollLine, stopPoll } from './polls';
@@ -354,7 +357,7 @@ const BRAND_SVG = BRAND_AVATAR;
 function personAvatar(uid: string | null, cls = '', clickable = false): HTMLElement {
   const wrap = el('span', 'person-av');
   wrap.append(avatarEl(who(uid), cls, clickable));
-  if (uid && uid !== meId() && isOnline(S.profiles.get(uid))) {
+  if (uid && uid !== meId() && isOnline(presenceOf(uid))) {
     const d = el('span', 'on-dot');
     d.setAttribute('aria-label', 'в сети');
     wrap.append(d);
@@ -969,7 +972,7 @@ function chatTileEl(c: MyChat, cls = ''): HTMLElement {
   if (c.kind === 'direct') {
     tile = el('span', `tile person ${cls} ${ringClass(c.peer_id)}`.trim());
     tile.append(avatarEl(who(c.peer_id)));
-    if (c.peer_id && isOnline(S.profiles.get(c.peer_id))) tile.append(el('span', 'on-dot'));
+    if (c.peer_id && isOnline(presenceOf(c.peer_id))) tile.append(el('span', 'on-dot'));
   } else if (c.kind === 'saved') {
     tile = el('span', `tile saved ${cls}`.trim());
     tile.append(html(ICONS.bookmark));
@@ -1159,8 +1162,8 @@ function renderHead(): void {
   }
   sub.classList.remove('typing');
   if (c.kind === 'direct') {
-    // Как в Telegram: «в сети» или «был(а) в сети …».
-    const peer = c.peer_id ? S.profiles.get(c.peer_id) : null;
+    // Как в Telegram: «в сети», «был(а) в сети …» или, если время скрыто, «был(а) недавно».
+    const peer = presenceOf(c.peer_id);
     sub.textContent = statusText(peer);
     sub.classList.toggle('online', isOnline(peer));
     return;
@@ -1174,7 +1177,7 @@ function renderHead(): void {
   }
   // Группа: «5 участников, 2 в сети» — считаем только участников этого чата.
   const members = S.members.get(c.id) ?? [];
-  const onlineMembers = members.filter((m) => isOnline(S.profiles.get(m.user_id))).length;
+  const onlineMembers = members.filter((m) => m.user_id === meId() || isOnline(presenceOf(m.user_id))).length;
   const parts = [plural(c.member_count, 'участник', 'участника', 'участников')];
   if (onlineMembers > 0) parts.push(`${onlineMembers} в сети`);
   sub.textContent = parts.join(', ');
@@ -3101,7 +3104,7 @@ async function runFind(now: boolean): Promise<void> {
 // Мой профиль: главный экран и вложенные — «Изменить профиль», истории, конфиденциальность, уведомления
 // ---------------------------------------------------------------------------
 
-type ProfView = 'home' | 'edit' | 'stories' | 'privacy' | 'blocked' | 'notify' | 'about';
+type ProfView = 'home' | 'edit' | 'stories' | 'privacy' | 'blocked' | 'notify' | 'about' | 'lastseen' | 'channel';
 let profView: ProfView = 'home';
 
 function openProfile(view: ProfView = 'home'): void {
@@ -3130,6 +3133,8 @@ function renderProfile(): void {
   if (!S.me) return;
   const parts = profView === 'edit' ? profEdit(dlg)
     : profView === 'stories' ? profStories(dlg)
+      : profView === 'lastseen' ? profLastSeen(dlg)
+        : profView === 'channel' ? profChannel(dlg)
       : profView === 'privacy' ? profPrivacy(dlg)
         : profView === 'blocked' ? profBlocked(dlg)
           : profView === 'notify' ? profNotify(dlg)
@@ -3216,11 +3221,18 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
 
   const mine = ST.byAuthor.get(meId())?.stories.length ?? 0;
   const avg = ratingShort();
+  const myChannel = knownPersonalChannel(meId());
+  if (myChannel === undefined) void personalChannel(meId()).then(() => { if (profView === 'home' && dlg.open) renderProfile(); }, () => {});
   return [
     sheetHead(dlg, null),
     hero,
+    personalChannelBox(meId(), () => closeDialog(dlg)),
     grp(
       row({ icon: 'edit', label: 'Изменить профиль', chev: true, fn: () => profGo('edit') }),
+      row({
+        icon: 'megaphone', label: 'Личный канал', em: myChannel ? (myChannel.name || `@${myChannel.username}`) : myChannel === null ? 'Нет' : null,
+        chev: true, title: 'Свой публичный канал в профиле, как в Telegram', fn: () => profGo('channel'),
+      }),
       row({ icon: 'bookmark', label: 'Избранное', chev: true, fn: () => { closeDialog(dlg); void openSaved(); } }),
       row({ icon: 'storyAdd', label: 'Мои истории', em: mine ? String(mine) : 'Добавить', chev: true, fn: () => profGo('stories') }),
       row({ icon: 'article', label: 'Мои статьи', sub: 'Как в Telegraph — со своей ссылкой', chev: true, fn: () => { closeDialog(dlg); void openMyArticles(); } }),
@@ -3367,8 +3379,84 @@ function profStories(dlg: HTMLDialogElement): HTMLElement[] {
   return [sheetHead(dlg, 'Мои истории', () => profGo('home')), body];
 }
 
+const LAST_SEEN_LABEL: Record<LastSeenPrivacy, string> = { everybody: 'Все', contacts: 'Контакты', nobody: 'Никто' };
+
+/** «Способы входа»: привязанные Яндекс ID и VK ID (null — ещё не загрузили) и какие из них включены на сервере. */
+let oauthLinks: OAuthLink[] | null = null;
+let oauthOn: OAuthId[] | null = null;
+let oauthBusy = false;
+
+function loadLoginMethods(): void {
+  void Promise.all([myOAuthLinks(), authSettings()]).then(([links, st]) => {
+    oauthLinks = links;
+    oauthOn = st.oauth.map((x) => x.id);
+    if (profView === 'privacy' && $<HTMLDialogElement>('profileDlg').open) renderProfile();
+  }, () => {});
+}
+
+/** Строка «Яндекс ID / VK ID»: привязать (уйти к провайдеру) или отвязать. */
+function oauthRow(p: OAuthId): HTMLElement {
+  const link = oauthLinks?.find((l) => l.provider === p) ?? null;
+  const r = el('div', 'lr oauth-lr');
+  const ic = el('span', `lr-ic oauth-ic ${p}`);
+  ic.textContent = p === 'yandex' ? 'Я' : 'VK';
+  const t = el('span', 'lr-t');
+  t.append(el('span', 'lr-l', providerLabel(p)),
+    el('span', 'lr-sub', link ? `привязан ${dayLabel(ts(link.created_at)).toLowerCase()} · можно входить` : 'не привязан'));
+  const btn = link
+    ? button('btn ghost small', 'Отвязать', async () => {
+      if (!btn.classList.contains('armed')) {
+        btn.classList.add('armed');
+        btn.textContent = 'Точно?';
+        setTimeout(() => { if (btn.isConnected) { btn.classList.remove('armed'); btn.textContent = 'Отвязать'; } }, 4000);
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await unlinkOAuth(p);
+        toast(`${providerLabel(p)} отвязан`);
+        oauthLinks = (oauthLinks ?? []).filter((l) => l.provider !== p);
+        S.user = (await sb.auth.getUser()).data.user ?? S.user;
+        renderProfile();
+      } catch (e) {
+        toast(errText(e, 'Не получилось отвязать.'));
+        btn.disabled = false;
+      }
+    })
+    : button('btn primary small', 'Привязать', async () => {
+      if (oauthBusy) return;
+      oauthBusy = true;
+      btn.disabled = true;
+      const err = await linkWith(p).catch(() => 'Не получилось открыть страницу входа.');
+      if (err) { toast(err); btn.disabled = false; oauthBusy = false; }
+    });
+  r.append(ic, t, btn);
+  return r;
+}
+
+/** Вернулись от Яндекса или VK после «Привязать». */
+let linkHandled = false;
+async function finishPendingLink(): Promise<void> {
+  const r = oauthReturn;
+  if (linkHandled || !r) return;
+  linkHandled = true;
+  if (!r.ok) { if (r.message) toast(r.message); return; }
+  if (!r.pending.link) return;
+  const err = await finishLink(r);
+  if (!mounted) return;
+  if (err) { toast(err); return; }
+  toast(`${r.label} привязан — теперь им можно входить в этот аккаунт`);
+  S.user = (await sb.auth.getUser()).data.user ?? S.user;
+  oauthLinks = null;
+  openProfile('privacy');
+}
+
 function profPrivacy(dlg: HTMLDialogElement): HTMLElement[] {
-  const methods = loginMethods(S.user);
+  if (S.lastSeen === null) void loadPrivacy().then(() => { if (profView === 'privacy' && dlg.open) renderProfile(); }, () => {});
+  if (oauthLinks === null || oauthOn === null) loadLoginMethods();
+  const linked = (oauthLinks ?? []).map((l) => l.provider);
+  const methods = oauthLinks === null ? loginMethods(S.user)
+    : [...loginMethods(S.user).filter((m) => m === 'почта' || m === 'телефон'), ...linked.map(providerLabel)];
   const enc = el('div', 'lr');
   const encIc = el('span', 'lr-ic ok');
   encIc.append(html(ICONS.lock));
@@ -3388,21 +3476,129 @@ function profPrivacy(dlg: HTMLDialogElement): HTMLElement[] {
   loginT.append(el('span', 'lr-l', contactLine() || 'Аккаунт СКАМ'));
   if (methods.length) loginT.append(el('span', 'lr-sub', `Вход: ${methods.join(', ')}`));
   login.append(loginIc, loginT);
+  const providers = OAUTH.map((o) => o.id).filter((p) => linked.includes(p) || (oauthOn ?? []).includes(p));
   return [
     sheetHead(dlg, 'Конфиденциальность', () => profGo('home')),
-    grp(row({
-      icon: 'ban', label: 'Заблокированные', em: S.blocks.size ? String(S.blocks.size) : 'Нет', chev: true, fn: () => profGo('blocked'),
-    })),
-    grpNote('Заблокированные не могут писать вам в личный чат и звонить и не видят ваши истории — а вы их.'),
+    grp(
+      row({
+        icon: 'eye', label: 'Время захода', sub: 'Кто видит, когда вы в сети', em: S.lastSeen ? LAST_SEEN_LABEL[S.lastSeen] : null,
+        chev: true, fn: () => profGo('lastseen'),
+      }),
+      row({
+        icon: 'ban', label: 'Заблокированные', em: S.blocks.size ? String(S.blocks.size) : 'Нет', chev: true, fn: () => profGo('blocked'),
+      }),
+    ),
+    grpNote('Заблокированные не могут писать вам в личный чат и звонить и не видят ваши истории — а вы их. Ваше время захода они видят как «был(а) давно».'),
     grpLabel('Шифрование'),
     grp(enc, row({ icon: 'edit', label: 'Сменить пароль шифрования', chev: true, fn: () => openChangePassword() })),
     grpLabel('Истории'),
     grp(who2),
-    grpLabel('Вход'),
-    grp(login),
+    grpLabel('Способы входа'),
+    grp(login, ...providers.map(oauthRow)),
+    providers.length ? grpNote('Привяжите Яндекс ID или VK ID — и входите в этот аккаунт одной кнопкой, без кода на почту.') : null,
     grpNote(`После выхода ключ шифрования удалится с этого устройства: чтобы войти снова, понадобятся ${
       methods.some((m) => m !== 'почта' && m !== 'телефон') ? 'вход' : 'код'} и пароль шифрования.`),
+  ].filter((x): x is HTMLElement => !!x);
+}
+
+/** «Время захода»: Все / Контакты / Никто — как в Telegram. Скрывает сервер, а не только экран. */
+function profLastSeen(dlg: HTMLDialogElement): HTMLElement[] {
+  if (S.lastSeen === null) void loadPrivacy().then(() => { if (profView === 'lastseen' && dlg.open) renderProfile(); }, () => {});
+  const cur = S.lastSeen;
+  const pick = (v: LastSeenPrivacy) => {
+    if (v === cur) return;
+    setLastSeenPrivacy(v).then(() => {
+      toast(v === 'everybody' ? 'Время захода видят все' : v === 'contacts' ? 'Время захода видят только контакты' : 'Время захода скрыто от всех');
+    }, (e) => toast(errText(e, 'Не получилось сохранить.')));
+    renderProfile();
+  };
+  const opts: [LastSeenPrivacy, string, string | null][] = [
+    ['everybody', 'Все', null],
+    ['contacts', 'Контакты', 'Те, с кем вы сами начали личный чат или кому писали, и те, кому вы дали ник'],
+    ['nobody', 'Никто', null],
   ];
+  return [
+    sheetHead(dlg, 'Время захода', () => profGo('privacy')),
+    grpLabel('Кто видит, когда я в сети'),
+    grp(...opts.map(([v, label, sub]) => {
+      const r = radioRow(label, sub, cur === v, () => pick(v));
+      r.disabled = cur === null;
+      r.id = `lastSeen-${v}`;
+      return r;
+    })),
+    grpNote('Остальные увидят только примерно: «был(а) недавно», «на этой неделе», «в этом месяце» или «давно». «В сети» для них тоже скрыто.'),
+    grpNote('Это взаимно, как в Telegram: если вы не показываете своё время человеку, вы не увидите и его. Скрываем на сервере — точное время к ним не уходит вообще, даже в данных приложения.'),
+  ];
+}
+
+/** «Личный канал»: какой свой публичный канал показывать в профиле. */
+function profChannel(dlg: HTMLDialogElement): HTMLElement[] {
+  const head = sheetHead(dlg, 'Личный канал', () => profGo('home'));
+  const known = knownPersonalChannel(meId());
+  if (known === undefined) {
+    void personalChannel(meId()).then(() => { if (profView === 'channel' && dlg.open) renderProfile(); }, () => {});
+  }
+  const mine = [...S.chats.values()].filter((c) => c.kind === 'channel' && c.role === 'owner')
+    .sort((a, b) => Number(!!b.username) - Number(!!a.username) || chatTitle(a).localeCompare(chatTitle(b), 'ru'));
+  const intro = grpNote('Канал появится в вашем профиле, как в Telegram: название, подписчики и последний пост увидит каждый, кто откроет ваш профиль.');
+  if (!mine.length) {
+    const make = el('div', 'sh-body');
+    make.append(button('btn primary', 'Создать канал', () => { closeDialog(dlg); openCreate('channel'); }));
+    return [head, intro, grpNote('У вас пока нет своих каналов. Создайте канал и задайте ему публичный @адрес — он появится здесь.'), make];
+  }
+  const cur = known?.id ?? null;
+  const set = async (id: string | null) => {
+    try {
+      await setPersonalChannel(id);
+      toast(id ? 'Канал закреплён в профиле' : 'Канал убран из профиля');
+      renderProfile();
+    } catch (e) {
+      toast(errText(e, 'Не получилось сохранить.'));
+    }
+  };
+  const rows = mine.map((c) => {
+    const r = radioRow(chatTitle(c), c.username ? `@${c.username} · ${countLabel(c)}` : 'частный — задайте @адрес в «О канале», чтобы показать',
+      cur === c.id, () => { if (cur !== c.id) void set(c.id); });
+    r.prepend(chatTileEl(c, 'sm'));
+    r.classList.add('pc-pick');
+    r.disabled = !c.username || known === undefined;
+    return r;
+  });
+  const none = radioRow('Не показывать', null, known !== undefined && cur === null, () => { if (cur) void set(null); });
+  none.disabled = known === undefined;
+  return [head, intro, grp(none, ...rows),
+    grpNote('Показать можно только публичный канал, где вы владелец. Сделаете канал частным или передадите его — из профиля он пропадёт сам.')];
+}
+
+/** Личный канал в профиле (как в Telegram): название, подписчики и последний пост; нажатие — открыть канал. */
+function personalChannelBox(uid: string, before: () => void): HTMLElement {
+  const box = el('div', 'pc-box');
+  const fill = (ch: PersonalChannel | null | undefined) => {
+    box.hidden = !ch;
+    if (!ch) { box.replaceChildren(); return; }
+    const card = button('lr pc-card', null, () => { before(); void openUsername(ch.username); });
+    const t = el('span', 'lr-t');
+    const nm = el('span', 'lr-l pc-name');
+    nm.append(el('span', 'nm-t', ch.name || `@${ch.username}`));
+    if (ch.verified) nm.append(verifiedMark('channel'));
+    const sub = el('span', 'lr-sub', `${plural(ch.member_count, 'подписчик', 'подписчика', 'подписчиков')} · @${ch.username}`);
+    t.append(nm, sub);
+    if (ch.post_id) {
+      const files = Array.isArray(ch.post_files) ? ch.post_files as { kind?: unknown; name?: unknown }[] : [];
+      const text = kindText(ch.post_kind, ch.post_body, files).replace(/\s+/g, ' ').trim();
+      t.append(el('span', 'pc-post', text));
+    } else t.append(el('span', 'pc-post empty', 'Постов пока нет'));
+    card.append(cardTile({ emoji: '📢', avatar_path: ch.avatar_path }), t);
+    if (ch.post_at) card.append(el('span', 'pc-time', listTime(ts(ch.post_at))));
+    card.setAttribute('aria-label', `Канал ${ch.name ?? ch.username}`);
+    box.replaceChildren(grpLabel('Канал'), grp(card));
+  };
+  const known = knownPersonalChannel(uid);
+  fill(known);
+  void personalChannel(uid, known !== undefined).then((ch) => {
+    if (box.isConnected || known === undefined) fill(ch);
+  }, () => {});
+  return box;
 }
 
 function profBlocked(dlg: HTMLDialogElement): HTMLElement[] {
@@ -3530,6 +3726,8 @@ async function toggleBlock(uid: string, on: boolean): Promise<void> {
     await blockUser(uid, on);
     toast(on ? `${name} заблокирован(а)` : `${name} разблокирован(а)`);
     void refreshStories();
+    // Блокировка меняет и время захода: заблокированные видят друг друга «давно».
+    void loadPresence([uid]);
   } catch (e) {
     toast(errText(e, on ? 'Не получилось заблокировать.' : 'Не получилось разблокировать.'));
   }
@@ -3565,8 +3763,10 @@ function refreshPersonStatus(): void {
   if (about && p?.created_at) fillAbout(about, p.bio);
   const st = document.getElementById('personSt');
   if (!st) return;
-  st.textContent = statusText(p);
-  st.classList.toggle('on', isOnline(p));
+  const pr = presenceOf(personUid);
+  st.textContent = statusText(pr);
+  st.classList.toggle('on', isOnline(pr));
+  st.title = isApprox(pr) ? 'Точное время скрыто настройками конфиденциальности' : '';
 }
 
 /** Строка «О себе» в карточке: пусто — строки не видно. */
@@ -3606,6 +3806,7 @@ function openPerson(uid: string, view: PersonView = 'home'): void {
   if (uid === meId()) { openProfile(); return; }
   const dlg = $<HTMLDialogElement>('personDlg');
   void ensureProfiles([uid]);
+  void loadPresence([uid]);
   if (personUid !== uid) muteOpen = false;
   personUid = uid;
   personView = view;
@@ -3702,8 +3903,12 @@ function personHome(dlg: HTMLDialogElement, uid: string): HTMLElement[] {
     real.title = 'Имя в профиле';
     hero.append(real);
   }
-  const st = el('p', `sh-sub st${isOnline(p) ? ' on' : ''}`, blocked ? 'заблокирован(а)' : statusText(p));
-  if (!blocked) st.id = 'personSt';
+  const pr = presenceOf(uid);
+  const st = el('p', `sh-sub st${!blocked && isOnline(pr) ? ' on' : ''}`, blocked ? 'заблокирован(а)' : statusText(pr));
+  if (!blocked) {
+    st.id = 'personSt';
+    if (isApprox(pr)) st.title = 'Точное время скрыто настройками конфиденциальности';
+  }
   hero.append(st);
 
   // @username и «О себе»
@@ -3751,6 +3956,7 @@ function personHome(dlg: HTMLDialogElement, uid: string): HTMLElement[] {
     sheetHead(dlg, null),
     hero,
     ...personTiles(uid, chat),
+    ...(blocked ? [] : [personalChannelBox(uid, closePersonAnd)]),
     grp(uname, about),
     storyGrid(uid),
     grp(media, groups, nickRow),
@@ -4602,6 +4808,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     },
   ).catch(() => {});
   void handlePendingJoin();
+  void finishPendingLink();
 }
 
 export function unmountApp(): void {
@@ -4622,6 +4829,9 @@ export function unmountApp(): void {
   resetPrefs();
   bioCache.clear();
   groupsCache.clear();
+  oauthLinks = null;
+  oauthOn = null;
+  oauthBusy = false;
   U.find = null;
   personUid = null;
   profView = 'home';

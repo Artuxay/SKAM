@@ -2,8 +2,8 @@
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type {
-  Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, Member, MemberInfo, Message, MessageKind, MyChat, PollState,
-  Profile, Reaction, ReactionKey, SuperStatus,
+  Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, LastSeenPrivacy, Member, MemberInfo, Message, MessageKind,
+  MyChat, PersonalChannel, PollState, Presence, Profile, Reaction, ReactionKey, SeenBucket, SuperStatus,
 } from '../lib/database.types';
 import { lsGet, lsSet, uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
@@ -82,7 +82,10 @@ export const S = {
   feeds: new Map<string, Feed>(),
   reactions: new Map<string, Reaction[]>(),
   members: new Map<string, Member[]>(),
-  inChat: new Set<string>(),
+  /** Время захода людей — каким его отдал сервер с учётом настроек обеих сторон (0.4.1). */
+  presence: new Map<string, Presence>(),
+  /** Кто видит моё время захода; null — ещё не загрузили. */
+  lastSeen: null as LastSeenPrivacy | null,
   typing: new Map<string, number>(),
   /** Кто сейчас записывает голосовое или кружочек (вместо «печатает…»). */
   typingWhat: new Map<string, 'voice' | 'video_note'>(),
@@ -198,7 +201,9 @@ export function resetState(): void {
   S.reactions.clear();
   superCache.clear();
   S.members.clear();
-  S.inChat.clear();
+  S.presence.clear();
+  S.lastSeen = null;
+  presenceAt = 0;
   S.typing.clear();
   S.typingWhat.clear();
   S.previews.clear();
@@ -254,6 +259,7 @@ export async function ensureProfiles(ids: (string | null | undefined)[]): Promis
     need.forEach((i) => inflight.delete(i));
   }
   emit('chats', 'feed', 'head', 'online', 'members');
+  void loadPresence(need.filter((x) => !S.presence.has(x)));
 }
 
 /** Перечитать уже известные профили (когда нет Realtime и изменения имён не приходят сами). */
@@ -269,13 +275,141 @@ export async function refreshProfiles(): Promise<void> {
 }
 
 export function putProfile(p: Profile): void {
+  // Старый сервер мог прислать время захода в профиле — его берём только из user_presence.
+  const clean = { ...p } as Profile & { last_seen_at?: unknown; online_until?: unknown };
+  delete clean.last_seen_at;
+  delete clean.online_until;
   const old = S.profiles.get(p.id);
-  S.profiles.set(p.id, p);
-  if (p.id === meId()) S.me = p;
-  // Пульс «в сети» меняет только время — ленту сообщений в этом случае не перерисовываем.
-  const onlyPresence = !!old && (['name', 'username', 'avatar_path', 'color', 'verified', 'bio'] as const).every((k) => old[k] === p[k]);
-  if (onlyPresence) emit('online', 'head', 'chats', 'members', ...(p.id === meId() ? (['me'] as const) : []));
+  S.profiles.set(p.id, clean);
+  if (p.id === meId()) S.me = clean;
+  // Ничего видимого не поменялось (например, только updated_at) — ленту сообщений не перерисовываем.
+  const same = !!old && (['name', 'username', 'avatar_path', 'color', 'verified', 'bio'] as const).every((k) => old[k] === clean[k]);
+  if (same) emit('head', 'chats', 'members', ...(p.id === meId() ? (['me'] as const) : []));
   else emit('chats', 'feed', 'head', 'online', 'members', 'me');
+}
+
+// ---------------------------------------------------------------------------
+// Время захода (0.4.1): точное — только если оба разрешают друг другу, иначе «был(а) недавно» и т. п.
+// Сервер считает это сам (user_presence) — в профилях времени больше нет, Realtime его не рассылает.
+// ---------------------------------------------------------------------------
+
+let presenceAt = 0;
+const presenceQueue = new Set<string>();
+let presenceTimer: number | undefined;
+let presenceRun: Promise<void> | null = null;
+
+function samePresence(a: Presence | undefined, b: Presence): boolean {
+  return !!a && a.online_until === b.online_until && a.last_seen_at === b.last_seen_at && a.seen === b.seen;
+}
+
+const SEEN: SeenBucket[] = ['recently', 'week', 'month', 'long'];
+
+/** Записать время захода из ответа сервера (user_presence, списки участников и контактов). */
+export function putPresence(rows: { id: string; online_until?: string | null; last_seen_at?: string | null; seen?: string | null }[]): void {
+  let changed = false;
+  for (const r of rows) {
+    if (!r.id || r.id === meId()) continue;
+    const next: Presence = {
+      online_until: r.online_until ?? null,
+      last_seen_at: r.last_seen_at ?? null,
+      seen: SEEN.includes(r.seen as SeenBucket) ? r.seen as SeenBucket : null,
+    };
+    if (samePresence(S.presence.get(r.id), next)) continue;
+    S.presence.set(r.id, next);
+    changed = true;
+  }
+  if (changed) emit('online', 'head', 'chats', 'members');
+}
+
+/** Время захода человека, каким его можно показать мне. undefined — ещё не загружено. */
+export function presenceOf(uid: string | null | undefined): Presence | undefined {
+  return uid ? S.presence.get(uid) : undefined;
+}
+
+/** Подтянуть время захода этих людей (запросы склеиваются в один). */
+export function loadPresence(ids: (string | null | undefined)[]): Promise<void> {
+  ids.forEach((x) => { if (x && x !== meId()) presenceQueue.add(x); });
+  if (!presenceQueue.size) return presenceRun ?? Promise.resolve();
+  clearTimeout(presenceTimer);
+  return new Promise((resolve) => {
+    presenceTimer = window.setTimeout(() => {
+      const list = [...presenceQueue];
+      presenceQueue.clear();
+      const run = (async () => {
+        for (let i = 0; i < list.length; i += 500) {
+          const { data, error } = await sb.rpc('user_presence', { p_ids: list.slice(i, i + 500) });
+          if (error) return;
+          putPresence((data ?? []).map((r) => ({ ...r, id: r.user_id })));
+        }
+      })().catch(() => {});
+      presenceRun = run;
+      void run.then(() => { if (presenceRun === run) presenceRun = null; resolve(); });
+    }, 40);
+  });
+}
+
+/** Освежить время захода всех, кого видно на экране (раз в 30 секунд из Realtime и при открытии карточки). */
+export function refreshPresence(force = false): Promise<void> {
+  if (!force && Date.now() - presenceAt < 20_000) return Promise.resolve();
+  presenceAt = Date.now();
+  const ids = new Set<string>(S.profiles.keys());
+  for (const c of S.chats.values()) if (c.peer_id) ids.add(c.peer_id);
+  return loadPresence([...ids]);
+}
+
+/** Кто видит моё время захода. */
+export async function loadPrivacy(): Promise<LastSeenPrivacy> {
+  const { data, error } = await sb.rpc('my_privacy');
+  if (error) throw error;
+  const v = data?.last_seen;
+  S.lastSeen = v === 'contacts' || v === 'nobody' ? v : 'everybody';
+  emit('me');
+  return S.lastSeen;
+}
+
+export async function setLastSeenPrivacy(v: LastSeenPrivacy): Promise<void> {
+  const before = S.lastSeen;
+  S.lastSeen = v;
+  emit('me');
+  const { error } = await sb.rpc('set_privacy', { p_key: 'last_seen', p_value: v });
+  if (error) {
+    S.lastSeen = before;
+    emit('me');
+    throw error;
+  }
+  // Из-за взаимности могло поменяться и то, что вижу я.
+  void refreshPresence(true);
+}
+
+// ---------------------------------------------------------------------------
+// Личный канал в профиле (0.4.1)
+// ---------------------------------------------------------------------------
+
+const personalCache = new Map<string, { at: number; ch: PersonalChannel | null }>();
+
+/** Личный канал человека (с последним постом). Кэш на минуту; fresh — без кэша. */
+export async function personalChannel(uid: string, fresh = false): Promise<PersonalChannel | null> {
+  const hit = personalCache.get(uid);
+  if (!fresh && hit && Date.now() - hit.at < 60_000) return hit.ch;
+  const { data, error } = await sb.rpc('personal_channel', { p_user: uid });
+  if (error) throw error;
+  const ch = data?.[0] ?? null;
+  personalCache.set(uid, { at: Date.now(), ch });
+  return ch;
+}
+
+/** Уже загруженный личный канал (без запроса): undefined — не знаем. */
+export function knownPersonalChannel(uid: string): PersonalChannel | null | undefined {
+  return personalCache.get(uid)?.ch;
+}
+
+/** Закрепить свой публичный канал в профиле (null — убрать). */
+export async function setPersonalChannel(chatId: string | null): Promise<void> {
+  const { error } = await sb.rpc('set_personal_channel', { p_chat: chatId });
+  if (error) throw error;
+  personalCache.delete(meId());
+  await personalChannel(meId(), true).catch(() => null);
+  emit('me');
 }
 
 /** Владелец ли я СКАМ (кнопки «Выдать галочку»). Ошибка — просто «нет». */
@@ -612,7 +746,9 @@ export async function deleteChat(chatId: string): Promise<void> {
 
 /** Профили из списков участников: у подписчиков канала их иначе не прочитать. */
 export function rememberProfiles(list: { id: string; name: string | null; username: string | null; avatar_path: string | null;
-  color: string; last_seen_at?: string | null; online_until?: string | null; verified?: boolean }[]): void {
+  color: string; last_seen_at?: string | null; online_until?: string | null; seen?: string | null; verified?: boolean }[]): void {
+  // Списки участников и контактов приходят уже со временем захода, каким его можно показать мне.
+  putPresence(list.filter((p) => p.seen !== undefined));
   for (const p of list) {
     const have = S.profiles.get(p.id);
     if (have) {
@@ -622,8 +758,7 @@ export function rememberProfiles(list: { id: string; name: string | null; userna
     }
     S.profiles.set(p.id, {
       id: p.id, name: p.name, first_name: p.name, last_name: null, username: p.username, username_optional: false,
-      avatar_path: p.avatar_path, color: p.color, last_seen_at: p.last_seen_at ?? null, online_until: p.online_until ?? null,
-      verified: !!p.verified, bio: null, created_at: '', updated_at: '',
+      avatar_path: p.avatar_path, color: p.color, verified: !!p.verified, bio: null, created_at: '', updated_at: '',
     });
   }
 }

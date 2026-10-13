@@ -81,7 +81,25 @@ export type ChatCard = {
 export type MemberInfo = {
   user_id: string; role: ChatRole; rights: ChatRight[] | null; promoted_by: string | null; joined_at: string;
   name: string | null; username: string | null; avatar_path: string | null; color: string;
-  last_seen_at: string | null; online_until: string | null; verified: boolean;
+  /** Время захода — только если оба разрешают друг другу (0.4.1), иначе null и примерное seen. */
+  last_seen_at: string | null; online_until: string | null; seen: SeenBucket | null; verified: boolean;
+};
+
+/** Примерное время захода, когда точное скрыто: недавно / на этой неделе / в этом месяце / давно. */
+export type SeenBucket = 'recently' | 'week' | 'month' | 'long';
+
+/** Что я вижу о времени захода человека (user_presence): точное время или только seen. */
+export type Presence = { online_until: string | null; last_seen_at: string | null; seen: SeenBucket | null };
+
+/** Кто видит моё время захода (0.4.1). */
+export type LastSeenPrivacy = 'everybody' | 'contacts' | 'nobody';
+
+/** Личный канал человека в профиле — с последним постом. */
+export type PersonalChannel = {
+  id: string; name: string | null; username: string; avatar_path: string | null; verified: boolean;
+  member_count: number; is_member: boolean;
+  post_id: string | null; post_kind: string | null; post_body: string | null; post_at: string | null;
+  post_media_mime: string | null; post_files: unknown[] | null; post_sticker: string | null;
 };
 
 export type CallStatus = 'active' | 'ended' | 'missed' | 'declined' | 'cancelled';
@@ -149,8 +167,6 @@ export type Database = {
           bio: string | null;
           avatar_path: string | null;
           color: string;
-          last_seen_at: string | null;
-          online_until: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -423,9 +439,19 @@ export type Database = {
         Args: { p_chat?: string | null; p_limit?: number };
         Returns: {
           id: string; name: string | null; username: string | null; avatar_path: string | null; color: string;
-          last_seen_at: string | null; online_until: string | null; in_chat: boolean; verified: boolean;
+          last_seen_at: string | null; online_until: string | null; seen: SeenBucket | null; in_chat: boolean; verified: boolean;
         }[];
       };
+      user_presence: {
+        Args: { p_ids: string[] };
+        Returns: ({ user_id: string } & Presence)[];
+      };
+      my_privacy: { Args: Record<PropertyKey, never>; Returns: { last_seen: LastSeenPrivacy } | null };
+      set_privacy: { Args: { p_key: 'last_seen'; p_value: LastSeenPrivacy }; Returns: { last_seen: LastSeenPrivacy } };
+      set_personal_channel: { Args: { p_chat: string | null }; Returns: undefined };
+      personal_channel: { Args: { p_user: string }; Returns: PersonalChannel[] };
+      my_oauth_links: { Args: Record<PropertyKey, never>; Returns: { provider: string; created_at: string; last_login_at: string }[] };
+      oauth_unlink: { Args: { p_provider: string }; Returns: undefined };
       chat_by_invite: { Args: { p_code: string }; Returns: ChatCard[] };
       chat_by_username: { Args: { p_username: string }; Returns: ChatCard[] };
       search_chats: { Args: { p_query: string; p_limit?: number }; Returns: ChatCard[] };

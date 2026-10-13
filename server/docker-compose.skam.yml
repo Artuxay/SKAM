@@ -34,3 +34,6 @@ services:
       SUPPORT_TO: skam.messenger@yandex.com
       OAUTH_REDIRECT_URLS: >-
         https://skam-messenger.ru/,https://test.skam-messenger.ru/
+      YANDEX_CLIENT_ID: ${YANDEX_CLIENT_ID:-}
+      YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
+      VK_CLIENT_ID: ${VK_CLIENT_ID:-}

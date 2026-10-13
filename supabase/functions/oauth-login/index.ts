@@ -6,6 +6,9 @@
 //      → меняет код на профиль у провайдера, находит аккаунт СКАМ (по прежнему входу или по той же
 //        почте) или создаёт новый и возвращает { tokenHash, isNew } — одноразовый токен, которым
 //        браузер входит: supabase.auth.verifyOtp({ token_hash, type: 'magiclink' }).
+// POST { mode: 'link', provider, code, … } + Authorization: Bearer <токен вошедшего>
+//      → привязывает аккаунт провайдера к уже открытому аккаунту СКАМ (с 0.4.1): { linked: provider }.
+//        Если этот Яндекс ID / VK ID уже входит в другой аккаунт СКАМ — ошибка taken.
 //
 // Переменные (на своём сервере — functions.environment в docker-compose.skam.yml,
 // см. server/README.md; в облаке Supabase — Edge Functions → Secrets):
@@ -292,6 +295,7 @@ async function signIn(p: Provider, prof: Profile): Promise<{ tokenHash: string; 
 // ---------------------------------------------------------------------------
 
 type Body = {
+  mode?: unknown;
   provider?: unknown;
   code?: unknown;
   codeVerifier?: unknown;
@@ -299,6 +303,29 @@ type Body = {
   deviceId?: unknown;
   state?: unknown;
 };
+
+/** Кто вошёл: проверяем токен пользователя у самого Auth (функция публичная, verify_jwt выключен). */
+async function signedInUser(req: Request): Promise<string> {
+  const m = /^Bearer\s+(\S+)$/i.exec(req.headers.get('Authorization') ?? '');
+  const token = m?.[1];
+  if (!token || token === SERVICE_KEY || !token.startsWith('eyJ')) throw new Fail('unauthorized', 401);
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Fail('unauthorized', 401);
+  const u = await res.json().catch(() => null) as { id?: unknown } | null;
+  const id = str(u?.id);
+  if (!id) throw new Fail('unauthorized', 401);
+  return id;
+}
+
+/** Привязать аккаунт провайдера к уже вошедшему человеку. */
+async function attach(p: Provider, prof: Profile, uid: string): Promise<{ linked: Provider }> {
+  const r = await rpc<Record<string, never>>('oauth_attach', { p_provider: p, p_subject: prof.subject, p_user: uid });
+  if (!r.ok) throw new Fail('server', 500, `oauth_attach ${r.status}: ${r.data.message}`);
+  if ((r.data as unknown as string) === 'taken') throw new Fail('taken', 409);
+  return { linked: p };
+}
 
 const VERIFIER_RE = /^[A-Za-z0-9\-._~]{43,128}$/;
 
@@ -319,6 +346,10 @@ Deno.serve(async (req) => {
   try { b = await req.json() as Body; } catch { return json({ error: 'bad_request' }, 400); }
 
   try {
+    const link = b.mode === 'link';
+    if (b.mode !== undefined && b.mode !== null && !link) throw new Fail('bad_request');
+    // Привязка — только для вошедшего; проверяем до обмена кода (код одноразовый).
+    const uid = link ? await signedInUser(req) : null;
     const p = b.provider;
     if (p !== 'yandex' && p !== 'vk') throw new Fail('bad_request');
     if (!clientId(p)) throw new Fail('not_configured', 404);
@@ -337,7 +368,7 @@ Deno.serve(async (req) => {
       if (!deviceId || deviceId.length > 512 || !state || state.length > 256) throw new Fail('bad_request');
       prof = await vkProfile(code, verifier, deviceId, redirectUri, state);
     }
-    return json(await signIn(p, prof));
+    return json(uid ? await attach(p, prof, uid) : await signIn(p, prof));
   } catch (e) {
     if (e instanceof Fail) {
       if (e.status >= 500 || e.code === 'provider_rejected') console.error(e.code, e.message);
