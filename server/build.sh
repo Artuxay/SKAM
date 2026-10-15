@@ -21,8 +21,12 @@ find site -mindepth 1 -delete
 cp -a src/dist/. site/
 mkdir -p site/email
 cp src/supabase/templates/*.html site/email/
+# Edge Functions: every folder in supabase/functions (support, oauth-login, bot-ai, ...);
+# main (the router of self-hosted Supabase) is not in the repo and is never touched.
 F=/opt/supabase-project/volumes/functions
-for fn in support oauth-login; do
+for d in src/supabase/functions/*/; do
+  fn=$(basename "$d")
+  case "$fn" in main|_*) continue ;; esac
   rm -rf "$F/$fn.new"
   cp -a "src/supabase/functions/$fn" "$F/$fn.new"
   rm -rf "$F/$fn"

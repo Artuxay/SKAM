@@ -20,7 +20,7 @@
 | `/opt/supabase-project/.env` | ключи, пароли, адреса, SMTP — **только на сервере** |
 | `/opt/supabase-project/docker-compose.skam.yml` | наши настройки поверх Supabase: копия — [`docker-compose.skam.yml`](docker-compose.skam.yml) |
 | `/opt/supabase-project/volumes/proxy/caddy/Caddyfile` | Caddy; наши блоки — [`caddy/skam.caddy`](caddy/skam.caddy) |
-| `/opt/supabase-project/volumes/functions/` | Edge Functions `support` и `oauth-login` (их раскладывает `build.sh`) |
+| `/opt/supabase-project/volumes/functions/` | Edge Functions `support`, `oauth-login` и `bot-ai` (их раскладывает `build.sh`; `main` — маршрутизатор самого Supabase) |
 | `/opt/skam-test/` | сборка сайта: `src/` — клон репозитория, `site/` — готовый сайт, `deploy.log` |
 | `/opt/skam-backup/` | резервные копии за 14 дней, `backup.log` |
 | `/opt/skam-migrate/` | переезд из облака: дампы, `managed.sql`, `copy-files.mjs`, `cutover.sh` |
@@ -29,18 +29,48 @@
 
 ## Скрипты в этой папке
 
-- [`build.sh`](build.sh) — собирает сайт из `main` в Docker (`node:22`) с `VITE_SUPABASE_URL=https://api.skam-messenger.ru` и ключом из `.env`, кладёт шаблоны писем в `site/email/` (их забирает Auth) и функции в `volumes/functions/`, перезапускает функции. Неудачная сборка старый сайт не трогает.
+- [`build.sh`](build.sh) — собирает сайт из `main` в Docker (`node:22`) с `VITE_SUPABASE_URL=https://api.skam-messenger.ru` и ключом из `.env`, кладёт шаблоны писем в `site/email/` (их забирает Auth) и все функции из `supabase/functions/` в `volumes/functions/` (с 0.4.2 — все папки, а не список), перезапускает функции. Неудачная сборка старый сайт не трогает.
 - [`autodeploy.sh`](autodeploy.sh) — cron раз в 5 минут (`/etc/cron.d/skam-deploy`): если в `main` новый коммит, запускает `build.sh`. Упавшая сборка повторно не запускается, пока не появится следующий коммит. Журнал — `/opt/skam-test/deploy.log`.
 - [`backup.sh`](backup.sh) — cron каждую ночь в 03:30 по Москве (`/etc/cron.d/skam-backup`): `pg_dump -Fc` всей базы и роли (`pg_dumpall --globals-only`) от `supabase_admin`, архив файлов Storage, `.env`, наш compose и Caddyfile. Проверяет, что дамп читается. Хранит 14 дней. Копии лежат на том же сервере — копию вне сервера стоит добавить отдельно.
 - [`smtp.sh`](smtp.sh) — спрашивает логин и пароль почтового сервиса и записывает `SMTP_*` в `.env` (логин — число из поля Login, пароль — Pass (API-key)).
 - [`oauth.sh`](oauth.sh) — с 0.4.1: вход через Яндекс ID и VK ID. Спрашивает ClientID и Client secret приложения Яндекса и ID приложения VK ID (Enter — оставить прежнее, «-» — стереть), пишет `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`, `VK_CLIENT_ID` в `.env` (копия `.env.bak-oauth-<время>`), добавляет их в `functions.environment` нашего `docker-compose.skam.yml`, пересоздаёт функции и показывает, какие кнопки входа теперь видит сайт. Запуск: `sh /opt/skam-test/src/server/oauth.sh`.
 - [`managed.sql`](managed.sql) — триггер `on_auth_user_created` и 18 политик Storage и Realtime (с 0.3.1 — и три политики бакета историй `stories`). `supabase db dump` их не переносит, потому что схемы `auth`, `storage`, `realtime` служебные, а у `postgres` на self-hosted нет прав создавать политики на `storage.objects`. Запускается от `supabase_admin`, можно повторять.
-- [`apply-managed.sh`](apply-managed.sh) — применяет `managed.sql` от `supabase_admin`, ставит уборку историй (cron каждые 15 минут) и вызывает `apply-caddy.sh`. Запуск после выкладки: `sh /opt/skam-test/src/server/apply-managed.sh`.
+- [`apply-managed.sh`](apply-managed.sh) — применяет `managed.sql` от `supabase_admin`, ставит уборку историй (cron каждые 15 минут), с 0.4.2 обновляет `/opt/skam-test/build.sh` (у сервера своя копия) и сразу раскладывает все функции, затем вызывает `apply-caddy.sh`. Запуск после выкладки: `sh /opt/skam-test/src/server/apply-managed.sh`.
+- [`gemini-relay.gs`](gemini-relay.gs) — с 0.4.2: посредник для Gemini на Google Apps Script (Google не пускает в Gemini API из России). Как поставить — в начале файла и в разделе «Нейросеть бота».
 - [`apply-caddy.sh`](apply-caddy.sh) — с 0.4.0: адреса статей `skam-messenger.ru/a/<адрес>` (и на `test.`) отдают страницу `a/index.html` без кэша. Добавляет три строки `@skamArticle` после `root * /srv/skam-test` в `volumes/proxy/caddy/Caddyfile`, проверяет новую конфигурацию внутри работающего Caddy (`caddy adapt`), сохраняет копию `Caddyfile.bak-<дата>`, пишет файл на место (тот же inode — он смонтирован в контейнер) и делает `caddy reload` без простоя. Повторный запуск ничего не меняет.
 - [`stories-cleanup.sh`](stories-cleanup.sh) — уборка историй: `private.stories_gc()` удаляет истории старше суток (кроме закреплённых в профиле) и переносит пути их файлов в `private.story_trash`, а скрипт стирает эти файлы через API Storage сервисным ключом из `.env` (`SERVICE_ROLE_KEY`). Журнал — `/opt/skam-stories/cleanup.log` (пишет только когда что-то убрал).
 - [`copy-files.mjs`](copy-files.mjs) — копирует файлы Storage из облака на сервер через API (`x-upsert`).
 - [`cutover.sh`](cutover.sh) — переезд «в один заход»: сверяет версию Auth с облаком, снимает дамп, откладывает текущую базу сервера в `volumes/db/data.before-<время>`, поднимает чистую, заливает, переносит файлы и сравнивает числа. При любой ошибке сам возвращает прежнюю базу.
 - [`mcp/`](mcp/) — доступ Claude к базе: отдельный SSH-ключ, которому `authorized_keys` разрешает только запуск `bridge.sh`; мост поднимает `mcp-remote` к встроенному MCP-серверу Studio внутри сети Docker. Снаружи маршрут `/mcp` закрыт.
+
+## Нейросеть бота (с 0.4.2)
+
+Бот СКАМ отвечает нейросетью: сообщение боту → триггер `private.bot_reply` ставит задание в `private.bot_ai_jobs` и через `pg_net` будит функцию `bot-ai` по адресу внутри сети Docker (`http://kong:8000/functions/v1/bot-ai`) → функция берёт задание (`public.bot_ai_claim`), спрашивает модель и пишет ответ (`public.bot_ai_finish`). Стикеры, файлы, голосовые, «/start» и «помощь» — по-прежнему готовые ответы.
+
+Модель — любая с API как у OpenAI (`<base_url>chat/completions`, `Authorization: Bearer <ключ>`), по умолчанию Google Gemini (бесплатный ключ — aistudio.google.com). **Google не пускает в Gemini API из России** (`User location is not supported`), поэтому запросы идут через посредника на Google Apps Script — [`gemini-relay.gs`](gemini-relay.gs). Другой провайдер без ограничений по стране — `relay_url = null`.
+
+Все настройки — одна строка `private.bot_ai_settings` (только `postgres`; ключа в репозитории нет):
+
+```sql
+select mode, provider_label, models, relay_url is not null as relay, user_daily, global_daily from private.bot_ai_settings;
+update private.bot_ai_settings set mode = 'on' where id;       -- 'on' — всем, 'test' — владельцам СКАМ и testers, 'off' — выключить
+update private.bot_ai_settings set api_key = '<ключ>', relay_url = 'https://script.google.com/macros/s/<…>/exec' where id;
+update private.bot_ai_settings set models = array['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-flash-lite-latest'] where id;  -- по очереди: занята — следующая
+update private.bot_ai_settings set user_daily = 40, global_daily = 1000 where id;   -- ответов в день на человека и на весь СКАМ (по Москве)
+```
+
+Что происходит:
+
+```sql
+select status, count(*) from private.bot_ai_jobs where created_at > now() - interval '1 day' group by 1;
+select created_at, status, model, tokens, error from private.bot_ai_jobs order by created_at desc limit 20;
+```
+
+```sh
+docker logs supabase-edge-functions --since 30m 2>&1 | grep bot-ai
+```
+
+Задания хранятся 30 дней (для лимитов), текст сообщений в них не копируется. Застрявшие дольше 10 минут помечаются `failed` (`stale`).
 
 ## Как переносилась база (и как повторить)
 

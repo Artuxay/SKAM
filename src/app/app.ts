@@ -68,6 +68,7 @@ import { unlock as soundUnlock } from './sounds';
 import { actionTile, grp, grpLabel, grpNote, radioRow, row, sheetHead, toggleRow, type IconName } from './sheet';
 import { articleLinks, slugFromUrl } from '../lib/article';
 import { articleCardEl, articleTitle, mountArticles, openArticle, openArticleEditor, openMyArticles } from './articles';
+import { botAi, botTyping, loadBotAi, noteBotQuestion, resetBot, resetBotDialog, setBotAi } from './bot';
 import { mountPolls, openPollCreator, pollEl, pollLine, stopPoll } from './polls';
 
 const MAX_LEN = 4000;
@@ -1144,6 +1145,16 @@ function renderHead(): void {
   }
 
   const sub = $('convSub');
+  if (c.kind === 'bot') {
+    // С 0.4.2 боту отвечает нейросеть: пока ждём ответ — «печатает…».
+    void loadBotAi();
+    const typing = botTyping(c);
+    const ai = botAi();
+    sub.textContent = typing ? 'печатает…' : ai?.enabled && ai.agreed ? `бот · нейросеть ${ai.label}` : 'бот';
+    sub.classList.toggle('typing', typing);
+    sub.classList.remove('online');
+    return;
+  }
   const typers = [...S.typing.keys()].filter((k) => k !== meId());
   if (typers.length) {
     const names = typers.map((k) => who(k).name);
@@ -1169,7 +1180,6 @@ function renderHead(): void {
     return;
   }
   sub.classList.remove('online');
-  if (c.kind === 'bot') { sub.textContent = 'бот'; return; }
   if (c.kind === 'saved') { sub.textContent = 'сохранённые сообщения и заметки · видите только вы'; return; }
   if (c.kind === 'channel') {
     sub.textContent = `${c.username ? 'публичный канал' : 'канал'} · ${countLabel(c)}`;
@@ -1977,6 +1987,7 @@ async function send(): Promise<void> {
   U.stick = true;
   try {
     // Как в Telegram: сначала комментарий, потом пересланные сообщения.
+    if (out) noteBotQuestion(chatById(id), out);
     if (out) await sendMessage(id, out, [], { reply });
     if (fw) await forwardMessages(id, fw.msgs, fw.hide, { getBlob: (m) => mediaBlob(m.media_path!), onLocal: setLocalMedia });
   } catch (e) {
@@ -4159,7 +4170,7 @@ function openSavedCard(): void {
   if (!dlg.open) openDialog(dlg);
 }
 
-function openBotCard(): void {
+function openBotCard(fresh = false): void {
   const dlg = $<HTMLDialogElement>('personDlg');
   const c = currentChat();
   personUid = null;
@@ -4182,11 +4193,42 @@ function openBotCard(): void {
       setTimeout(openBotCard, 0);
     }, { on: muted, disabled: !c, title: muted ? 'Включить звук' : 'Выключить звук навсегда' }),
   );
+  const ai = botAi();
+  const on = !!ai?.enabled && ai.agreed;
+  const about = on
+    ? `Бот-помощник СКАМ с нейросетью ${ai!.label}: спрашивайте что угодно — от рецепта до кода. «помощь» — подсказки по СКАМ.`
+    : 'Бот-помощник СКАМ. Напишите ему «помощь» — расскажет, что умеет.';
+  hero.classList.add('bot-card');
+  const toggle = (next: boolean) => {
+    setBotAi(next).catch((e) => toast(errText(e, next ? 'Не получилось включить нейросеть.' : 'Не получилось выключить нейросеть.')));
+    setTimeout(() => openBotCard(true), 0);
+  };
   dlg.replaceChildren(
     sheetHead(dlg, null), hero, tiles,
-    grp(row({ label: 'Бот-помощник СКАМ. Напишите ему «помощь» — расскажет, что умеет.', sub: 'О боте' })),
+    grp(row({ label: about, sub: 'О боте' })),
+    ...(ai?.enabled ? [
+      grp(
+        toggleRow('star', 'Отвечать нейросетью', ai.label, on, toggle),
+        on ? row({ icon: 'chats', label: 'Ответов нейросети сегодня', em: `${Math.min(ai.used, ai.limit)} из ${ai.limit}` }) : null,
+        on ? row({
+          icon: 'edit', label: 'Новый диалог', accent: true, confirm: 'Бот забудет прошлую переписку — точно?',
+          fn: () => {
+            closeDialog(dlg);
+            resetBotDialog().catch((e) => toast(errText(e, 'Не получилось начать новый диалог.')));
+          },
+        }) : null,
+      ),
+      grpNote(on
+        ? 'Этот чат не зашифрован: то, что вы пишете боту, уходит в Google (США), и на бесплатном тарифе Google может использовать это для улучшения своих моделей. Не пишите боту пароли, номера карт и другое личное. Нейросеть может ошибаться — важное проверяйте.'
+        : `С нейросетью ${ai.label} бот ответит на любой вопрос, не только про СКАМ. Но этот чат не зашифрован: то, что вы будете писать боту, уйдёт в Google (США), и на бесплатном тарифе Google может использовать это для улучшения своих моделей. Включайте, только если вас это устраивает.`),
+    ] : []),
   );
   if (!dlg.open) openDialog(dlg);
+  if (!fresh) {
+    void loadBotAi(true).then(() => {
+      if (dlg.open && dlg.querySelector('.bot-card')) openBotCard(true);
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4740,6 +4782,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     on('chats', () => { closeMissingChat(); renderSide(); updateTitle(); refreshChatInfo(); }),
     on('feed', () => {
       renderFeed();
+      if (currentChat()?.kind === 'bot') renderHead();
       if (U.find) renderChatFind();
       if (personView === 'media' && personUid && $<HTMLDialogElement>('personDlg').open) renderPerson();
     }),
@@ -4825,6 +4868,7 @@ export function unmountApp(): void {
   textHooks.link = undefined;
   resetLayout();
   resetNicks();
+  resetBot();
   resetStories();
   resetPrefs();
   bioCache.clear();

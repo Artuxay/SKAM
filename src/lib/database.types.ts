@@ -447,6 +447,9 @@ export type Database = {
         Returns: ({ user_id: string } & Presence)[];
       };
       my_privacy: { Args: Record<PropertyKey, never>; Returns: { last_seen: LastSeenPrivacy } | null };
+      bot_ai_status: { Args: Record<PropertyKey, never>; Returns: BotAiStatus | null };
+      bot_ai_reset: { Args: Record<PropertyKey, never>; Returns: boolean };
+      bot_ai_agree: { Args: { p_on: boolean }; Returns: boolean };
       set_privacy: { Args: { p_key: 'last_seen'; p_value: LastSeenPrivacy }; Returns: { last_seen: LastSeenPrivacy } };
       set_personal_channel: { Args: { p_chat: string | null }; Returns: undefined };
       personal_channel: { Args: { p_user: string }; Returns: PersonalChannel[] };
@@ -668,6 +671,12 @@ export type ActiveCall = Database['public']['Functions']['my_calls']['Returns'][
 
 /** Типы чатов, которые можно целиком положить в папку. */
 export type FolderKind = 'direct' | 'group' | 'channel' | 'bot';
+
+/**
+ * Нейросеть бота СКАМ (0.4.2): enabled — доступна мне, agreed — я её включил в чате с ботом,
+ * чья она, сколько ответов сегодня и из скольких, ждём ли ответа.
+ */
+export type BotAiStatus = { enabled: boolean; agreed: boolean; label: string; limit: number; used: number; pending: boolean };
 /** Папка с чатами, как в Telegram: целые типы + выбранные чаты − исключённые; pinned — закреплённые в папке. */
 export type ChatFolder = {
   id: string;
