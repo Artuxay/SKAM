@@ -14,6 +14,11 @@
 // Настройки — private.bot_ai_settings (ключ, модели по очереди, посредник); переменные окружения
 // AI_API_KEY, AI_BASE_URL, AI_RELAY_URL, AI_MODELS (через запятую), если заданы, важнее таблицы.
 // SUPABASE_URL и служебный ключ подставляет сама среда функций.
+//
+// Время: на своём сервере экземпляр функции живёт не дольше минуты (workerTimeoutMs в main/index.ts
+// self-hosted Supabase) и обслуживает несколько запросов подряд. Поэтому функция считает свой возраст:
+// новое задание берёт, только пока молода, а модель ждёт не дольше, чем ей осталось жить. Задание,
+// которое всё же оборвалось, через 65 секунд снова отдаёт bot_ai_claim — его будит pg_cron.
 
 import { FAIL_TEXT, type ChatMsg, type Hist, plain, split, systemPrompt, toChat } from './text.ts';
 
@@ -32,7 +37,14 @@ function pickKey(legacy: string, modern: string): string {
 
 const SUPABASE_URL = env('SUPABASE_URL') ?? '';
 const SERVICE_KEY = pickKey('SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEYS');
-const TIMEOUT_MS = 75_000;
+/** Когда родился этот экземпляр функции и сколько ему дают жить (AI_WORKER_MS, по умолчанию 55 с). */
+const BORN = Date.now();
+const LIFE_MS = Number(env('AI_WORKER_MS')) || 55_000;
+/** Новое задание берём, только если до конца жизни экземпляра остаётся хотя бы столько. */
+const JOB_MIN_MS = 25_000;
+/** Одна попытка у модели — не дольше. */
+const TRY_MS = 25_000;
+const left = () => BORN + LIFE_MS - Date.now();
 
 type Settings = {
   label?: string; base_url?: string; relay_url?: string | null; api_key?: string | null;
@@ -83,25 +95,26 @@ function config(s: Settings = {}): Cfg {
 }
 
 /** Запрос к модели — напрямую или через посредника. Ответ: код и тело провайдера. */
-async function post(cfg: Cfg, path: string, body: unknown): Promise<{ status: number; text: string }> {
+async function post(cfg: Cfg, path: string, body: unknown, ms: number): Promise<{ status: number; text: string }> {
+  const until = Date.now() + ms;
   if (!cfg.relay) {
     const res = await fetch(cfg.base + path, {
       method: 'POST',
       headers: { Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(ms),
     });
     return { status: res.status, text: await res.text() };
   }
   let last = '';
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 2 && until - Date.now() > 3000; attempt++) {
     // Apps Script отвечает переадресацией 302 на результат — fetch идёт за ней сам (уже GET).
     const res = await fetch(cfg.relay, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: cfg.key, path, body }),
       redirect: 'follow',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(until - Date.now()),
     });
     const text = await res.text();
     try {
@@ -137,18 +150,24 @@ function contentOf(c: unknown): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Спросить модели по очереди: занята, нет квоты или модели больше нет — берём следующую. */
+/**
+ * Спросить модели по очереди: занята, нет квоты, молчит или модели больше нет — берём следующую.
+ * Всё укладывается в оставшуюся жизнь экземпляра функции.
+ */
 async function ask(cfg: Cfg, messages: ChatMsg[]): Promise<Answer> {
   let last: Answer = { ok: false, code: 'error', detail: 'no models' };
   for (let round = 0; round < 2; round++) {
     for (const model of cfg.models) {
+      const ms = Math.min(TRY_MS, left() - 2000);
+      if (ms < 4000) return last.ok === false && last.code !== 'error' ? last : { ok: false, code: 'busy', detail: 'out of time' };
       const body: Record<string, unknown> = { model, messages };
       if (cfg.reasoning && !/^gemma/i.test(model)) body.reasoning_effort = cfg.reasoning;
       if (cfg.temperature != null) body.temperature = cfg.temperature;
       let r: { status: number; text: string };
       try {
-        r = await post(cfg, 'chat/completions', body);
+        r = await post(cfg, 'chat/completions', body, ms);
       } catch (e) {
+        console.warn(`bot-ai: ${model}: ${e instanceof Error ? e.name + ' ' + e.message : String(e)}`);
         last = { ok: false, code: 'busy', detail: `${model}: ${e instanceof Error ? e.message : String(e)}` };
         continue;
       }
@@ -171,8 +190,8 @@ async function ask(cfg: Cfg, messages: ChatMsg[]): Promise<Answer> {
       else if (r.status >= 500) last = { ok: false, code: 'busy', detail };
       else if (last.ok === false && last.code !== 'quota' && last.code !== 'busy') last = { ok: false, code: 'error', detail };
     }
-    // Все заняты (503) — подождать и попробовать ещё раз; нет квоты — ждать бесполезно.
-    if (last.ok || last.code !== 'busy') break;
+    // Все заняты (503) — подождать и попробовать ещё раз, если успеваем; нет квоты — ждать бесполезно.
+    if (last.ok || last.code !== 'busy' || left() < 15_000) break;
     await sleep(3000);
   }
   return last;
@@ -211,9 +230,10 @@ let draining: Promise<void> | null = null;
 let again = false;
 
 async function drain(): Promise<void> {
-  const until = Date.now() + 4 * 60_000;
   let n = 0;
-  while (Date.now() < until && n < 50) {
+  while (n < 20) {
+    // Старому экземпляру новое задание не даём: не успеет — его подберёт следующий (pg_cron будит).
+    if (left() < JOB_MIN_MS) return;
     again = false;
     const r = await rpc<Claim | null>('bot_ai_claim', {});
     if (!r.ok) { console.error('bot-ai: claim', r.status, r.text.slice(0, 300)); return; }

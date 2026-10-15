@@ -70,7 +70,7 @@ select created_at, status, model, tokens, error from private.bot_ai_jobs order b
 docker logs supabase-edge-functions --since 30m 2>&1 | grep bot-ai
 ```
 
-Задания хранятся 30 дней (для лимитов), текст сообщений в них не копируется. Застрявшие дольше 10 минут помечаются `failed` (`stale`).
+Задания хранятся 30 дней (для лимитов), текст сообщений в них не копируется. Экземпляр функции на этом сервере живёт не дольше минуты (`workerTimeoutMs` в `volumes/functions/main/index.ts`), поэтому функция берёт задание, только пока успевает, а **pg_cron** (`cron.job` `skam-bot-ai-kick`, каждые 15 секунд) вызывает `private.bot_ai_kick()` — он будит функцию, если есть вопросы в очереди или задание оборвалось (через 65 секунд оно пробуется ещё раз, всего две попытки). Застрявшие дольше 10 минут помечаются `failed` (`stale`). Журнал будильника: `select * from cron.job_run_details order by start_time desc limit 5;`.
 
 ## Как переносилась база (и как повторить)
 
