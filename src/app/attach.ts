@@ -1,14 +1,42 @@
 // Вложения как в Telegram: фото (сжимаются, метаданные вроде геометки стираются), видео с превью,
-// любые файлы до 50 МБ. Каждый файл шифруется своим случайным ключом прямо в браузере и
-// загружается в приватный бакет media уже зашифрованным.
+// любые файлы до 50 МБ (кому владелец СКАМ снял предел — до 2 ГБ). Каждый файл шифруется своим
+// случайным ключом прямо в браузере и загружается в приватный бакет media уже зашифрованным.
 import { SUPABASE_KEY, SUPABASE_URL, sb } from '../lib/supabase';
 import type { Attachment } from '../lib/database.types';
 import { type Bytes, aesKey, b64, open, rand, seal, unb64, utf8 } from '../lib/crypto';
 import { uuid } from '../lib/dom';
 import { MEDIA_CACHE } from './e2e';
 
-/** Предел Supabase на бесплатном тарифе — 50 МБ на файл (плюс 28 байт на шифрование). */
+/** Обычный предел — 50 МБ на файл (минус запас на шифрование: +28 байт). */
 export const MAX_FILE = 50 * 1024 * 1024 - 1024;
+/**
+ * Потолок для тех, кому предел снят (private.upload_limits): FILE_SIZE_LIMIT хранилища на сервере — 2 ГБ.
+ * Файл шифруется одним куском в памяти, больше браузер всё равно не потянет.
+ */
+export const MAX_FILE_XL = 2 * 1024 * 1024 * 1024 - 1024;
+
+let fileLimit = MAX_FILE;
+
+/** Сколько можно отправить одним файлом мне (до загрузки предела с сервера — 50 МБ). */
+export function maxFile(): number {
+  return fileLimit;
+}
+
+/** Предел словами: «50 МБ», «2 ГБ». */
+export function maxFileText(): string {
+  const n = fileLimit + 1024;
+  return n >= 1024 * 1024 * 1024 ? `${+(n / 1024 / 1024 / 1024).toFixed(1)} ГБ`.replace('.', ',') : `${Math.round(n / 1024 / 1024)} МБ`;
+}
+
+/** Узнать свой предел (RPC my_upload_limit: null — без предела, иначе байты). Ошибка — остаётся прежний. */
+export async function loadUploadLimit(): Promise<void> {
+  const { data, error } = await sb.rpc('my_upload_limit');
+  if (error) return;
+  const n = data === null ? Infinity : Number(data);
+  if (!Number.isFinite(n) && data !== null) return;
+  fileLimit = Math.max(1024 * 1024, Math.min(MAX_FILE_XL, n - 1024));
+}
+
 export const MAX_ALBUM = 10;
 const PHOTO_MAX = 2048;
 const THUMB_MAX = 720;
@@ -219,11 +247,19 @@ export type Sealed = { att: Attachment; parts: Part[] };
 export async function sealPrepared(p: Prepared, chatId: string, userId: string): Promise<Sealed> {
   const raw = rand(32);
   const key = await aesKey(raw);
-  const mk = async (blob: Blob): Promise<Part> => ({
-    path: `${chatId}/${userId}/${uuid()}.bin`,
-    data: await seal(key, new Uint8Array(await blob.arrayBuffer()), FILE_AAD),
-    done: false,
-  });
+  const mk = async (blob: Blob): Promise<Part> => {
+    let data: Bytes;
+    try {
+      data = await seal(key, new Uint8Array(await blob.arrayBuffer()), FILE_AAD);
+    } catch (e) {
+      // Огромный файл: браузеру не хватило памяти прочитать или зашифровать его одним куском.
+      if (blob.size > MAX_FILE && (e instanceof RangeError || (e as Error)?.name === 'NotReadableError' || (e as Error)?.name === 'OperationError')) {
+        throw new UploadError(`Не хватило памяти браузера, чтобы зашифровать файл ${fmtSize(blob.size)}. Попробуйте файл поменьше или другой браузер.`);
+      }
+      throw e;
+    }
+    return { path: `${chatId}/${userId}/${uuid()}.bin`, data, done: false };
+  };
   const main = await mk(p.main);
   const parts = [main];
   const att: Attachment = { id: p.id, kind: p.kind, name: p.name.slice(0, 255), mime: p.mime.slice(0, 255), size: p.size, path: main.path, key: b64(raw) };
@@ -268,7 +304,7 @@ export async function uploadPart(part: Part, onProgress: (loaded: number) => voi
       // Повторная попытка после обрыва: файл уже на месте.
       if (xhr.status === 409 || /Duplicate|already exists/i.test(xhr.responseText)) { resolve(); return; }
       if (xhr.status === 413 || /too large|exceeded the maximum/i.test(xhr.responseText)) {
-        reject(new UploadError('Файл слишком большой: можно до 50 МБ.'));
+        reject(new UploadError(`Файл слишком большой: можно до ${maxFileText()}.`));
         return;
       }
       reject(new UploadError(xhr.status === 403 || xhr.status === 400 ? 'Нет прав загрузить файл в этот чат.' : 'Не получилось загрузить файл.'));
@@ -315,18 +351,28 @@ async function fetchSealed(path: string, onProgress?: (loaded: number, total: nu
   let data: Bytes;
   if (res.body && onProgress) {
     const reader = res.body.getReader();
+    // Длина известна — читаем сразу в один буфер: у больших файлов не держим в памяти вторую копию.
+    let buf: Bytes | null = total > 0 ? new Uint8Array(total) : null;
     const chunks: Uint8Array[] = [];
     let loaded = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
+      if (buf && loaded + value.length <= buf.length) buf.set(value, loaded);
+      else {
+        if (buf) { chunks.push(buf.subarray(0, loaded)); buf = null; }
+        chunks.push(value);
+      }
       loaded += value.length;
       onProgress(loaded, total);
     }
-    data = new Uint8Array(loaded);
-    let o = 0;
-    for (const c of chunks) { data.set(c, o); o += c.length; }
+    if (buf && !chunks.length) {
+      data = loaded === buf.length ? buf : buf.slice(0, loaded);
+    } else {
+      data = new Uint8Array(loaded);
+      let o = 0;
+      for (const c of chunks) { data.set(c, o); o += c.length; }
+    }
   } else {
     data = new Uint8Array(await res.arrayBuffer());
   }

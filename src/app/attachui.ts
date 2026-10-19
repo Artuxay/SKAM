@@ -2,8 +2,8 @@
 import type { Attachment } from '../lib/database.types';
 import { $, ICONS, button, closeDialog, el, html, openDialog, plural, timeLabel, toast } from '../lib/dom';
 import {
-  MAX_ALBUM, MAX_FILE, type Prepared, cachedUrl, fileExt, fmtDur, fmtSize, fullUrl, isVisual, prepareFiles,
-  saveFile, thumbUrl,
+  MAX_ALBUM, type Prepared, cachedUrl, fileExt, fmtDur, fmtSize, fullUrl, isVisual, prepareFiles,
+  maxFile, maxFileText, saveFile, thumbUrl,
 } from './attach';
 import { discardMessage, ts, type Msg } from './store';
 
@@ -303,12 +303,13 @@ export function openSendDialog(files: File[], ctx: SendCtx): void {
   const ok: File[] = [];
   const big: string[] = [];
   for (const f of files) {
-    if (f.size > MAX_FILE) big.push(f.name);
+    if (f.size > maxFile()) big.push(f.name);
     else if (f.size === 0) big.push(f.name);
     else ok.push(f);
   }
   if (big.length) {
-    toast(big.length === 1 ? `«${big[0]}» не отправить: файл пустой или больше 50 МБ.` : `${plural(big.length, 'файл', 'файла', 'файлов')} не отправить: пустые или больше 50 МБ.`);
+    const lim = maxFileText();
+    toast(big.length === 1 ? `«${big[0]}» не отправить: файл пустой или больше ${lim}.` : `${plural(big.length, 'файл', 'файла', 'файлов')} не отправить: пустые или больше ${lim}.`);
   }
   if (!ok.length) return;
   if (draft) {

@@ -77,7 +77,8 @@ export async function open(key: CryptoKey, box: Bytes, aad?: Bytes): Promise<Byt
   if (box.length < IV_LEN + 16) throw new Error('ciphertext too short');
   const iv = box.slice(0, IV_LEN);
   const params: AesGcmParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
-  return new Uint8Array(await subtle().decrypt(params, key, box.slice(IV_LEN)));
+  // subarray, а не slice: у больших файлов не копируем шифротекст ещё раз.
+  return new Uint8Array(await subtle().decrypt(params, key, box.subarray(IV_LEN)));
 }
 
 export async function sealJson(key: CryptoKey, value: unknown, aad: string): Promise<string> {

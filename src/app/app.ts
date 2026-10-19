@@ -39,7 +39,7 @@ import { dropNotes, mediaBlob, setLocalMedia, setVoiceQueue, stopVoice, videoNot
 import { mountRecorder, type RecordUI } from './record-ui';
 import * as e2e from './e2e';
 import { MIN_PASSWORD, mountKeySetup, mountKeyUnlock, mountNoCrypto } from './keysetup';
-import { MAX_ALBUM, cachedUrl, dropMediaUrls, thumbUrl, type Prepared } from './attach';
+import { MAX_ALBUM, cachedUrl, dropMediaUrls, loadUploadLimit, maxFileText, thumbUrl, type Prepared } from './attach';
 import * as calls from './calls';
 import { call, callPreview, callRow, mountCallUI, openCallSettings, renderCallBtns, renderCalls } from './callui';
 import { openRate, openSupport, ratingShort, resetFeedback } from './feedback';
@@ -162,7 +162,7 @@ const SHELL = `
         </div>
       </div>
       <div class="drop" id="drop" hidden>
-        <div class="drop-box">${ICONS.clip}<b>Отпустите, чтобы отправить</b><span>Фото, видео и файлы до 50 МБ</span></div>
+        <div class="drop-box">${ICONS.clip}<b>Отпустите, чтобы отправить</b><span id="dropLimit">Фото, видео и файлы до 50 МБ</span></div>
       </div>
     </section>
   </main>
@@ -2506,6 +2506,13 @@ async function sendFiles(chatId: string, caption: string, prepared: Prepared[]):
   }
 }
 
+/** Свой предел размера файла (владелец СКАМ может снять его отдельным людям) — и подпись при перетаскивании. */
+async function refreshUploadLimit(): Promise<void> {
+  await loadUploadLimit().catch(() => {});
+  const s = document.getElementById('dropLimit');
+  if (s) s.textContent = `Фото, видео и файлы до ${maxFileText()}`;
+}
+
 function hasFiles(e: DragEvent): boolean {
   return !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
 }
@@ -4538,6 +4545,7 @@ function wire(): void {
   listen(window, 'dragover', (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); });
   listen(window, 'drop', (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); });
   unsubs.push(wireViewer(), wireSendDialog());
+  void refreshUploadLimit();
   const feed = $('feed');
   // Меню сообщения закрываем, когда листают сами (лента прокручивается и при перерисовке — это не повод).
   listen(feed, 'wheel', closeMenu);
@@ -4560,6 +4568,7 @@ function wire(): void {
       void loadLayout().catch(() => {});
       void loadNicknames().catch(() => {});
       void loadPrefs().catch(() => {});
+      void refreshUploadLimit();
     } else stopTyping();
   });
   listen(document, 'keydown', (e: KeyboardEvent) => {

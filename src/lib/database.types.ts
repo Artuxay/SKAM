@@ -447,6 +447,8 @@ export type Database = {
         Returns: ({ user_id: string } & Presence)[];
       };
       my_privacy: { Args: Record<PropertyKey, never>; Returns: { last_seen: LastSeenPrivacy } | null };
+      /** Мой предел размера файла в байтах; null — без предела (только потолок хранилища). */
+      my_upload_limit: { Args: Record<PropertyKey, never>; Returns: number | null };
       bot_ai_status: { Args: Record<PropertyKey, never>; Returns: BotAiStatus | null };
       bot_ai_reset: { Args: Record<PropertyKey, never>; Returns: boolean };
       bot_ai_agree: { Args: { p_on: boolean }; Returns: boolean };
