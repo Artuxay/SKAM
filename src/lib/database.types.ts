@@ -146,6 +146,8 @@ type ChatRow = {
   sign_messages: boolean;
   /** Официальная галочка (только у каналов; выдаёт владелец СКАМ). */
   verified: boolean;
+  /** Комментарии к постам канала включены (0.5.1). */
+  comments?: boolean;
 };
 
 export type Database = {
@@ -169,6 +171,10 @@ export type Database = {
           color: string;
           created_at: string;
           updated_at: string;
+          /** Эмодзи-статус у имени (0.5.1): обычное эмодзи или c:набор/эмодзи. Ставится через set_emoji_status. */
+          emoji_status?: string | null;
+          /** До какого момента показывать статус; null — навсегда. */
+          emoji_status_until?: string | null;
         };
         Insert: never;
         Update: {
@@ -234,6 +240,8 @@ export type Database = {
           edited_at: string | null;
           /** Подпись автора поста (снимок имени, если в канале включены подписи). */
           signature: string | null;
+          /** Комментарий к посту канала (0.5.1): id поста. У постов и обычных сообщений — null. */
+          thread_id?: string | null;
         };
         Insert: {
           id?: string;
@@ -250,6 +258,7 @@ export type Database = {
           files?: Attachment[] | null;
           reply_to?: string | null;
           fwd?: Forward | null;
+          thread_id?: string | null;
         };
         Update: never;
         Relationships: [];
@@ -404,6 +413,8 @@ export type Database = {
           rights: ChatRight[];
           /** Официальная галочка: у канала — от владельца СКАМ, у бота СКАМ — всегда. */
           verified: boolean;
+          /** Комментарии к постам канала включены (0.5.1). */
+          comments?: boolean;
         }[];
       };
       create_chat: {
@@ -466,6 +477,17 @@ export type Database = {
         Returns: (Database['public']['Tables']['messages']['Row'] & { reacts: Partial<Record<ReactionKey, number>> | null })[];
       };
       edit_message: { Args: { p_id: string; p_body: string }; Returns: undefined };
+      // Комментарии и эмодзи-статус (0.5.1)
+      set_chat_comments: { Args: { p_chat: string; p_on: boolean }; Returns: undefined };
+      comment_stats: { Args: { p_chat: string; p_ids: string[] }; Returns: CommentStats };
+      comment_feed: {
+        Args: { p_post: string; p_before?: string | null; p_before_id?: string | null; p_limit?: number };
+        Returns: (Database['public']['Tables']['messages']['Row'] & {
+          reacts: Partial<Record<ReactionKey, number>> | null; author: ProfileCard | null;
+        })[];
+      };
+      set_emoji_status: { Args: { p_emoji: string | null; p_until?: string | null }; Returns: undefined };
+      profile_cards: { Args: { p_ids: string[] }; Returns: ProfileCard[] };
       join_chat: { Args: { p_code: string }; Returns: string };
       reset_invite: { Args: { p_chat: string }; Returns: string };
       open_direct: { Args: { p_user: string }; Returns: string };
@@ -617,7 +639,10 @@ export type Database = {
       // Статьи (0.4.0)
       article_image_slot: { Args: { p_ext: string }; Returns: string };
       article_save: {
-        Args: { p_id: string | null; p_title: string; p_author_name: string | null; p_author_url: string | null; p_content: Json };
+        Args: {
+          p_id: string | null; p_title: string; p_author_name: string | null; p_author_url: string | null; p_content: Json;
+          p_font?: ArticleFont | null;
+        };
         Returns: { id: string; slug: string };
       };
       article_get: { Args: { p_slug: string }; Returns: ArticleFull | null };
@@ -740,7 +765,10 @@ export type Story = {
 };
 
 /** Узел статьи в формате Telegraph: текст или элемент с тегом, атрибутами (href у ссылки, src у картинки) и детьми. */
-export type ArticleNode = string | { tag: string; attrs?: { href?: string; src?: string }; children?: ArticleNode[] };
+export type ArticleNode = string | { tag: string; attrs?: { href?: string; src?: string; font?: string }; children?: ArticleNode[] };
+
+/** Шрифт статьи или фрагмента (0.5.1). null у статьи — «с засечками», как было до шрифтов. */
+export type ArticleFont = 'serif' | 'sans' | 'mono' | 'hand' | 'wide';
 
 /** Карточка статьи — для ссылок в чатах и списка «Мои статьи». cover — картинка в бакете articles. */
 export type ArticleCard = {
@@ -751,7 +779,20 @@ export type ArticleCard = {
 /** Статья целиком (article_get). mine — я автор; moderator — я из команды СКАМ (могу скрыть статью). */
 export type ArticleFull = ArticleCard & {
   id: string; author_url: string | null; content: ArticleNode[]; updated_at: string; mine: boolean; hidden: boolean;
-  moderator: boolean;
+  moderator: boolean; font?: ArticleFont | null;
+};
+
+/** Карточка человека, видная без общего чата (авторы комментариев, profile_cards). */
+export type ProfileCard = {
+  id: string; name: string | null; username: string | null; avatar_path: string | null; color: string | null; verified: boolean;
+  emoji_status: string | null; emoji_status_until: string | null;
+};
+
+/** Комментарии под постами канала (comment_stats): включены ли, могу ли писать, счётчики и трое последних. */
+export type CommentStats = {
+  on: boolean; can: boolean;
+  posts: Record<string, { n: number; last: string; recent: string[] }>;
+  people: Record<string, ProfileCard>;
 };
 
 /**

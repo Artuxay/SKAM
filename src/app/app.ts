@@ -29,6 +29,7 @@ import {
   chatById, chatByUsername, editMessage, hasRight, joinChannel, loadChats, searchChats, setPreview,
   loadAppOwner, rememberProfiles, setVerified, BIO_MAX, normBio, userBio, chatMuted, peerBlocked, ensureSaved, savedChat,
   isPoll, presenceOf, loadPresence, loadPrivacy, setLastSeenPrivacy, personalChannel, knownPersonalChannel, setPersonalChannel,
+  commentsInfo, feedKeyOf, findLoaded, refreshCommentStats, threadKey,
 } from './store';
 import { NICK_MAX, loadNicknames, nickHits, nickOf, resetNicks, setNickname } from './nicks';
 import {
@@ -70,6 +71,11 @@ import { articleLinks, slugFromUrl } from '../lib/article';
 import { articleCardEl, articleTitle, mountArticles, openArticle, openArticleEditor, openMyArticles } from './articles';
 import { botAi, botTyping, loadBotAi, noteBotQuestion, resetBot, resetBotDialog, setBotAi } from './bot';
 import { mountPolls, openPollCreator, pollEl, pollLine, stopPoll } from './polls';
+import {
+  STT_LANGS, STT_MODELS, canTranscribe, dropModel, modelUsage, resetStt, setSttPrefs, sttPrefs, transcriptBox, transcriptButton,
+  type SttModel,
+} from './stt';
+import { STATUS_FOR, setMyStatus, startStatusClock, statusEl, statusOf, statusRef, statusUntil, stopStatusClock, untilLabel } from './estatus';
 
 const MAX_LEN = 4000;
 
@@ -280,6 +286,8 @@ const U = {
   shownFolder: undefined as string | undefined,
   /** Поиск по сообщениям открытого чата. */
   find: null as { chatId: string; q: string; hits: string[]; i: number } | null,
+  /** Пост открытого обсуждения (на случай, если лента канала перезагрузится). */
+  threadPost: null as Msg | null,
 };
 let unsubs: (() => void)[] = [];
 let mounted = false;
@@ -293,6 +301,8 @@ type Who = {
   id: string | null; name: string; avatar: string | null; color: string | null; brand?: boolean; emoji?: string;
   /** Официальная галочка. */
   verified?: boolean;
+  /** Эмодзи-статус у имени (0.5.1). */
+  status?: string | null;
 };
 
 function who(uid: string | null | undefined, kind: string = 'text'): Who {
@@ -301,15 +311,47 @@ function who(uid: string | null | undefined, kind: string = 'text'): Who {
   const p = S.profiles.get(uid);
   // Свой ник для человека (видите только вы) — везде вместо его имени, как «имя контакта» в Telegram.
   const name = nickOf(uid) || p?.name || (uid === meId() ? 'Вы' : 'Участник');
-  return { id: uid, name, avatar: avatarUrl(p?.avatar_path), color: p?.color ?? null, verified: !!p?.verified };
+  return { id: uid, name, avatar: avatarUrl(p?.avatar_path), color: p?.color ?? null, verified: !!p?.verified, status: statusOf(uid) };
 }
 
-/** Имя с официальной галочкой: текст обрезается многоточием, галочка остаётся видна. */
-function nameWithMark(cls: string, name: string, verified: boolean, kind: 'user' | 'channel' | 'bot' = 'user'): HTMLElement {
+/** Галочка и эмодзи-статус после имени. */
+function marks(node: HTMLElement, w: { verified?: boolean; status?: string | null }, kind: 'user' | 'channel' | 'bot' = 'user'): HTMLElement {
+  if (w.verified) node.append(verifiedMark(kind));
+  if (w.status) node.append(statusEl(w.status));
+  return node;
+}
+
+/** Имя с официальной галочкой и эмодзи-статусом: текст обрезается многоточием, значки остаются видны. */
+function nameWithMark(cls: string, name: string, verified: boolean, kind: 'user' | 'channel' | 'bot' = 'user',
+  status: string | null = null): HTMLElement {
   const n = el('span', cls);
   n.append(el('span', 'nm-t', name));
-  if (verified) n.append(verifiedMark(kind));
-  return n;
+  return marks(n, { verified, status }, kind);
+}
+
+/** Эмодзи-статус собеседника личного чата (у групп, каналов и бота — нет). */
+function chatStatus(c: MyChat): string | null {
+  return c.kind === 'direct' ? statusOf(c.peer_id) : null;
+}
+
+/**
+ * Статус крупно в профиле: свой — открывает выбор статуса, чужой своё эмодзи — его набор (добавить к себе),
+ * чужой обычный — подсказку со сроком.
+ */
+function heroStatus(uid: string, status: string): HTMLButtonElement {
+  const mine = uid === meId();
+  const until = statusUntil(uid);
+  const ref = statusRef(status);
+  const b = button('estatus-btn', null, () => {
+    if (mine) { openProfile('status'); return; }
+    if (ref) { closeDialog($<HTMLDialogElement>('personDlg')); openStickerPack(ref.split('/')[0]); return; }
+    toast(`Эмодзи-статус ${status}${until ? ` · ${untilLabel(until)}` : ''}`);
+  });
+  b.append(statusEl(status, 'big'));
+  const label = mine ? 'Изменить эмодзи-статус' : ref ? 'Эмодзи-статус — открыть набор' : 'Эмодзи-статус';
+  b.title = until ? `${label} (${untilLabel(until)})` : label;
+  b.setAttribute('aria-label', b.title);
+  return b;
 }
 
 /** Есть ли у чата официальная галочка: у личного — у собеседника, у канала и бота — у самого чата. */
@@ -377,6 +419,30 @@ function canPost(c: MyChat | null | undefined): boolean {
   return !!c && !c.preview && !peerBlocked(c) && (c.kind !== 'channel' || hasRight(c, 'post'));
 }
 
+/** Ключ ленты на экране: чат или обсуждение поста (комментарии, 0.5.1). Им же помечены черновики, ответы и правки. */
+function curKey(): string | null {
+  return S.cur ? (S.thread ? threadKey(S.cur, S.thread) : S.cur) : null;
+}
+
+/** Можно ли писать в то, что сейчас на экране: в обсуждение — подписчику канала с включёнными комментариями. */
+function canWrite(c: MyChat | null | undefined): boolean {
+  if (S.thread) return !!c && !c.preview && c.kind === 'channel' && commentsInfo(c.id).can;
+  return canPost(c);
+}
+
+/** Пост открытого обсуждения. */
+function threadPost(): Msg | null {
+  if (!S.cur || !S.thread) return null;
+  return findLoaded(S.cur, S.thread) ?? U.threadPost;
+}
+
+/** Ответить можно: на пост — в ленте канала (админам), на комментарий — в его обсуждении (подписчикам). */
+function canReplyTo(m: Msg, c: MyChat): boolean {
+  if (m.thread_id) return S.thread === m.thread_id && canWrite(c);
+  if (S.thread === m.id) return false;
+  return canPost(c);
+}
+
 /** Как канал выглядит автором постов: фото или значок (канал новостей — логотип СКАМ). */
 function chatWho(c: MyChat): Who {
   const avatar = avatarUrl(c.avatar_path);
@@ -393,6 +459,9 @@ function canDelete(m: Msg, c: MyChat): boolean {
 /** Изменить можно пост канала: свой (пока можешь публиковать) или чужой — с правом «Изменение чужих публикаций». */
 function canEdit(m: Msg, c: MyChat): boolean {
   if (c.kind !== 'channel' || m.deleted_at || m.pending || m.failed || (m.kind !== 'text' && m.kind !== 'media')) return false;
+  // Свой комментарий — пока комментарии в канале открыты (как в Telegram).
+  if (m.thread_id) return m.user_id === meId() && S.thread === m.thread_id && commentsInfo(c.id).can;
+  if (S.thread === m.id) return false;
   return (m.user_id === meId() && canPost(c)) || hasRight(c, 'edit');
 }
 
@@ -478,6 +547,8 @@ function notifyText(m: Msg, c: MyChat): string {
       : kindText(view, m.content?.text ?? m.body);
   t = t.replace(/\s+/g, ' ').trim().slice(0, 160);
   if (c.kind === 'group') return `${who(m.user_id).name}: ${t}`;
+  // Ответ на мой комментарий в канале.
+  if (m.thread_id) return `${who(m.user_id).name} ответил(а) на ваш комментарий: ${t}`;
   return t;
 }
 
@@ -531,7 +602,7 @@ function chatRow(c: MyChat, opts: { pinned?: boolean; toks?: string[] } = {}): H
   const active = c.id === S.cur && convVisible();
   if (active) b.setAttribute('aria-current', 'true');
   const title = chatTitle(c);
-  const name = nameWithMark('name', title, chatVerified(c), markKind(c));
+  const name = nameWithMark('name', title, chatVerified(c), markKind(c), chatStatus(c));
   if (opts.toks?.length) name.querySelector('.nm-t')!.replaceChildren(highlight(title, opts.toks));
   const muted = chatMuted(c.id);
   if (muted) {
@@ -890,7 +961,7 @@ function personResult(p: FoundUser, q: { at: boolean; s: string; toks: string[] 
   const nt = el('span', 'nm-t');
   nt.append(q.at ? document.createTextNode(w.name) : highlight(w.name, q.toks));
   name.append(nt);
-  if (w.verified) name.append(verifiedMark());
+  marks(name, w);
   const sub = el('span', 'preview');
   if (p.username) sub.append('@', highlight(p.username, q.at ? [q.s] : q.toks, true));
   else if (!nick || !p.name) sub.append('пользователь СКАМ');
@@ -1003,7 +1074,7 @@ function renderMe(): void {
   const st = el('span', `me-st${on ? ' on' : ''}`);
   if (on) st.append(el('span', 'pulse'));
   st.append(on ? 'в сети' : 'нет подключения');
-  text.append(nameWithMark('nm', S.me.name || 'Без имени', !!S.me.verified), st);
+  text.append(nameWithMark('nm', S.me.name || 'Без имени', !!S.me.verified, 'user', statusOf(meId())), st);
   const av = el('span', 'me-av');
   av.append(avatarEl(who(meId())));
   if (on) av.append(el('span', 'on-dot'));
@@ -1053,13 +1124,22 @@ function renderConv(): void {
   const c = currentChat();
   $('convMain').hidden = !c;
   $('convEmpty').hidden = !!c;
+  const thread = !!S.thread && !!c;
+  $('convMain').classList.toggle('thread', thread);
   const blocked = peerBlocked(c);
-  const ro = !!c && !canPost(c) && !blocked;
+  const ro = !!c && !canWrite(c) && !blocked;
   const preview = !!c?.preview;
   $('composer').classList.toggle('readonly', ro);
   $('composer').hidden = preview || blocked;
   $('joinBar').hidden = !preview;
-  $('composerNote').hidden = !ro;
+  $('joinBtn').textContent = thread ? 'Подписаться, чтобы комментировать' : 'Подписаться';
+  const note = $('composerNote');
+  note.hidden = !ro;
+  if (ro) {
+    note.textContent = !thread
+      ? 'Это канал: писать могут только администраторы. А реакции — пожалуйста 🔥'
+      : commentsInfo(c!.id).on ? 'Комментировать могут подписчики канала.' : 'Комментарии к постам этого канала выключены.';
+  }
   renderBlockBar(c, blocked);
   if (ro) { closeStickers(); recUI?.cancel(); }
   renderSelectBar();
@@ -1094,6 +1174,8 @@ function renderHead(): void {
   const c = currentChat();
   if (!c) return;
   renderCallBtns();
+  if (S.thread && c.kind === 'channel') { renderThreadHead(c); return; }
+  $('backBtn').setAttribute('aria-label', 'К списку чатов');
   const emoji = $('convEmoji');
   emoji.className = 'conv-emoji';
   if (c.kind === 'direct') {
@@ -1128,7 +1210,7 @@ function renderHead(): void {
   emoji.classList.toggle('photo', (c.kind === 'group' || c.kind === 'channel') && !!c.avatar_path);
   const nameEl = $('convName');
   nameEl.replaceChildren(el('span', 'nm-t', chatTitle(c)));
-  if (chatVerified(c)) nameEl.append(verifiedMark(markKind(c)));
+  marks(nameEl, { verified: chatVerified(c), status: chatStatus(c) }, markKind(c));
   if (chatMuted(c.id)) {
     const mi = el('span', 'mute-ic');
     mi.append(html(ICONS.bellOff));
@@ -1191,6 +1273,23 @@ function renderHead(): void {
   const parts = [plural(c.member_count, 'участник', 'участника', 'участников')];
   if (onlineMembers > 0) parts.push(`${onlineMembers} в сети`);
   sub.textContent = parts.join(', ');
+}
+
+/** Шапка обсуждения поста: «N комментариев» и канал под ним, слева — назад к ленте канала. */
+function renderThreadHead(c: MyChat): void {
+  $('backBtn').setAttribute('aria-label', 'Назад к каналу');
+  $('callBtns').hidden = true;
+  const emoji = $('convEmoji');
+  emoji.className = 'conv-emoji thread-ic';
+  emoji.style.border = '';
+  emoji.style.background = '';
+  emoji.replaceChildren(html(ICONS.message));
+  const n = S.thread ? S.comments.get(S.thread)?.n ?? 0 : 0;
+  const nameEl = $('convName');
+  nameEl.replaceChildren(el('span', 'nm-t', n ? plural(n, 'комментарий', 'комментария', 'комментариев') : 'Комментарии'));
+  const sub = $('convSub');
+  sub.classList.remove('typing', 'online');
+  sub.textContent = chatTitle(c);
 }
 
 /**
@@ -1262,8 +1361,29 @@ function messageBody(b: HTMLElement, m: Msg, author: string): HTMLElement {
   }
   switch (viewKind(m)) {
     case 'sticker': b.append(stickerEl(m)); return b;
-    case 'voice': b.append(voiceEl(m)); return b;
-    case 'video_note': b.append(videoNoteEl(m)); return b;
+    case 'voice': {
+      // «Aa» — расшифровать голосовое (на устройстве), текст — под записью.
+      const v = voiceEl(m);
+      if (canTranscribe(m, 'voice')) {
+        // Кнопка — в строке с длительностью, как в Telegram (справа в пузыре — время отправки).
+        (v.querySelector('.vmeta') ?? v).append(transcriptButton(m));
+        b.append(v, transcriptBox(m));
+      } else b.append(v);
+      return b;
+    }
+    case 'video_note': {
+      if (!canTranscribe(m, 'video_note')) {
+        b.append(videoNoteEl(m));
+        return b;
+      }
+      // Время отправки остаётся на кружочке (в .vnote-box), а «Aa» и текст — под ним.
+      const box = el('div', 'vnote-box');
+      box.append(videoNoteEl(m));
+      const row = el('div', 'stt-note');
+      row.append(transcriptButton(m), transcriptBox(m));
+      b.append(box, row);
+      return box;
+    }
     case 'poll': {
       const chat = chatById(m.chat_id);
       b.classList.add('poll-msg');
@@ -1488,9 +1608,11 @@ function iconAction(name: keyof typeof ICONS, label: string, fn: () => void): HT
   return b;
 }
 
-function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTMLElement {
+/** o.head — пост над обсуждением: без «Ответить», выбора и счётчика комментариев. */
+function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat, o: { head?: boolean } = {}): HTMLElement {
   if (m.kind === 'call') return callRow(m, chat);
-  const channel = chat.kind === 'channel';
+  // Пост канала — от имени канала; комментарий к нему — от своего автора, как в группе.
+  const channel = chat.kind === 'channel' && !m.thread_id;
   const own = m.user_id === meId() && m.kind !== 'system';
   // В канале посты публикуются от имени канала и стоят слева.
   const mine = own && !channel;
@@ -1500,7 +1622,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   const bare = !deleted && !m.locked && (view === 'sticker' || view === 'video_note');
   const files = !deleted && !m.locked && (view === 'e2e' || view === 'media') ? m.content?.files ?? [] : [];
   const mediaOnly = files.length > 0 && !m.content?.text && files.every((f) => f.kind !== 'file');
-  const selecting = U.sel?.chatId === chat.id;
+  const selecting = !o.head && U.sel?.chatId === feedKeyOf(m);
   const selectable = selecting && !deleted && !m.pending && !m.failed;
   const selected = selectable && U.sel!.ids.has(m.id);
   const row = el('div', `row${mine ? ' mine' : ''}${first ? ' first' : ''}${bare ? ' bare' : ''}`
@@ -1531,7 +1653,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
       a.type = 'button';
       a.addEventListener('click', (ev) => { ev.stopPropagation(); openPerson(w.id!); });
     }
-    if (w.verified) a.append(verifiedMark(channel ? 'channel' : 'user'));
+    marks(a, w, channel ? 'channel' : 'user');
     if (w.brand) a.style.color = 'var(--ink)';
     else if (w.color) a.style.color = w.color;
     b.append(a);
@@ -1547,7 +1669,8 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   meta.append(timeLabel(ts(m.created_at)));
   meta.title = new Date(ts(m.created_at)).toLocaleString('ru-RU')
     + (m.edited_at ? ` · изменено ${new Date(ts(m.edited_at)).toLocaleString('ru-RU')}` : '');
-  if (mine && !deleted && !m.failed) {
+  // Комментарии — без «прочитано»: в обсуждении его не считают.
+  if (mine && !deleted && !m.failed && (!m.thread_id || m.pending)) {
     const read = !m.pending && readUpTo >= ts(m.created_at);
     const tick = el('span', `tick${read ? ' read' : ''}`, m.pending ? '✓' : read ? '✓✓' : '✓');
     tick.setAttribute('aria-label', m.pending ? 'отправляется' : read ? 'прочитано' : 'доставлено');
@@ -1556,6 +1679,13 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
   }
   textBox.append(meta);
   wrap.append(b);
+  // Под постом канала с включёнными комментариями — «N комментариев», как в Telegram.
+  if (channel && !o.head && !deleted && !m.pending && !m.failed && m.kind !== 'system' && commentsInfo(chat.id).on) {
+    const out = bare || mediaOnly;
+    const bar = commentBar(m, chat, out);
+    if (out) wrap.append(bar);
+    else b.append(bar);
+  }
 
   if (m.failed) {
     const r = el('div', 'retry');
@@ -1578,12 +1708,12 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
         act.append(...quickReactions(m, chat, () => { U.openMsg = null; }));
         act.append(el('span', 'act-sep'));
       }
-      if (canPost(chat)) act.append(iconAction('reply', 'Ответить', () => setReply(m)));
+      if (canReplyTo(m, chat)) act.append(iconAction('reply', 'Ответить', () => setReply(m)));
       if (canEdit(m, chat)) act.append(iconAction('edit', 'Изменить', () => startEdit(m)));
       if (canForward(m)) act.append(iconAction('forward', 'Переслать', () => openForward([m])));
       if (canForward(m) && chat.kind !== 'saved') act.append(iconAction('bookmark', 'В избранное', () => void saveToFavorites([m])));
-      if (!chat.preview) act.append(iconAction('check', 'Выбрать', () => startSelect(m)));
-      if (canDelete(m, chat)) {
+      if (!chat.preview && !o.head) act.append(iconAction('check', 'Выбрать', () => startSelect(m)));
+      if (canDelete(m, chat) && !o.head) {
         const armed = U.armedDelete === m.id;
         const del = button('del', armed ? 'Точно?' : 'Удалить', (ev) => {
           ev.stopPropagation();
@@ -1616,7 +1746,7 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
         menuAtBubble();
       });
       longPress(b, menuAtBubble);
-      if (canPost(chat)) swipeToReply(row, b, () => setReply(m));
+      if (canReplyTo(m, chat)) swipeToReply(row, b, () => setReply(m));
     }
   }
   if (selecting) {
@@ -1633,14 +1763,29 @@ function renderMsg(m: Msg, first: boolean, readUpTo: number, chat: MyChat): HTML
 function renderFeed(): void {
   const c = currentChat();
   if (!c) return;
-  const f = feedOf(c.id);
+  const key = curKey()!;
+  const thread = !!S.thread;
+  const f = feedOf(key);
   const feed = $('feed');
   const inner = el('div', 'feed-inner');
 
-  if (f.loaded && f.hasMore) {
-    inner.append(button('older', f.loadingOlder ? 'Загружаем…' : 'Показать более ранние', () => requestOlder()));
+  // Обсуждение: сверху сам пост, под ним — «Начало обсуждения» (как в Telegram).
+  if (thread) {
+    const post = threadPost();
+    if (post) inner.append(renderMsg(post, true, 0, c, { head: true }));
+    const n = S.comments.get(S.thread!)?.n ?? 0;
+    const alive = f.msgs.some((m) => !m.deleted_at);
+    inner.append(el('div', 'thread-start', !f.loaded ? 'Загружаем комментарии…'
+      : f.error && !f.msgs.length ? 'Не удалось загрузить комментарии.'
+        : alive || n ? 'Начало обсуждения'
+          : canWrite(c) ? 'Комментариев пока нет — напишите первым' : 'Комментариев пока нет'));
   }
-  if (!f.loaded) {
+  if (f.loaded && f.hasMore) {
+    inner.append(button('older', f.loadingOlder ? 'Загружаем…' : thread ? 'Показать более ранние комментарии' : 'Показать более ранние', () => requestOlder()));
+  }
+  if (thread) {
+    // Пустое обсуждение — без «Здесь пока тихо»: всё сказано под постом.
+  } else if (!f.loaded) {
     inner.append(el('p', 'feed-note', 'Загружаем сообщения…'));
   } else if (f.error && !f.msgs.length) {
     inner.append(el('p', 'feed-note', 'Не удалось загрузить сообщения.'));
@@ -1666,7 +1811,7 @@ function renderFeed(): void {
   }
 
   // ✓✓: сообщение прочитал хотя бы один собеседник; в чате с ботом — бот ответил.
-  const others = (S.members.get(c.id) ?? []).filter((m) => m.user_id !== meId());
+  const others = thread ? [] : (S.members.get(c.id) ?? []).filter((m) => m.user_id !== meId());
   const botSeen = c.kind === 'bot' ? f.msgs.filter((m) => m.kind === 'system').map((m) => ts(m.created_at)) : [];
   const readUpTo = Math.max(0, ...others.map((m) => ts(m.last_read_at)), ...botSeen);
 
@@ -1688,6 +1833,8 @@ function renderFeed(): void {
   let prev: Msg | null = null;
   let day: string | null = null;
   for (const m of f.msgs) {
+    // Удалённый комментарий просто исчезает (как в Telegram), без «Сообщение удалено».
+    if (thread && m.deleted_at) continue;
     const t = ts(m.created_at);
     if (m.id === noteBefore) { inner.append(e2eNote(c, 'from')); prev = null; day = null; }
     if (day !== dayKey(t)) {
@@ -1697,7 +1844,7 @@ function renderFeed(): void {
     }
     // Запись о звонке — посередине ленты, как в Discord; после неё автор показывается заново.
     if (m.kind === 'call') { inner.append(renderMsg(m, false, readUpTo, c)); prev = null; continue; }
-    const sameAuthor = c.kind === 'channel' || (prev?.user_id === m.user_id && (prev.kind === 'system') === (m.kind === 'system'));
+    const sameAuthor = (c.kind === 'channel' && !thread) || (prev?.user_id === m.user_id && (prev.kind === 'system') === (m.kind === 'system'));
     const first = !prev || !sameAuthor || t - ts(prev.created_at) > 5 * 60 * 1000;
     inner.append(renderMsg(m, first, readUpTo, c));
     prev = m;
@@ -1721,6 +1868,77 @@ function renderFeed(): void {
   if (!$('linkBar').hidden || articleLinks($<HTMLTextAreaElement>('input').value).length) renderLinkBar();
 }
 
+/** «N комментариев» под постом: лица трёх последних комментаторов, число и стрелка (без комментариев — «Прокомментировать»). */
+function commentBar(m: Msg, c: MyChat, bare: boolean): HTMLElement {
+  const st = S.comments.get(m.id);
+  const n = st?.n ?? 0;
+  const b = button(`cmt-bar${bare ? ' bare' : ''}${n ? '' : ' empty'}`, null, (ev) => { ev.stopPropagation(); openThread(m); });
+  const faces = el('span', 'cmt-faces');
+  if (n && st?.recent.length) st.recent.slice(0, 3).forEach((uid) => faces.append(avatarEl(who(uid))));
+  else faces.append(html(ICONS.message));
+  const label = n ? plural(n, 'комментарий', 'комментария', 'комментариев') : commentsInfo(c.id).can ? 'Прокомментировать' : 'Комментарии';
+  const chev = el('span', 'cmt-chev');
+  chev.append(html(ICONS.chev));
+  b.append(faces, el('span', 'cmt-t', label), chev);
+  b.setAttribute('aria-label', `${label} — открыть обсуждение`);
+  return b;
+}
+
+/** Открыть обсуждение поста: в ленте на месте канала — пост, под ним комментарии, внизу поле ввода. */
+function openThread(post: Msg): void {
+  const c = chatById(post.chat_id);
+  if (!c || c.kind !== 'channel' || post.thread_id) return;
+  if (S.cur !== c.id) openChat(c.id, { silent: true });
+  if (S.thread === post.id) return;
+  const inp = $<HTMLTextAreaElement>('input');
+  const prevKey = curKey();
+  if (prevKey && !U.edit.delete(prevKey)) U.drafts.set(prevKey, inp.value);
+  recUI?.cancel();
+  closeStickers();
+  closeMenu();
+  if (U.find) closeChatFind();
+  if (U.sel) exitSelect();
+  S.thread = post.id;
+  U.threadPost = post;
+  U.stick = true;
+  U.openMsg = null;
+  U.armedDelete = null;
+  U.lastCount = 0;
+  $('jumpBtn').hidden = true;
+  inp.value = U.drafts.get(curKey()!) ?? '';
+  const key = curKey()!;
+  loadFeed(key).catch(() => toast('Не удалось загрузить комментарии.'));
+  // Свежие счётчики и «могу ли писать» (включили, выключили, подписался).
+  refreshCommentStats(c.id, [post.id]);
+  if (!wideMQ.matches) history.pushState({ skamChat: c.id, skamThread: post.id }, '');
+  renderAll();
+  autosize();
+  if (!touchMQ.matches && canWrite(c)) inp.focus();
+}
+
+/** Закрыть обсуждение — назад в ленту канала, к этому посту. */
+function closeThread(fromHistory = false): void {
+  if (!S.thread) return;
+  const post = S.thread;
+  const inp = $<HTMLTextAreaElement>('input');
+  const key = curKey()!;
+  if (!U.edit.delete(key)) U.drafts.set(key, inp.value);
+  recUI?.cancel();
+  closeStickers();
+  closeMenu();
+  if (U.sel) exitSelect();
+  S.thread = null;
+  U.threadPost = null;
+  U.stick = false;
+  U.lastCount = 0;
+  inp.value = S.cur ? U.drafts.get(S.cur) ?? '' : '';
+  if (!fromHistory && history.state?.skamThread) history.back();
+  renderAll();
+  autosize();
+  const row = document.querySelector(`#feed .row[data-id="${CSS.escape(post)}"]`);
+  row?.scrollIntoView({ block: 'center' });
+}
+
 function e2eNote(c: MyChat, where: 'top' | 'from' | 'next'): HTMLElement {
   const b = button('e2e-note', null, () => openEncryptionInfo(c));
   const ic = el('span', 'lock');
@@ -1735,14 +1953,14 @@ function e2eNote(c: MyChat, where: 'top' | 'from' | 'next'): HTMLElement {
 }
 
 function requestOlder(): void {
-  const id = S.cur;
-  if (!id) return;
-  const f = feedOf(id);
+  const key = curKey();
+  if (!key) return;
+  const f = feedOf(key);
   if (!f.hasMore || f.loadingOlder) return;
   const feed = $('feed');
   const before = { height: feed.scrollHeight, top: feed.scrollTop };
-  loadOlder(id)
-    .then(() => { if (S.cur === id) { U.restoreScroll = { height: before.height, top: feed.scrollTop }; emit('feed'); } })
+  loadOlder(key)
+    .then(() => { if (curKey() === key) { U.restoreScroll = { height: before.height, top: feed.scrollTop }; emit('feed'); } })
     .catch(() => toast('Не удалось загрузить историю.'));
 }
 
@@ -1798,7 +2016,10 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
   if (S.preview && S.preview.id !== id) { S.feeds.delete(S.preview.id); S.preview = null; }
   if (S.cur !== id) {
     // Во время правки поста в поле — текст поста, а черновик сохранён отдельно.
-    if (S.cur && !U.edit.delete(S.cur)) U.drafts.set(S.cur, inp.value);
+    const prevKey = curKey();
+    if (prevKey && !U.edit.delete(prevKey)) U.drafts.set(prevKey, inp.value);
+    S.thread = null;
+    U.threadPost = null;
     stopTyping();
     recUI?.cancel();
     closeStickers();
@@ -1828,10 +2049,17 @@ function openChat(id: string, opts: { silent?: boolean } = {}): void {
   renderAll();
   renderCalls();
   autosize();
-  if (!opts.silent && !touchMQ.matches && canPost(currentChat())) inp.focus();
+  if (!opts.silent && !touchMQ.matches && canWrite(currentChat())) inp.focus();
 }
 
 function backToList(fromHistory = false): void {
+  if (S.thread) {
+    const key = curKey()!;
+    if (!U.edit.delete(key)) U.drafts.set(key, $<HTMLTextAreaElement>('input').value);
+    S.thread = null;
+    U.threadPost = null;
+    $<HTMLTextAreaElement>('input').value = S.cur ? U.drafts.get(S.cur) ?? '' : '';
+  }
   stopTyping();
   recUI?.cancel();
   closeStickers();
@@ -1897,7 +2125,7 @@ function renderLinkBar(): void {
   const bar = $('linkBar');
   const inp = $<HTMLTextAreaElement>('input');
   const c = currentChat();
-  const link = c && canPost(c) && !U.edit.has(c.id) ? articleLinks(inp.value)[0] : undefined;
+  const link = c && canWrite(c) && !U.edit.has(curKey()!) ? articleLinks(inp.value)[0] : undefined;
   if (!link) {
     if (!bar.hidden) { bar.hidden = true; bar.replaceChildren(); }
     return;
@@ -1934,7 +2162,8 @@ function attachLink(url: string): void {
 /** Есть текст — кнопка «Отправить», пусто — микрофон/кружочек (как в Telegram). */
 function updateSendBtn(): void {
   // Пересылка ждёт отправки — «Отправить» доступна и без текста.
-  const has = !!$<HTMLTextAreaElement>('input').value.trim() || (!!S.cur && (U.fwd.has(S.cur) || U.edit.has(S.cur)));
+  const key = curKey();
+  const has = !!$<HTMLTextAreaElement>('input').value.trim() || (!!key && (U.fwd.has(key) || U.edit.has(key)));
   const sendBtn = $<HTMLButtonElement>('sendBtn');
   sendBtn.disabled = !currentChat() || !has;
   sendBtn.hidden = !has;
@@ -1967,10 +2196,12 @@ async function send(): Promise<void> {
   const inp = $<HTMLTextAreaElement>('input');
   const text = inp.value.trim();
   const id = S.cur;
-  const ed = id ? U.edit.get(id) : undefined;
-  if (id && ed) { await saveEdit(id, ed, encodeEmoji(text)); return; }
-  const fw = id ? U.fwd.get(id) : undefined;
-  if (!id || (!text && !fw)) return;
+  const key = curKey();
+  const thread = S.thread;
+  const ed = key ? U.edit.get(key) : undefined;
+  if (key && ed) { await saveEdit(key, ed, encodeEmoji(text)); return; }
+  const fw = key ? U.fwd.get(key) : undefined;
+  if (!id || !key || (!text && !fw)) return;
   // :название: своих эмодзи → метки (в поле ввода остаётся как было, пока не отправится).
   const out = encodeEmoji(text);
   if (out.length > MAX_LEN) {
@@ -1978,9 +2209,9 @@ async function send(): Promise<void> {
     return;
   }
   inp.value = '';
-  U.drafts.delete(id);
-  const reply = takeReply(id);
-  if (fw) U.fwd.delete(id);
+  U.drafts.delete(key);
+  const reply = takeReply(key);
+  if (fw) U.fwd.delete(key);
   renderComposerBar();
   autosize();
   stopTyping();
@@ -1988,7 +2219,7 @@ async function send(): Promise<void> {
   try {
     // Как в Telegram: сначала комментарий, потом пересланные сообщения.
     if (out) noteBotQuestion(chatById(id), out);
-    if (out) await sendMessage(id, out, [], { reply });
+    if (out) await sendMessage(id, out, [], { reply, thread });
     if (fw) await forwardMessages(id, fw.msgs, fw.hide, { getBlob: (m) => mediaBlob(m.media_path!), onLocal: setLocalMedia });
   } catch (e) {
     toast(sendErr(e, id, fw ? 'Не получилось переслать.' : 'Сообщение не отправилось. Нажмите «Повторить».'));
@@ -2005,10 +2236,11 @@ function startEdit(m: Msg): void {
   closeMenu();
   if (U.sel) exitSelect();
   const inp = $<HTMLTextAreaElement>('input');
-  if (!U.edit.has(m.chat_id)) U.drafts.set(m.chat_id, inp.value);
-  U.edit.set(m.chat_id, m);
-  U.reply.delete(m.chat_id);
-  U.fwd.delete(m.chat_id);
+  const key = feedKeyOf(m);
+  if (!U.edit.has(key)) U.drafts.set(key, inp.value);
+  U.edit.set(key, m);
+  U.reply.delete(key);
+  U.fwd.delete(key);
   inp.value = emojiForInput(m.content?.text ?? m.body);
   renderComposerBar();
   autosize();
@@ -2016,30 +2248,30 @@ function startEdit(m: Msg): void {
   inp.setSelectionRange(inp.value.length, inp.value.length);
 }
 
-function cancelEdit(chatId: string): void {
-  if (!U.edit.delete(chatId)) return;
-  if (chatId === S.cur) {
+function cancelEdit(key: string): void {
+  if (!U.edit.delete(key)) return;
+  if (key === curKey()) {
     const inp = $<HTMLTextAreaElement>('input');
-    inp.value = U.drafts.get(chatId) ?? '';
+    inp.value = U.drafts.get(key) ?? '';
     renderComposerBar();
     autosize();
   }
 }
 
-async function saveEdit(chatId: string, m: Msg, text: string): Promise<void> {
+async function saveEdit(key: string, m: Msg, text: string): Promise<void> {
   const files = m.content?.files ?? [];
-  if (!text && !files.length) { toast('Пост не может быть пустым — его можно удалить.'); return; }
+  if (!text && !files.length) { toast(m.thread_id ? 'Комментарий не может быть пустым — его можно удалить.' : 'Пост не может быть пустым — его можно удалить.'); return; }
   if (text.length > MAX_LEN) { toast(`Слишком длинный текст — до ${MAX_LEN} символов.`); return; }
-  U.edit.delete(chatId);
+  U.edit.delete(key);
   const inp = $<HTMLTextAreaElement>('input');
-  inp.value = U.drafts.get(chatId) ?? '';
-  U.drafts.delete(chatId);
+  inp.value = U.drafts.get(key) ?? '';
+  U.drafts.delete(key);
   renderComposerBar();
   autosize();
   try {
     await editMessage(m, text);
   } catch (e) {
-    toast(errText(e, 'Не получилось изменить пост.'));
+    toast(errText(e, m.thread_id ? 'Не получилось изменить комментарий.' : 'Не получилось изменить пост.'));
   }
 }
 
@@ -2049,33 +2281,34 @@ async function saveEdit(chatId: string, m: Msg, text: string): Promise<void> {
 
 function setReply(m: Msg): void {
   const c = S.chats.get(m.chat_id);
-  if (!c || !canPost(c) || m.pending || m.failed || m.deleted_at || m.kind === 'call') return;
+  if (!c || !canReplyTo(m, c) || m.pending || m.failed || m.deleted_at || m.kind === 'call') return;
   closeMenu();
   if (U.sel) exitSelect();
-  cancelEdit(m.chat_id);
-  U.reply.set(m.chat_id, m);
-  U.fwd.delete(m.chat_id);
+  const key = feedKeyOf(m);
+  cancelEdit(key);
+  U.reply.set(key, m);
+  U.fwd.delete(key);
   renderComposerBar();
   updateSendBtn();
-  if (S.cur === m.chat_id && canPost(c)) $('input').focus({ preventScroll: true });
+  if (curKey() === key) $('input').focus({ preventScroll: true });
 }
 
-/** Забрать ответ для отправки (он одноразовый). */
-function takeReply(chatId: string): Msg | null {
-  const r = U.reply.get(chatId) ?? null;
+/** Забрать ответ для отправки (он одноразовый). key — чат или обсуждение поста. */
+function takeReply(key: string): Msg | null {
+  const r = U.reply.get(key) ?? null;
   if (r) {
-    U.reply.delete(chatId);
-    if (chatId === S.cur) renderComposerBar();
+    U.reply.delete(key);
+    if (key === curKey()) renderComposerBar();
   }
   return r;
 }
 
 function cancelComposerBar(): void {
-  const id = S.cur;
-  if (!id) return;
-  if (U.edit.has(id)) { cancelEdit(id); return; }
-  U.reply.delete(id);
-  U.fwd.delete(id);
+  const key = curKey();
+  if (!key) return;
+  if (U.edit.has(key)) { cancelEdit(key); return; }
+  U.reply.delete(key);
+  U.fwd.delete(key);
   renderComposerBar();
   updateSendBtn();
 }
@@ -2085,10 +2318,11 @@ function renderComposerBar(): void {
   const bar = document.getElementById('replyBar');
   if (!bar) return;
   const c = currentChat();
-  const ed = c ? U.edit.get(c.id) : undefined;
-  const fw = c && !ed ? U.fwd.get(c.id) : undefined;
-  const r = c && !fw && !ed ? U.reply.get(c.id) : undefined;
-  if (!c || (!fw && !r && !ed) || (!canPost(c) && !ed) || U.sel) { bar.hidden = true; bar.replaceChildren(); return; }
+  const key = curKey();
+  const ed = c && key ? U.edit.get(key) : undefined;
+  const fw = c && key && !ed ? U.fwd.get(key) : undefined;
+  const r = c && key && !fw && !ed ? U.reply.get(key) : undefined;
+  if (!c || (!fw && !r && !ed) || (!canWrite(c) && !ed) || U.sel) { bar.hidden = true; bar.replaceChildren(); return; }
   bar.hidden = false;
   const ic = el('span', 'cb-ic');
   ic.append(html(ed ? ICONS.edit : fw ? ICONS.forward : ICONS.reply));
@@ -2098,10 +2332,10 @@ function renderComposerBar(): void {
   const title = el('span', 'cb-title');
   const sub = el('span', 'cb-sub');
   if (ed) {
-    title.textContent = 'Изменение поста';
+    title.textContent = ed.thread_id ? 'Изменение комментария' : 'Изменение поста';
     const snap = snapOf(ed);
     sub.textContent = oneLine(snap.k, snap.text, ed.content?.files ?? []);
-    body.title = 'Перейти к посту';
+    body.title = ed.thread_id ? 'Перейти к комментарию' : 'Перейти к посту';
     body.addEventListener('click', () => void jumpTo(ed.id));
   } else if (fw) {
     const n = fw.msgs.length;
@@ -2136,9 +2370,10 @@ function renderComposerBar(): void {
 /** Ctrl+↑ / Ctrl+↓ в пустом поле — выбрать, на какое сообщение ответить (как в Telegram Desktop). */
 function replyStep(dir: -1 | 1): void {
   const c = currentChat();
-  if (!c || !canPost(c)) return;
-  const list = feedOf(c.id).msgs.filter((m) => !m.deleted_at && !m.pending && !m.failed && m.kind !== 'call');
-  const cur = U.reply.get(c.id);
+  const key = curKey();
+  if (!c || !key || !canWrite(c)) return;
+  const list = feedOf(key).msgs.filter((m) => !m.deleted_at && !m.pending && !m.failed && m.kind !== 'call');
+  const cur = U.reply.get(key);
   const i = (cur ? list.findIndex((m) => m.id === cur.id) : list.length) + dir;
   if (i < 0 || i >= list.length) { cancelComposerBar(); return; }
   setReply(list[i]);
@@ -2148,13 +2383,14 @@ function replyStep(dir: -1 | 1): void {
 /** Перейти к сообщению по цитате: догружаем историю, если нужно, и подсвечиваем. */
 async function jumpTo(id: string): Promise<void> {
   const c = currentChat();
-  if (!c) return;
+  const key = curKey();
+  if (!c || !key) return;
   closeMenu();
-  let found = feedOf(c.id).msgs.some((x) => x.id === id);
+  let found = feedOf(key).msgs.some((x) => x.id === id);
   if (!found) {
     toast('Ищем сообщение…');
-    found = await loadUntil(c.id, id).catch(() => false);
-    if (S.cur !== c.id) return;
+    found = await loadUntil(key, id).catch(() => false);
+    if (curKey() !== key) return;
     if (!found) { toast('Сообщение не найдено — возможно, его удалили.'); return; }
   }
   U.flash = id;
@@ -2173,7 +2409,7 @@ async function jumpTo(id: string): Promise<void> {
 function startSelect(m: Msg): void {
   closeMenu();
   if (m.pending || m.failed || m.deleted_at) return;
-  U.sel = { chatId: m.chat_id, ids: new Set([m.id]) };
+  U.sel = { chatId: feedKeyOf(m), ids: new Set([m.id]) };
   U.armedSel = false;
   U.openMsg = null;
   renderSelection();
@@ -2211,7 +2447,7 @@ function renderSelectBar(): void {
   const bar = document.getElementById('selectBar');
   if (!bar) return;
   const c = currentChat();
-  const on = !!c && U.sel?.chatId === c.id;
+  const on = !!c && U.sel?.chatId === curKey();
   $('composer').classList.toggle('selecting', on);
   if (!on) { bar.hidden = true; bar.replaceChildren(); return; }
   bar.hidden = false;
@@ -2366,8 +2602,13 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
     items.append(b);
     return b;
   };
-  if (canPost(chat)) item('reply', 'Ответить', () => setReply(m));
+  const head = S.thread === m.id;
+  if (canReplyTo(m, chat)) item('reply', 'Ответить', () => setReply(m));
   if (canEdit(m, chat)) item('edit', 'Изменить', () => startEdit(m));
+  // Пост канала с включёнными комментариями — «Комментарии» прямо из меню.
+  if (chat.kind === 'channel' && !m.thread_id && !head && m.kind !== 'system' && commentsInfo(chat.id).on) {
+    item('message', 'Комментарии', () => { closeMenu(); openThread(m); });
+  }
   const text = copyText(m);
   if (text) {
     item('copy', 'Копировать текст', () => {
@@ -2388,8 +2629,8 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
   }
   if (canForward(m)) item('forward', 'Переслать', () => openForward([m]));
   if (canForward(m) && chat.kind !== 'saved') item('bookmark', 'В избранное', () => { closeMenu(); void saveToFavorites([m]); });
-  if (!chat.preview) item('check', 'Выбрать', () => startSelect(m));
-  if (canDelete(m, chat)) {
+  if (!chat.preview && !head) item('check', 'Выбрать', () => startSelect(m));
+  if (canDelete(m, chat) && !head) {
     let armed = false;
     const del = item('trash', 'Удалить', () => {
       if (!armed) { armed = true; del.querySelector('span')!.textContent = 'Точно удалить?'; return; }
@@ -2401,7 +2642,7 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
   menu.hidden = false;
   document.body.classList.add('menu-open');
   const r = menu.getBoundingClientRect();
-  const mine = own && chat.kind !== 'channel';
+  const mine = own && (chat.kind !== 'channel' || !!m.thread_id);
   let left = fromBubble && mine ? x - r.width : x;
   left = Math.max(8, Math.min(window.innerWidth - r.width - 8, left));
   let top = y + (fromBubble ? 6 : 0);
@@ -2418,17 +2659,19 @@ function openMenu(m: Msg, chat: MyChat, x: number, y: number, fromBubble = false
 /** Скрепка, как в Telegram: фото или видео, файл, опрос, статья. */
 function openAttachMenu(): void {
   const c = currentChat();
-  if (!c || !canPost(c)) return;
+  if (!c || !canWrite(c)) return;
   closeStickers();
   const r = $('attachBtn').getBoundingClientRect();
   const fileInput = $<HTMLInputElement>('fileInput');
   const pick = (accept: string) => { fileInput.accept = accept; fileInput.click(); };
-  showMenu([
+  const items: MenuItem[] = [
     { icon: 'photo', label: 'Фото или видео', fn: () => pick('image/*,video/*') },
     { icon: 'file', label: 'Файл', fn: () => pick('') },
-    { icon: 'poll', label: 'Опрос', fn: () => openPollCreator(c) },
-    { icon: 'article', label: 'Статья', fn: () => void openMyArticles('attach') },
-  ], r.left, r.top - 6);
+  ];
+  // В комментариях опросов нет (как в Telegram у обсуждений канала — только у постов).
+  if (!S.thread) items.push({ icon: 'poll', label: 'Опрос', fn: () => openPollCreator(c) });
+  items.push({ icon: 'article', label: 'Статья', fn: () => void openMyArticles('attach') });
+  showMenu(items, r.left, r.top - 6);
 }
 
 /** Отправить ссылку (на статью) в чат по выбору: ссылка встанет в поле ввода выбранного чата. */
@@ -2474,7 +2717,9 @@ function openShareLink(url: string): void {
 
 function startSendFiles(files: File[]): void {
   const c = currentChat();
-  if (!c || !canPost(c) || !files.length) return;
+  const key = curKey();
+  if (!c || !key || !canWrite(c) || !files.length) return;
+  const thread = S.thread;
   const inp = $<HTMLTextAreaElement>('input');
   const first = !sendDialogOpen();
   // Как в Telegram: набранный текст становится подписью, а при отмене возвращается в поле ввода.
@@ -2482,7 +2727,7 @@ function startSendFiles(files: File[]): void {
   closeStickers();
   openSendDialog(files, {
     caption,
-    send: (cap, prepared) => { void sendFiles(c.id, cap, prepared); },
+    send: (cap, prepared) => { void sendFiles(c.id, cap, prepared, thread); },
     onCancel: (cap) => { if (!inp.value) { inp.value = cap; autosize(); } },
   });
   if (first && sendDialogOpen()) {
@@ -2492,14 +2737,15 @@ function startSendFiles(files: File[]): void {
   }
 }
 
-async function sendFiles(chatId: string, caption: string, prepared: Prepared[]): Promise<void> {
+async function sendFiles(chatId: string, caption: string, prepared: Prepared[], thread: string | null = null): Promise<void> {
   U.stick = true;
-  U.drafts.delete(chatId);
-  const reply = takeReply(chatId);
+  const key = thread ? threadKey(chatId, thread) : chatId;
+  U.drafts.delete(key);
+  const reply = takeReply(key);
   for (let i = 0; i < prepared.length; i += MAX_ALBUM) {
     const chunk = prepared.slice(i, i + MAX_ALBUM);
     try {
-      await sendMessage(chatId, i === 0 ? encodeEmoji(caption) : '', chunk, i === 0 ? { reply } : {});
+      await sendMessage(chatId, i === 0 ? encodeEmoji(caption) : '', chunk, i === 0 ? { reply, thread } : { thread });
     } catch (e) {
       toast(sendErr(e, chatId, 'Не получилось отправить. Нажмите «Повторить».'));
     }
@@ -2635,7 +2881,8 @@ function insertIntoInput(text: string, spaced: boolean): void {
   const pos = (before + ins).length;
   if (!touchMQ.matches) inp.focus({ preventScroll: true });
   inp.setSelectionRange(pos, pos);
-  if (S.cur && !U.edit.has(S.cur)) U.drafts.set(S.cur, inp.value);
+  const dk = curKey();
+  if (dk && !U.edit.has(dk)) U.drafts.set(dk, inp.value);
   autosize();
   onType();
 }
@@ -2786,7 +3033,7 @@ function stickersOpen(): boolean {
 }
 
 function openStickers(): void {
-  if (!canPost(currentChat())) return;
+  if (!canWrite(currentChat())) return;
   // Наборы могли добавить на другом устройстве — освежаем тихо.
   void loadMyPacks().catch(() => {});
   void loadMyEmojiPacks().catch(() => {});
@@ -2807,20 +3054,22 @@ function closeStickers(): void {
 
 async function pickSticker(st: Sticker, fromSuggest = false): Promise<void> {
   const id = S.cur;
-  if (!id || !canPost(currentChat())) return;
+  const key = curKey();
+  const thread = S.thread;
+  if (!id || !key || !canWrite(currentChat())) return;
   rememberSticker(st.ref);
   closeStickers();
   hideSuggest();
   if (fromSuggest) {
     const inp = $<HTMLTextAreaElement>('input');
     inp.value = '';
-    U.drafts.delete(id);
+    U.drafts.delete(key);
     autosize();
     stopTyping();
   }
   U.stick = true;
   try {
-    await sendSticker(id, st, { reply: takeReply(id) });
+    await sendSticker(id, st, { reply: takeReply(key), thread });
   } catch (e) {
     toast(sendErr(e, id, 'Стикер не отправился. Нажмите «Повторить».'));
   }
@@ -2836,7 +3085,7 @@ function updateSuggest(): void {
   const box = document.getElementById('stickerSuggest');
   const inp = document.getElementById('input') as HTMLTextAreaElement | null;
   if (!box || !inp) return;
-  const list = canPost(currentChat()) && !stickersOpen() ? stickersForEmoji(inp.value.trim()) : [];
+  const list = canWrite(currentChat()) && !stickersOpen() ? stickersForEmoji(inp.value.trim()) : [];
   if (!list.length) { box.hidden = true; return; }
   box.replaceChildren(...list.slice(0, 5).map((st) => {
     const b = stickerButton(st, 'ss-item', (x) => void pickSticker(x, true));
@@ -2848,14 +3097,19 @@ function updateSuggest(): void {
 
 function sendRecording(chatId: string, kind: 'voice' | 'video_note', rec: Parameters<typeof sendRecorded>[2]): void {
   if (chatId === S.cur) U.stick = true;
-  sendRecorded(chatId, kind, rec, setLocalMedia, { reply: takeReply(chatId) }).catch((e) => {
+  // Запись в обсуждении — комментарий к посту.
+  const thread = chatId === S.cur ? S.thread : null;
+  const key = thread ? threadKey(chatId, thread) : chatId;
+  sendRecorded(chatId, kind, rec, setLocalMedia, { reply: takeReply(key), thread }).catch((e) => {
     toast(sendErr(e, chatId, kind === 'voice' ? 'Голосовое не отправилось. Нажмите «Повторить».' : 'Кружочек не отправился. Нажмите «Повторить».'));
   });
 }
 
 /** Следующее голосовое после этого — играем подряд. */
 function nextVoiceAfter(cur: { id: string; chatId: string }): Msg | null {
-  const msgs = feedOf(cur.chatId).msgs;
+  // Голосовое могло быть комментарием — следующее ищем в той же ленте.
+  const m = findLoaded(cur.chatId, cur.id);
+  const msgs = feedOf(m ? feedKeyOf(m) : cur.chatId).msgs;
   const i = msgs.findIndex((x) => x.id === cur.id);
   if (i < 0) return null;
   return msgs.slice(i + 1).find((x) => viewKind(x) === 'voice' && !x.deleted_at && x.media_path) ?? null;
@@ -2977,7 +3231,7 @@ function foundRow(person: FoundUser, q: { at: boolean; s: string; toks: string[]
   text.setAttribute('aria-label', `Профиль: ${w.name}`);
   const nm = el('span', 'nm');
   nm.append(q.at ? document.createTextNode(w.name) : highlight(w.name, q.toks));
-  if (w.verified) nm.append(verifiedMark());
+  marks(nm, w);
   const sub = el('span', 'uname');
   if (person.username) {
     sub.append('@', highlight(person.username, q.at ? [q.s] : q.toks, true));
@@ -3052,6 +3306,10 @@ async function subscribePreview(): Promise<void> {
   try {
     await joinChannel(c.id);
     toast(`Вы подписались на «${c.name}»`);
+    // Подписчик может комментировать — узнаём заново (и реакции в открытом обсуждении — уже с авторами).
+    S.commentsOn.delete(c.id);
+    refreshCommentStats(c.id);
+    if (S.thread) void loadFeed(threadKey(c.id, S.thread), true).catch(() => {});
     renderAll();
   } catch (e) {
     toast(errText(e, 'Не получилось подписаться.'));
@@ -3122,7 +3380,7 @@ async function runFind(now: boolean): Promise<void> {
 // Мой профиль: главный экран и вложенные — «Изменить профиль», истории, конфиденциальность, уведомления
 // ---------------------------------------------------------------------------
 
-type ProfView = 'home' | 'edit' | 'stories' | 'privacy' | 'blocked' | 'notify' | 'about' | 'lastseen' | 'channel';
+type ProfView = 'home' | 'edit' | 'stories' | 'privacy' | 'blocked' | 'notify' | 'about' | 'lastseen' | 'channel' | 'status' | 'transcribe';
 let profView: ProfView = 'home';
 
 function openProfile(view: ProfView = 'home'): void {
@@ -3133,6 +3391,7 @@ function openProfile(view: ProfView = 'home'): void {
 }
 
 function profGo(view: ProfView): void {
+  if (view === 'transcribe') sttUsage = undefined;
   profView = view;
   renderProfile();
   $('profileDlg').scrollTop = 0;
@@ -3153,6 +3412,8 @@ function renderProfile(): void {
     : profView === 'stories' ? profStories(dlg)
       : profView === 'lastseen' ? profLastSeen(dlg)
         : profView === 'channel' ? profChannel(dlg)
+      : profView === 'status' ? profStatus(dlg)
+      : profView === 'transcribe' ? profTranscribe(dlg)
       : profView === 'privacy' ? profPrivacy(dlg)
         : profView === 'blocked' ? profBlocked(dlg)
           : profView === 'notify' ? profNotify(dlg)
@@ -3232,6 +3493,8 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
   const name = el('h2', 'sh-name');
   name.append(el('span', 'nm-t', me.name || 'Без имени'));
   if (me.verified) name.append(verifiedMark());
+  const myStatus = statusOf(meId());
+  if (myStatus) name.append(heroStatus(meId(), myStatus));
   const sub = el('p', 'sh-sub');
   if (me.username) sub.append(`@${me.username} · `);
   sub.append(navigator.onLine !== false ? el('span', 'on', 'в сети') : 'нет подключения');
@@ -3247,6 +3510,10 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
     personalChannelBox(meId(), () => closeDialog(dlg)),
     grp(
       row({ icon: 'edit', label: 'Изменить профиль', chev: true, fn: () => profGo('edit') }),
+      row({
+        icon: 'smile', label: 'Эмодзи-статус', em: myStatus ? statusEl(myStatus) : 'Нет', chev: true,
+        title: 'Эмодзи рядом с именем, как в Telegram', fn: () => profGo('status'),
+      }),
       row({
         icon: 'megaphone', label: 'Личный канал', em: myChannel ? (myChannel.name || `@${myChannel.username}`) : myChannel === null ? 'Нет' : null,
         chev: true, title: 'Свой публичный канал в профиле, как в Telegram', fn: () => profGo('channel'),
@@ -3264,11 +3531,143 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
       row({ icon: 'lock', label: 'Конфиденциальность', em: S.blocks.size ? `${S.blocks.size} в блоке` : null, chev: true, fn: () => profGo('privacy') }),
       row({ icon: 'bell', label: 'Уведомления', em: notifyState(), chev: true, fn: () => profGo('notify') }),
       row({ icon: 'micOn', label: 'Голос и видео', chev: true, fn: () => { closeDialog(dlg); openCallSettings(); } }),
+      row({
+        icon: 'message', label: 'Расшифровка голосовых', em: STT_LANGS.find(([k]) => k === sttPrefs().lang)?.[1] ?? null, chev: true,
+        title: 'Голосовые и кружочки — в текст, прямо на устройстве', fn: () => profGo('transcribe'),
+      }),
       row({ icon: 'help', label: 'Поддержка', chev: true, fn: () => { closeDialog(dlg); openSupport(); } }),
       row({ icon: 'star', label: 'Оценить СКАМ', em: avg, chev: true, fn: () => { closeDialog(dlg); openRate(); } }),
       row({ icon: 'info', label: 'О приложении', em: __SKAM_VERSION__, chev: true, fn: () => profGo('about') }),
     ),
     grp(row({ icon: 'logout', label: 'Выйти', danger: true, confirm: 'Точно выйти? Нажмите ещё раз', fn: () => void logout() })),
+  ];
+}
+
+/** Сколько места заняли скачанные модели распознавания (undefined — ещё не посчитали). */
+let sttUsage: Record<SttModel, number> | undefined;
+
+/** «Расшифровка голосовых»: язык записей, модель (быстрая/точная), скачанные модели. */
+function profTranscribe(dlg: HTMLDialogElement): HTMLElement[] {
+  const p = sttPrefs();
+  if (sttUsage === undefined) {
+    void modelUsage().then((u) => { sttUsage = u; if (profView === 'transcribe' && dlg.open) renderProfile(); });
+  }
+  const set = (next: typeof p) => { setSttPrefs(next); renderProfile(); };
+  const mb = (n: number) => `${Math.max(1, Math.round(n / 1048576))} МБ`;
+  const used = sttUsage ? sttUsage.base + sttUsage.small : 0;
+  return [
+    sheetHead(dlg, 'Расшифровка голосовых', () => profGo('home')),
+    grpNote('Кнопка «Aa» у голосового или кружочка превращает запись в текст. Распознаёт нейросеть Whisper прямо на этом устройстве: звук и текст никуда не отправляются, сквозное шифрование не нарушается.'),
+    grpLabel('Язык записей'),
+    grp(...STT_LANGS.map(([k, label]) => {
+      const r = radioRow(label, null, p.lang === k, () => set({ ...p, lang: k }));
+      r.id = `sttLang-${k}`;
+      return r;
+    })),
+    grpLabel('Модель'),
+    grp(...(Object.keys(STT_MODELS) as SttModel[]).map((k) => {
+      const info = STT_MODELS[k];
+      const got = sttUsage?.[k] ?? 0;
+      const r = radioRow(info.label, got ? `${info.sub} · скачана (${mb(got)})` : info.sub, p.model === k, () => set({ ...p, model: k }));
+      r.id = `sttModel-${k}`;
+      return r;
+    })),
+    grpNote('Модель скачивается с нашего сервера один раз — при первой расшифровке. Тексты расшифровок хранятся только на этом устройстве.'),
+    used ? grp(row({
+      icon: 'trash', label: 'Удалить скачанные модели', em: mb(used), danger: true, confirm: 'Удалить? В следующий раз скачается заново',
+      fn: () => {
+        void Promise.all((Object.keys(STT_MODELS) as SttModel[]).map((k) => dropModel(k))).then(() => {
+          sttUsage = undefined;
+          toast('Модели удалены с устройства');
+          renderProfile();
+        }, () => toast('Не получилось удалить'));
+      },
+    })) : el('span'),
+  ];
+}
+
+/** На сколько ставим статус (выбор в «Эмодзи-статусе»): null — навсегда. */
+let statusFor: number | null = null;
+let statusPacksAsked = false;
+
+/** «Эмодзи-статус»: что сейчас, на сколько, свои эмодзи и обычные. */
+function profStatus(dlg: HTMLDialogElement): HTMLElement[] {
+  const cur = statusOf(meId());
+  const until = statusUntil(meId());
+  if (!statusPacksAsked) {
+    statusPacksAsked = true;
+    void loadMyEmojiPacks().then(() => { if (profView === 'status' && dlg.open) renderProfile(); }, () => {});
+  }
+  const pick = async (v: string | null) => {
+    try {
+      await setMyStatus(v, statusFor);
+      toast(v ? `Статус поставлен${statusFor ? ` · ${untilLabel(Date.now() + statusFor)}` : ''}` : 'Статус убран');
+      if (v && v.startsWith('c:')) rememberEmoji(v.slice(2));
+      renderProfile();
+    } catch (e) {
+      toast(errText(e, 'Не получилось поставить статус.'));
+    }
+  };
+
+  const now = el('div', 'es-now');
+  const nowText = el('div', 'es-now-t');
+  if (cur) {
+    now.append(statusEl(cur, 'big'));
+    nowText.append(el('b', null, 'Ваш статус'), el('span', null, until ? untilLabel(until) : 'навсегда'));
+  } else {
+    nowText.append(el('b', null, 'Статуса нет'), el('span', null, 'Выберите эмодзи — оно появится рядом с вашим именем везде: в чатах, группах и комментариях.'));
+  }
+  now.append(nowText);
+
+  const durs = el('div', 'seg-mini es-for');
+  durs.setAttribute('role', 'group');
+  durs.setAttribute('aria-label', 'На сколько');
+  STATUS_FOR.forEach((d) => {
+    const b = button(null, d.label, () => { statusFor = d.ms; renderProfile(); });
+    b.setAttribute('aria-pressed', String(statusFor === d.ms));
+    durs.append(b);
+  });
+
+  const grids: HTMLElement[] = [];
+  const own = emojiPacks().flatMap((p) => p.emojis);
+  const ownSec = el('section', 'es-sec');
+  ownSec.append(el('h3', 'sp-title', 'Свои эмодзи'));
+  if (own.length) {
+    const g = el('div', 'ep-grid');
+    own.forEach((e) => {
+      const b = button(`ep-item ep-c${cur === `c:${e.ref}` ? ' on' : ''}`, null, () => void pick(`c:${e.ref}`));
+      const img = el('img');
+      img.src = emojiUrl(e.ref);
+      img.alt = '';
+      img.loading = 'lazy';
+      img.draggable = false;
+      b.append(img);
+      b.title = `:${e.name}:`;
+      b.setAttribute('aria-label', `Статус :${e.name}:`);
+      g.append(b);
+    });
+    ownSec.append(g);
+  } else {
+    ownSec.append(el('p', 'hint', 'Своих эмодзи пока нет — сделайте набор из картинок, и любое из них можно поставить статусом.'),
+      button('btn ghost small', 'Создать свои эмодзи', () => { closeDialog(dlg); openEmojiManager(); }));
+  }
+  grids.push(ownSec);
+  const basicSec = el('section', 'es-sec');
+  const bg = el('div', 'ep-grid');
+  BASIC_EMOJI.forEach((e) => {
+    const b = button(`ep-item ep-std${cur === e ? ' on' : ''}`, e, () => void pick(e));
+    b.setAttribute('aria-label', `Статус ${e}`);
+    bg.append(b);
+  });
+  basicSec.append(el('h3', 'sp-title', 'Обычные'), bg);
+  grids.push(basicSec);
+
+  const body = el('div', 'sh-body es-body');
+  body.append(now, el('p', 'es-label', 'На сколько'), durs, ...grids);
+  return [
+    sheetHead(dlg, 'Эмодзи-статус', () => profGo('home')),
+    body,
+    cur ? grp(row({ icon: 'close', label: 'Убрать статус', danger: true, fn: () => void pick(null) })) : el('span'),
   ];
 }
 
@@ -3631,7 +4030,7 @@ function profBlocked(dlg: HTMLDialogElement): HTMLElement[] {
     const t = el('span', 'lr-t');
     const nm = el('span', 'lr-l');
     nm.append(el('span', 'nm-t', w.name));
-    if (w.verified) nm.append(verifiedMark());
+    marks(nm, w);
     t.append(nm, el('span', 'lr-sub', b.username ? `@${b.username}` : 'пользователь СКАМ'));
     open.append(avatarEl(w), t);
     open.setAttribute('aria-label', `Профиль: ${w.name}`);
@@ -3914,6 +4313,7 @@ function personHome(dlg: HTMLDialogElement, uid: string): HTMLElement[] {
   const name = el('h2', 'sh-name');
   name.append(el('span', 'nm-t', w.name));
   if (w.verified) name.append(verifiedMark());
+  if (w.status) name.append(heroStatus(uid, w.status));
   hero.append(name);
   // С ником — под ним настоящее имя, как человек назвал себя сам.
   if (nick && p?.name) {
@@ -4457,7 +4857,7 @@ function wire(): void {
   listen($('newChannelBtn'), 'click', () => startCreate('channel'));
   listen($('newStoryBtn'), 'click', () => { closeDialog($<HTMLDialogElement>('newDlg')); openComposer(); });
   listen($('joinBtn'), 'click', () => void subscribePreview());
-  listen($('backBtn'), 'click', () => backToList());
+  listen($('backBtn'), 'click', () => { if (S.thread) closeThread(); else backToList(); });
   listen($('headBtn'), 'click', openChatInfo);
   listen($('findBtn'), 'click', () => { if (U.find && !$('chatFind').hidden) closeChatFind(); else openChatFind(); });
   listen($('headMenuBtn'), 'click', (e: MouseEvent) => { e.stopPropagation(); openHeadMenu(); });
@@ -4496,7 +4896,8 @@ function wire(): void {
       e.preventDefault();
       replyStep(e.key === 'ArrowUp' ? -1 : 1);
     }
-    if (e.key === 'Escape' && S.cur && (U.reply.has(S.cur) || U.fwd.has(S.cur) || U.edit.has(S.cur)) && !stickersOpen()) {
+    const ck = curKey();
+    if (e.key === 'Escape' && ck && (U.reply.has(ck) || U.fwd.has(ck) || U.edit.has(ck)) && !stickersOpen()) {
       e.preventDefault();
       cancelComposerBar();
     }
@@ -4520,13 +4921,13 @@ function wire(): void {
   const drop = $('drop');
   let dragDepth = 0;
   listen(conv, 'dragenter', (e: DragEvent) => {
-    if (!hasFiles(e) || !canPost(currentChat())) return;
+    if (!hasFiles(e) || !canWrite(currentChat())) return;
     e.preventDefault();
     dragDepth++;
     drop.hidden = false;
   });
   listen(conv, 'dragover', (e: DragEvent) => {
-    if (!hasFiles(e) || !canPost(currentChat())) return;
+    if (!hasFiles(e) || !canWrite(currentChat())) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
   });
@@ -4539,7 +4940,7 @@ function wire(): void {
     drop.hidden = true;
     if (!hasFiles(e)) return;
     e.preventDefault();
-    if (canPost(currentChat())) startSendFiles([...(e.dataTransfer?.files ?? [])]);
+    if (canWrite(currentChat())) startSendFiles([...(e.dataTransfer?.files ?? [])]);
   });
   // Файл, брошенный мимо беседы, браузер не должен открывать вместо СКАМ.
   listen(window, 'dragover', (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); });
@@ -4578,11 +4979,13 @@ function wire(): void {
       setSideMini(!sideMini());
       return;
     }
-    if (e.key !== 'Escape') return;
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
     const menu = document.getElementById('ctxMenu');
     if (menu && !menu.hidden) { closeMenu(); return; }
     if (stickersOpen()) { closeStickers(); $('stickerBtn').focus(); return; }
-    if (U.sel && !document.querySelector('dialog[open]')) exitSelect();
+    if (U.sel && !document.querySelector('dialog[open]')) { exitSelect(); return; }
+    // Esc в обсуждении (поле ввода пустое, ничего не открыто) — назад в канал.
+    if (S.thread && !document.querySelector('dialog[open]') && !$<HTMLTextAreaElement>('input').value.trim()) closeThread();
   });
   listen(document, 'pointerdown', (e: PointerEvent) => {
     const t = e.target as HTMLElement;
@@ -4597,6 +5000,8 @@ function wire(): void {
     }
   });
   listen(window, 'popstate', () => {
+    // «Назад» на телефоне: из обсуждения — в канал, из чата — в список.
+    if (S.thread && !history.state?.skamThread) { closeThread(true); return; }
     if (document.body.classList.contains('chat-open') && !wideMQ.matches && !history.state?.skamChat) backToList(true);
   });
   const onWide = () => { if (wideMQ.matches && isConversation(currentChat())) joinChatChannel(S.cur); autoOpen(); renderAll(); };
@@ -4709,7 +5114,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     composer: $('composer'),
     bar: $('recBar'),
     stage: $('recStage'),
-    chat: () => (S.cur && canPost(currentChat()) ? S.cur : null),
+    chat: () => (S.cur && canWrite(currentChat()) ? S.cur : null),
     send: sendRecording,
     activity: (kind) => {
       if (!isConversation(currentChat())) return;
@@ -4747,7 +5152,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
     changed: () => emit('stories'),
   }));
   mountStickerPacks({
-    canSend: () => !!S.cur && canPost(currentChat()),
+    canSend: () => !!S.cur && canWrite(currentChat()),
     send: (st) => void pickSticker(st),
     changed: () => { if (stickersOpen()) renderStickerPanel(); updateSuggest(); reactionPacksChanged(); },
   });
@@ -4765,7 +5170,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   mountArticles({
     attachTarget: () => {
       const c = currentChat();
-      return c && canPost(c) && !U.edit.has(c.id) ? (url: string) => attachLink(url) : null;
+      return c && canWrite(c) && !U.edit.has(curKey()!) ? (url: string) => attachLink(url) : null;
     },
     shareToChat: (url) => openShareLink(url),
     openUsername: (u) => void openUsername(u),
@@ -4850,6 +5255,7 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
   // «Избранное» есть у каждого: создаём при первом запуске новой версии.
   if (!savedChat()) void ensureSaved().catch(() => {});
 
+  startStatusClock();
   startRealtime(
     (ok) => setBanner(ok ? null : 'Нет живого соединения — новые сообщения подтягиваются раз в несколько секунд.'),
     () => {
@@ -4865,6 +5271,8 @@ async function mountShell(root: HTMLElement, user: User): Promise<void> {
 
 export function unmountApp(): void {
   mounted = false;
+  stopStatusClock();
+  resetStt();
   calls.stopCalls();
   closeMenu();
   stopTyping();

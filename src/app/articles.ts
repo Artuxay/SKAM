@@ -3,7 +3,7 @@
 import { $, ICONS, button, closeDialog, el, errText, html, openDialog, plural, toast } from '../lib/dom';
 import {
   type ArticleCard, type ArticleFull, type MyArticle, articleDate, articleHeader, articleImageUrl, articleCards,
-  articleUrl, countView, deleteArticle, getArticle, myArticles, removeArticleImages, renderNodes, saveArticle,
+  applyArticleLook, articleUrl, countView, deleteArticle, getArticle, myArticles, readerMenu, removeArticleImages, renderNodes, saveArticle,
   slugFromUrl,
 } from '../lib/article';
 import { type Editor, createEditor, droppedImages } from '../lib/article-editor';
@@ -138,6 +138,9 @@ function showArticle(a: ArticleFull, o: { attach?: boolean } = {}): void {
   const foot = el('p', 'ad-foot');
   foot.append(el('span', null, url.replace(/^https:\/\//, '')));
   art.append(foot);
+  // Шрифт автора и настройки читателя: «Aa» в шапке (шрифт и размер, запоминается на устройстве).
+  applyArticleLook(art, a.font);
+  right.unshift(readerMenu(() => applyArticleLook(art, a.font)));
   show(bar('Статья', [iconBtn('close', 'Закрыть', closeArticle)], right), art);
   cards.set(a.slug.toLowerCase(), a);
   if (!a.mine && !a.hidden) countView(a.slug);
@@ -147,7 +150,7 @@ function showArticle(a: ArticleFull, o: { attach?: boolean } = {}): void {
 // Редактор
 // ---------------------------------------------------------------------------
 
-type Draft = { title: string; author: string; authorUrl: string; content: ArticleFull['content']; at: number };
+type Draft = { title: string; author: string; authorUrl: string; content: ArticleFull['content']; font?: ArticleFull['font']; at: number };
 function readDraft(): Draft | null {
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? 'null') as Draft | null;
@@ -166,7 +169,7 @@ export function openArticleEditor(a: ArticleFull | null, o: { attach?: boolean }
   editor?.destroy();
   const draft = a ? null : readDraft();
   const init = a
-    ? { title: a.title, author: a.author_name ?? '', authorUrl: a.author_url ?? '', content: a.content }
+    ? { title: a.title, author: a.author_name ?? '', authorUrl: a.author_url ?? '', content: a.content, font: a.font ?? null }
     : draft ?? { title: '', author: env.myName(), authorUrl: '', content: [] };
   let draftTimer = 0;
   const ed = createEditor(init, {
@@ -225,7 +228,7 @@ export function openArticleEditor(a: ArticleFull | null, o: { attach?: boolean }
     const v = ed.value();
     publish.disabled = true;
     try {
-      const res = await saveArticle({ id: a?.id ?? null, title: v.title, author: v.author, authorUrl: v.authorUrl, content: v.content });
+      const res = await saveArticle({ id: a?.id ?? null, title: v.title, author: v.author, authorUrl: v.authorUrl, content: v.content, font: v.font });
       removeArticleImages(droppedImages(a?.content ?? [], v.content, ed.uploaded()));
       if (!a) { writeDraft(null); editorNew = false; }
       cards.delete(res.slug.toLowerCase());

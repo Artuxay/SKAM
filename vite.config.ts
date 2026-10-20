@@ -33,6 +33,13 @@ export default defineConfig({
   // На GitHub Pages сайт открывается по адресу /<репозиторий>/ — подпуть задаёт сборка в CI: vite build --base=/<репозиторий>/.
   base: '/',
   plugins: [articleRoutes()],
+  resolve: {
+    // Расшифровка голосовых (0.5.1): transformers.js тянет onnxruntime-web со сборкой WebGPU (лишние ~10 МБ WASM).
+    // Считаем на WASM — подставляем лёгкую сборку только с ним.
+    alias: { 'onnxruntime-web/webgpu': 'onnxruntime-web/wasm' },
+  },
+  // Воркер распознавания (src/app/stt-worker.ts) — ES-модуль: в нём import.meta.url для файлов WASM.
+  worker: { format: 'es' },
   build: {
     rollupOptions: {
       // Две страницы: мессенджер и лёгкая страница статьи (без чатов, шифрования и звонков).
@@ -40,6 +47,8 @@ export default defineConfig({
       // supabase-js — общий для обеих страниц: отдельным файлом, он меняется реже приложения.
       output: { manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : undefined) },
     },
+    // Основной чанк мессенджера ~500 КБ (160 КБ gzip) — грузится один раз и кэшируется service worker'ом.
+    chunkSizeWarningLimit: 640,
   },
   server: {
     // Ссылка из письма ведёт на http://localhost:5173 — порт не должен «уплывать».

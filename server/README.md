@@ -73,6 +73,23 @@ docker logs supabase-edge-functions --since 30m 2>&1 | grep bot-ai
 
 Задания хранятся 30 дней (для лимитов), текст сообщений в них не копируется. Экземпляр функции на этом сервере живёт не дольше минуты (`workerTimeoutMs` в `volumes/functions/main/index.ts`), поэтому функция берёт задание, только пока успевает, а **pg_cron** (`cron.job` `skam-bot-ai-kick`, каждые 15 секунд) вызывает `private.bot_ai_kick()` — он будит функцию, если есть вопросы в очереди или задание оборвалось (через 65 секунд оно пробуется ещё раз, всего две попытки). Застрявшие дольше 10 минут помечаются `failed` (`stale`). Журнал будильника: `select * from cron.job_run_details order by start_time desc limit 5;`.
 
+## Модели расшифровки голосовых (с 0.5.1)
+
+Голосовые превращаются в текст прямо в браузере (Whisper), а файлы модели браузер берёт у нас — из публичного бакета **`models`**: `https://api.skam-messenger.ru/storage/v1/object/public/models/<модель>/…`. Hugging Face из России не открывается, поэтому модели лежат на своём сервере. Звук и текст на сервер не приходят.
+
+Сейчас залиты `whisper-base` (≈ 77 МБ, «Быстрая», по умолчанию) и `whisper-small` (≈ 250 МБ, «Точная») — вместе ≈ 331 МБ в Storage (и в каждой резервной копии файлов). Хранилище принимает файлы до 50 МБ, поэтому большие файлы порезаны на части по 40 МБ (`.part0`, `.part1`…); размеры и SHA-256 каждой части — в `<модель>/manifest.json`, приложение сверяет их при скачивании. `manifest.json` заливается последним — пока его нет, приложение модель не трогает.
+
+Залить заново или добавить модель — [`scripts/whisper-models.mjs`](../scripts/whisper-models.mjs) (Node 20+):
+
+```sh
+# 1) на компьютере с доступом к huggingface.co (не из России — например, через VPN)
+node scripts/whisper-models.mjs prepare ./models-out whisper-base whisper-small
+# 2) залить сервисным ключом (на сервере: grep SERVICE_ROLE_KEY /opt/supabase-project/.env)
+node scripts/whisper-models.mjs upload ./models-out https://api.skam-messenger.ru <ключ service_role>
+```
+
+`SKAM_UPSERT=0` — не перезаписывать уже залитые файлы. Новая модель появится в «Расшифровке голосовых», только если добавить её в `STT_MODELS` в `src/app/stt.ts`. Удалить модели с сервера: Studio → Storage → `models` (у тех, кто уже скачал, она останется в кэше браузера).
+
 ## Как переносилась база (и как повторить)
 
 1. Версия Auth на сервере должна совпадать с облаком (`/auth/v1/health`): иначе в облачной базе окажутся таблицы, которых нет на сервере. Образ задаётся в `docker-compose.skam.yml`.

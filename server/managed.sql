@@ -36,9 +36,11 @@ create policy "skam chat avatars: delete" on storage.objects for delete to authe
 drop policy if exists "media: upload own" on storage.objects;
 -- Since 0.5.0 the media bucket has no size limit of its own: private.media_size_ok checks the
 -- declared Content-Length (metadata.contentLength) against 50 MB or the user's private.upload_limits row.
+-- Since 0.5.1 channel subscribers may upload files of their comments (private.comments_open).
 create policy "media: upload own" on storage.objects for insert to authenticated
   with check (bucket_id = 'media' and split_part(name, '/', 2) = (select auth.uid())::text
-              and private.can_post(private.path_chat(name)) and private.is_registered()
+              and (private.can_post(private.path_chat(name)) or private.comments_open(private.path_chat(name)))
+              and private.is_registered()
               and private.media_size_ok(metadata));
 drop policy if exists "media: delete own" on storage.objects;
 create policy "media: delete own" on storage.objects for delete to authenticated

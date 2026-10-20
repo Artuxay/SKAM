@@ -7,7 +7,7 @@ import type { Call, CallMember, CallSignal, Chat, KeyShare, Member, Message, Pro
 import {
   S, addReaction, bumpChat, chatMuted, dropChat, emit, ensureProfiles, loadChats, loadFeed, meId, prepareMsg,
   putProfile, refreshPresence, refreshProfiles, reloadChatsSoon, removeReaction, ts, upsertMessage, type Msg,
-  isPoll, refreshPollSoon,
+  isPoll, refreshPollSoon, feedKeyOf, findLoaded, loadProfileCards, refreshCommentStats, threadKey,
 } from './store';
 import { loadLayout } from './layout';
 import { loadPrefs, notifyPrefs } from './prefs';
@@ -74,6 +74,7 @@ function onMessageInsert(raw: Message): void {
 }
 
 function onMessageReady(m: Msg): void {
+  if (m.thread_id) { onComment(m); return; }
   const f = S.feeds.get(m.chat_id);
   const isNew = f ? !f.msgs.some((x) => x.id === m.id) : true;
   if (f) upsertMessage(m);
@@ -93,14 +94,35 @@ function onMessageReady(m: Msg): void {
   emit('chats', 'feed');
 }
 
+/** Новый комментарий к посту канала: в обсуждение (если оно открыто) и в счётчик под постом. Без звука и непрочитанных. */
+function onComment(m: Msg): void {
+  const f = S.feeds.get(feedKeyOf(m));
+  if (f?.loaded) upsertMessage(m);
+  bumpChat(m);
+  if (m.user_id && m.user_id !== meId()) {
+    // Ответили на мой комментарий — как в Telegram, это стоит уведомления.
+    const target = m.reply_to ? findLoaded(m.chat_id, m.reply_to) : undefined;
+    if (target?.user_id === meId() && S.visibleChat() !== m.chat_id) notifyIncoming(m);
+    loadProfileCards([m.user_id]);
+  }
+  emit('feed');
+}
+
 function onMessageUpdate(raw: Message): void {
   void prepareMsg(raw as Msg).then(onMessageChanged);
 }
 
 function onMessageChanged(m: Msg): void {
-  const old = S.feeds.get(m.chat_id)?.msgs.find((x) => x.id === m.id);
+  const old = S.feeds.get(feedKeyOf(m))?.msgs.find((x) => x.id === m.id);
+  const wasAlive = !!old && !old.deleted_at;
   if (old) Object.assign(old, m, { pending: false, failed: false, upload: undefined });
   if (m.deleted_at) S.reactions.delete(m.id);
+  if (m.thread_id) {
+    // Удалили комментарий — счётчик под постом заново с сервера.
+    if (m.deleted_at && (wasAlive || !old)) refreshCommentStats(m.chat_id, [m.thread_id]);
+    emit('feed');
+    return;
+  }
   const c = S.chats.get(m.chat_id);
   if (c?.last_id === m.id) bumpChat(m);
   if (m.deleted_at && c && c.unread && m.user_id !== meId()) reloadChatsSoon();
@@ -108,7 +130,7 @@ function onMessageChanged(m: Msg): void {
 }
 
 function onReactionInsert(r: Reaction): void {
-  const loaded = S.feeds.get(r.chat_id)?.msgs.some((m) => m.id === r.message_id);
+  const loaded = !!findLoaded(r.chat_id, r.message_id);
   if (!loaded) return;
   addReaction(r);
   void ensureProfiles([r.user_id]);
@@ -165,7 +187,7 @@ function onMember(event: string, row: Partial<Member>): void {
   emit('chats', 'head', 'members', 'feed');
 }
 
-type ChatPatch = Partial<Pick<Chat, 'id' | 'name' | 'emoji' | 'description' | 'username' | 'avatar_path' | 'sign_messages'>>;
+type ChatPatch = Partial<Pick<Chat, 'id' | 'name' | 'emoji' | 'description' | 'username' | 'avatar_path' | 'sign_messages' | 'comments'>>;
 
 function onChat(event: string, row: ChatPatch): void {
   if (!row.id) return;
@@ -177,6 +199,12 @@ function onChat(event: string, row: ChatPatch): void {
     c.emoji = row.emoji ?? c.emoji;
     for (const k of ['description', 'username', 'avatar_path'] as const) if (k in row) c[k] = row[k] ?? null;
     if (typeof row.sign_messages === 'boolean') c.sign_messages = row.sign_messages;
+    if (typeof row.comments === 'boolean' && row.comments !== !!c.comments) {
+      // Комментарии включили или выключили — счётчики и «могу ли писать» заново.
+      c.comments = row.comments;
+      S.commentsOn.delete(c.id);
+      refreshCommentStats(c.id);
+    }
     emit('chats', 'head', 'members', 'feed');
     // Ссылку-приглашение Realtime не присылает (её видят не все) — её отдаёт my_chats.
     reloadChatsSoon();
@@ -196,7 +224,12 @@ async function resync(withProfiles = false): Promise<void> {
     void loadPrefs().catch(() => {});
     void loadLayout().catch(() => {});
     void loadNicknames().catch(() => {});
-    if (S.cur && S.chats.has(S.cur)) await loadFeed(S.cur, true);
+    if (S.cur && S.chats.has(S.cur)) {
+      await loadFeed(S.cur, true);
+      // Открыто обсуждение поста — его тоже, и счётчики под постами.
+      if (S.thread) await loadFeed(threadKey(S.cur, S.thread), true).catch(() => {});
+      if (S.chats.get(S.cur)?.comments) refreshCommentStats(S.cur);
+    }
     if (withProfiles) await refreshProfiles();
     e2e.sweepSoon();
     void calls.refreshCalls();

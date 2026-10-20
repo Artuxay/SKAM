@@ -1,0 +1,7 @@
+{
+  "name": "skam-stub-empty",
+  "version": "1.0.0",
+  "description": "Пустышка вместо onnxruntime-node и sharp: в браузере transformers.js они не нужны, а в сборке тянули бы сотни мегабайт.",
+  "main": "index.js",
+  "license": "GPL-3.0-only"
+}

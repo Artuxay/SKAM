@@ -200,3 +200,226 @@
   src: url(./unbounded-latin-800-normal.woff2) format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
+
+/* 0.5.1: шрифты статей — PT Serif, JetBrains Mono, Caveat и Unbounded 400/700 (SIL OFL 1.1, см. OFL-*.txt).
+   Браузер скачивает файл, только когда шрифт встречается на странице. */
+
+/* pt-serif-cyrillic-400-normal */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./pt-serif-cyrillic-400-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* pt-serif-cyrillic-700-normal */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./pt-serif-cyrillic-700-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* pt-serif-cyrillic-400-italic */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./pt-serif-cyrillic-400-italic.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* pt-serif-cyrillic-700-italic */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./pt-serif-cyrillic-700-italic.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* pt-serif-latin-400-normal */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./pt-serif-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* pt-serif-latin-700-normal */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./pt-serif-latin-700-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* pt-serif-latin-400-italic */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./pt-serif-latin-400-italic.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* pt-serif-latin-700-italic */
+@font-face {
+  font-family: 'PT Serif';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./pt-serif-latin-700-italic.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* jetbrains-mono-cyrillic-400-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./jetbrains-mono-cyrillic-400-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* jetbrains-mono-cyrillic-700-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./jetbrains-mono-cyrillic-700-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* jetbrains-mono-cyrillic-400-italic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./jetbrains-mono-cyrillic-400-italic.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* jetbrains-mono-latin-400-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./jetbrains-mono-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* jetbrains-mono-latin-700-normal */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./jetbrains-mono-latin-700-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* jetbrains-mono-latin-400-italic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./jetbrains-mono-latin-400-italic.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* caveat-cyrillic-400-normal */
+@font-face {
+  font-family: 'Caveat';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./caveat-cyrillic-400-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* caveat-cyrillic-700-normal */
+@font-face {
+  font-family: 'Caveat';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./caveat-cyrillic-700-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* caveat-latin-400-normal */
+@font-face {
+  font-family: 'Caveat';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./caveat-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* caveat-latin-700-normal */
+@font-face {
+  font-family: 'Caveat';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./caveat-latin-700-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* unbounded-cyrillic-400-normal */
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./unbounded-cyrillic-400-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* unbounded-cyrillic-700-normal */
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./unbounded-cyrillic-700-normal.woff2) format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+
+/* unbounded-latin-400-normal */
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(./unbounded-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+
+/* unbounded-latin-700-normal */
+@font-face {
+  font-family: 'Unbounded';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(./unbounded-latin-700-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}

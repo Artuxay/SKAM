@@ -1,9 +1,10 @@
 // Service worker СКАМ: оболочка приложения работает офлайн и открывается мгновенно.
 // Запросы к Supabase (API, Realtime, Storage) никогда не кэшируются.
 // Все пути считаются от области действия SW: сайт может жить и в корне, и в подпапке (GitHub Pages).
-const CACHE = 'skam-v8';
+const CACHE = 'skam-v9';
 // Кэш зашифрованных вложений ведёт само приложение (расшифровать их без ключа нельзя) — его не трогаем.
-const KEEP = (k) => k === CACHE || k.startsWith('skam-media');
+// Модели распознавания речи (0.5.1, сотни мегабайт) тоже живут в своём кэше — при обновлении СКАМ их не стираем.
+const KEEP = (k) => k === CACHE || k.startsWith('skam-media') || k.startsWith('skam-models');
 const BASE = new URL('./', self.registration.scope).pathname; // например '/' или '/skam/'
 const SHELL = ['', 'manifest.webmanifest', 'favicon.svg', 'icons/icon-192.png', 'icons/icon-512.png'].map((p) => BASE + p);
 

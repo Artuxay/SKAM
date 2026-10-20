@@ -2,8 +2,8 @@
 import type { User } from '@supabase/supabase-js';
 import { sb } from '../lib/supabase';
 import type {
-  Attachment, BlockedUser, ChatCard, ChatRight, Database, Forward, LastSeenPrivacy, Member, MemberInfo, Message, MessageKind,
-  MyChat, PersonalChannel, PollState, Presence, Profile, Reaction, ReactionKey, SeenBucket, SuperStatus,
+  Attachment, BlockedUser, ChatCard, ChatRight, CommentStats, Database, Forward, LastSeenPrivacy, Member, MemberInfo, Message,
+  MessageKind, MyChat, PersonalChannel, PollState, Presence, Profile, Reaction, ReactionKey, SeenBucket, SuperStatus,
 } from '../lib/database.types';
 import { lsGet, lsSet, uuid } from '../lib/dom';
 import type { Sticker } from '../lib/stickers';
@@ -53,8 +53,8 @@ export const POLL_MAX_OPTIONS = 12;
 /** Как выглядело сообщение, на которое ответили: автор, вид и коротко текст. */
 export type ReplySnap = { uid: string | null; k: MessageKind; text: string };
 
-/** Ответить или переслать при отправке. */
-export type SendOpts = { reply?: Msg | null; fwd?: Forward | null };
+/** Ответить или переслать при отправке; thread — комментарий к этому посту канала (0.5.1). */
+export type SendOpts = { reply?: Msg | null; fwd?: Forward | null; thread?: string | null };
 
 /** Вид сообщения для показа: у зашифрованного — то, что внутри. */
 export function viewKind(m: Msg): MessageKind {
@@ -107,7 +107,15 @@ export const S = {
   mutes: new Map<string, number>(),
   /** Опросы (по id сообщения): числа голосов, мой голос, ответ викторины. */
   polls: new Map<string, PollState>(),
+  /** Открытое обсуждение поста (id поста) в открытом канале S.cur (0.5.1). */
+  thread: null as string | null,
+  /** Комментарии под постами: сколько, когда последний, трое последних авторов (по id поста). */
+  comments: new Map<string, CommentInfo>(),
+  /** Комментарии в канале: включены ли и могу ли я писать (по id канала). */
+  commentsOn: new Map<string, { on: boolean; can: boolean }>(),
 };
+
+export type CommentInfo = { n: number; last: string | null; recent: string[] };
 
 /** Чат без звука: не звенит, не показывает уведомления, его непрочитанные — серые и не в общем счёте. */
 export function chatMuted(id: string | null | undefined): boolean {
@@ -213,6 +221,11 @@ export function resetState(): void {
   S.blocks.clear();
   S.mutes.clear();
   S.polls.clear();
+  S.thread = null;
+  S.comments.clear();
+  S.commentsOn.clear();
+  counted.clear();
+  bumpedAt.clear();
   e2e.reset();
   listeners.clear();
   pending.clear();
@@ -283,7 +296,8 @@ export function putProfile(p: Profile): void {
   S.profiles.set(p.id, clean);
   if (p.id === meId()) S.me = clean;
   // Ничего видимого не поменялось (например, только updated_at) — ленту сообщений не перерисовываем.
-  const same = !!old && (['name', 'username', 'avatar_path', 'color', 'verified', 'bio'] as const).every((k) => old[k] === clean[k]);
+  const same = !!old && (['name', 'username', 'avatar_path', 'color', 'verified', 'bio', 'emoji_status', 'emoji_status_until'] as const)
+    .every((k) => (old[k] ?? null) === (clean[k] ?? null));
   if (same) emit('head', 'chats', 'members', ...(p.id === meId() ? (['me'] as const) : []));
   else emit('chats', 'feed', 'head', 'online', 'members', 'me');
 }
@@ -568,8 +582,19 @@ export async function loadChats(): Promise<void> {
   }
   S.chats = next;
   S.chatsLoaded = true;
+  // Комментарии в канале включили или выключили (на другом устройстве, другой админ) — счётчики заново.
+  for (const c of next.values()) {
+    const known = S.commentsOn.get(c.id);
+    if (c.kind === 'channel' && known && known.on !== !!c.comments) {
+      S.commentsOn.delete(c.id);
+      if (S.feeds.get(c.id)?.loaded) refreshCommentStats(c.id);
+    }
+  }
   if (S.preview && next.has(S.preview.id)) S.preview = null;
-  for (const id of [...S.feeds.keys()]) if (!next.has(id)) S.feeds.delete(id);
+  for (const key of [...S.feeds.keys()]) {
+    const chat = chatOfKey(key);
+    if (!next.has(chat) && S.preview?.id !== chat) S.feeds.delete(key);
+  }
   emit('chats');
   void decryptPreviews();
   await ensureProfiles((data ?? []).flatMap((c) => [c.peer_id, c.last_user_id]));
@@ -654,7 +679,8 @@ export async function leaveChat(chatId: string): Promise<void> {
 
 export function dropChat(chatId: string): void {
   S.chats.delete(chatId);
-  S.feeds.delete(chatId);
+  dropFeeds(chatId);
+  if (S.cur === chatId) S.thread = null;
   S.members.delete(chatId);
   emit('chats', 'feed', 'head');
 }
@@ -746,21 +772,48 @@ export async function deleteChat(chatId: string): Promise<void> {
 
 /** Профили из списков участников: у подписчиков канала их иначе не прочитать. */
 export function rememberProfiles(list: { id: string; name: string | null; username: string | null; avatar_path: string | null;
-  color: string; last_seen_at?: string | null; online_until?: string | null; seen?: string | null; verified?: boolean }[]): void {
+  color: string | null; last_seen_at?: string | null; online_until?: string | null; seen?: string | null; verified?: boolean;
+  emoji_status?: string | null; emoji_status_until?: string | null }[]): boolean {
   // Списки участников и контактов приходят уже со временем захода, каким его можно показать мне.
   putPresence(list.filter((p) => p.seen !== undefined));
+  let changed = false;
   for (const p of list) {
     const have = S.profiles.get(p.id);
     if (have) {
-      // Галочку обновляем и у уже известных: её могли выдать или снять.
-      if (p.verified !== undefined && have.verified !== p.verified) have.verified = p.verified;
+      // Галочку и эмодзи-статус обновляем и у уже известных: их могли выдать, снять или сменить.
+      if (p.verified !== undefined && have.verified !== p.verified) { have.verified = p.verified; changed = true; }
+      if (p.emoji_status !== undefined && (have.emoji_status !== p.emoji_status || have.emoji_status_until !== p.emoji_status_until)) {
+        have.emoji_status = p.emoji_status;
+        have.emoji_status_until = p.emoji_status_until ?? null;
+        changed = true;
+      }
       continue;
     }
+    changed = true;
     S.profiles.set(p.id, {
       id: p.id, name: p.name, first_name: p.name, last_name: null, username: p.username, username_optional: false,
-      avatar_path: p.avatar_path, color: p.color, verified: !!p.verified, bio: null, created_at: '', updated_at: '',
+      avatar_path: p.avatar_path, color: p.color ?? '#646464', verified: !!p.verified, bio: null, created_at: '', updated_at: '',
+      emoji_status: p.emoji_status ?? null, emoji_status_until: p.emoji_status_until ?? null,
     });
   }
+  return changed;
+}
+
+/** Карточки людей без общего чата (авторы комментариев): имя, фото, галочка, эмодзи-статус. Запросы склеиваются. */
+const cardQueue = new Set<string>();
+let cardTimer: number | undefined;
+export function loadProfileCards(ids: (string | null | undefined)[]): void {
+  ids.forEach((x) => { if (x && !S.profiles.get(x)?.created_at) cardQueue.add(x); });
+  if (!cardQueue.size) return;
+  clearTimeout(cardTimer);
+  cardTimer = window.setTimeout(async () => {
+    const list = [...cardQueue];
+    cardQueue.clear();
+    for (let i = 0; i < list.length; i += 200) {
+      const { data } = await sb.rpc('profile_cards', { p_ids: list.slice(i, i + 200) });
+      if (data && rememberProfiles(data)) emit('chats', 'feed', 'head', 'members');
+    }
+  }, 60);
 }
 
 export async function memberList(chatId: string, o: { query?: string; admins?: boolean; limit?: number; offset?: number } = {}): Promise<MemberInfo[]> {
@@ -934,10 +987,176 @@ export function markRead(chatId: string): void {
 // Сообщения
 // ---------------------------------------------------------------------------
 
-export function feedOf(chatId: string): Feed {
-  let f = S.feeds.get(chatId);
-  if (!f) S.feeds.set(chatId, (f = { msgs: [], loaded: false, hasMore: true, loadingOlder: false, error: false }));
+/** Лента по ключу: id чата или обсуждение поста (threadKey). */
+export function feedOf(key: string): Feed {
+  let f = S.feeds.get(key);
+  if (!f) S.feeds.set(key, (f = { msgs: [], loaded: false, hasMore: true, loadingOlder: false, error: false }));
   return f;
+}
+
+// ---------------------------------------------------------------------------
+// Комментарии к постам каналов (0.5.1): комментарий — сообщение канала с thread_id = id поста.
+// Лента обсуждения лежит в S.feeds под ключом «канал~пост».
+// ---------------------------------------------------------------------------
+
+/** Ключ ленты обсуждения поста. */
+export function threadKey(chatId: string, postId: string): string {
+  return `${chatId}~${postId}`;
+}
+
+/** В какой ленте лежит сообщение: комментарий — в обсуждении своего поста. */
+export function feedKeyOf(m: { chat_id: string; thread_id?: string | null }): string {
+  return m.thread_id ? threadKey(m.chat_id, m.thread_id) : m.chat_id;
+}
+
+/** Чат ленты по её ключу. */
+export function chatOfKey(key: string): string {
+  const i = key.indexOf('~');
+  return i < 0 ? key : key.slice(0, i);
+}
+
+/** Пост обсуждения по ключу ленты (null — обычная лента чата). */
+export function postOfKey(key: string): string | null {
+  const i = key.indexOf('~');
+  return i < 0 ? null : key.slice(i + 1);
+}
+
+/** Убрать ленты чата — саму и все обсуждения. */
+export function dropFeeds(chatId: string): void {
+  for (const key of [...S.feeds.keys()]) if (chatOfKey(key) === chatId) S.feeds.delete(key);
+}
+
+/** Загруженное сообщение чата — в ленте или в любом из его обсуждений. */
+export function findLoaded(chatId: string, id: string): Msg | undefined {
+  for (const [key, f] of S.feeds) {
+    if (chatOfKey(key) !== chatId) continue;
+    const m = f.msgs.find((x) => x.id === id);
+    if (m) return m;
+  }
+  return undefined;
+}
+
+/** Включены ли комментарии и могу ли я их писать (пока сервер не ответил — по списку чатов). */
+export function commentsInfo(chatId: string | null | undefined): { on: boolean; can: boolean } {
+  if (!chatId) return { on: false, can: false };
+  const known = S.commentsOn.get(chatId);
+  if (known) return known;
+  const c = chatById(chatId);
+  const on = c?.kind === 'channel' && !!c.comments;
+  return { on, can: on && !c?.preview };
+}
+
+/** Комментарии, уже учтённые в счётчиках (чтобы своё сообщение и его эхо из Realtime не посчитать дважды). */
+const counted = new Set<string>();
+
+/** Когда счётчик поста последний раз поменялся здесь (чтобы ответ сервера, ушедший раньше, его не затёр). */
+const bumpedAt = new Map<string, number>();
+
+/** Новый комментарий: +1 к счётчику поста и автор — в «последние». */
+function noteComment(m: Msg): void {
+  if (!m.thread_id || m.deleted_at || counted.has(m.id)) return;
+  counted.add(m.id);
+  bumpedAt.set(m.thread_id, Date.now());
+  const st = S.comments.get(m.thread_id) ?? { n: 0, last: null, recent: [] };
+  st.n += 1;
+  if (!st.last || ts(m.created_at) > ts(st.last)) st.last = m.created_at;
+  if (m.user_id) st.recent = [m.user_id, ...st.recent.filter((x) => x !== m.user_id)].slice(0, 3);
+  S.comments.set(m.thread_id, st);
+}
+
+const statsWanted = new Map<string, Set<string>>();
+let statsTimer: number | undefined;
+let statsWaiting: (() => void)[] = [];
+
+/** Счётчики комментариев под постами (запросы склеиваются, до 200 постов за раз). */
+export function loadCommentStats(chatId: string, postIds: string[]): Promise<void> {
+  const set = statsWanted.get(chatId) ?? new Set<string>();
+  postIds.forEach((id) => set.add(id));
+  statsWanted.set(chatId, set);
+  clearTimeout(statsTimer);
+  return new Promise((resolve) => {
+    // Склеенный запрос отвечает всем, кто его ждал (иначе ожидание более раннего вызова повисло бы).
+    statsWaiting.push(resolve);
+    statsTimer = window.setTimeout(() => {
+      const jobs = [...statsWanted];
+      const waiting = statsWaiting;
+      statsWanted.clear();
+      statsWaiting = [];
+      void (async () => {
+        for (const [chat, ids] of jobs) {
+          const list = [...ids];
+          for (let i = 0; i < list.length || i === 0; i += 200) {
+            const part = list.slice(i, i + 200);
+            const asked = Date.now();
+            const { data, error } = await sb.rpc('comment_stats', { p_chat: chat, p_ids: part });
+            if (error || !data) break;
+            putCommentStats(chat, part, data, asked);
+          }
+        }
+      })().catch(() => {}).finally(() => waiting.forEach((r) => r()));
+    }, 50);
+  });
+}
+
+function putCommentStats(chatId: string, asked: string[], data: CommentStats, at: number): void {
+  S.commentsOn.set(chatId, { on: !!data.on, can: !!data.can });
+  const c = chatById(chatId);
+  if (c && c.kind === 'channel' && c.comments !== !!data.on) c.comments = !!data.on;
+  for (const id of asked) {
+    // Пока запрос шёл, здесь появился новый комментарий — свежее то, что посчитали мы.
+    if ((bumpedAt.get(id) ?? 0) > at) continue;
+    const st = data.posts?.[id];
+    S.comments.set(id, st ? { n: st.n, last: st.last, recent: st.recent ?? [] } : { n: 0, last: null, recent: [] });
+  }
+  rememberProfiles(Object.values(data.people ?? {}));
+  emit('feed', 'head');
+}
+
+/** Посты ленты канала, у которых могут быть комментарии. */
+function commentable(rows: Msg[]): string[] {
+  return rows.filter((m) => !m.thread_id && !m.deleted_at && m.kind !== 'system' && m.kind !== 'call' && !m.pending).map((m) => m.id);
+}
+
+/** Освежить счётчики постов, которые сейчас в ленте канала (включили комментарии, удалили комментарий…). */
+export function refreshCommentStats(chatId: string, postIds?: string[]): void {
+  const ids = postIds ?? commentable(S.feeds.get(chatId)?.msgs ?? []);
+  if (ids.length || !postIds) void loadCommentStats(chatId, ids);
+}
+
+/** Включить или выключить комментарии в канале. */
+export async function setChatComments(chatId: string, on: boolean): Promise<void> {
+  const { error } = await sb.rpc('set_chat_comments', { p_chat: chatId, p_on: on });
+  if (error) throw error;
+  const c = S.chats.get(chatId);
+  if (c) c.comments = on;
+  S.commentsOn.set(chatId, { on, can: on });
+  emit('feed', 'head', 'chats');
+  refreshCommentStats(chatId);
+}
+
+/** Обсуждение поста страницами (новые с конца), с карточками авторов. До подписки — реакции только числами. */
+async function fetchThreadPage(chatId: string, postId: string, before?: Msg): Promise<Msg[]> {
+  const { data, error } = await sb.rpc('comment_feed', {
+    p_post: postId, p_before: before?.created_at ?? null, p_before_id: before?.id ?? null, p_limit: PAGE,
+  });
+  if (error) throw error;
+  const rows = (data ?? []).reverse();
+  rememberProfiles(rows.map((r) => r.author).filter((a): a is NonNullable<typeof a> => !!a));
+  if (!S.chats.has(chatId)) {
+    for (const r of rows) {
+      const list: Reaction[] = [];
+      Object.entries(r.reacts ?? {}).forEach(([key, n]) => {
+        const sup = key.endsWith('*');
+        const emoji = (sup ? key.slice(0, -1) : key) as ReactionKey;
+        for (let i = 0; i < (n ?? 0); i++) list.push({ message_id: r.id, user_id: '', emoji, chat_id: chatId, created_at: '', super: sup });
+      });
+      S.reactions.set(r.id, list);
+    }
+  }
+  const msgs = rows.map(({ reacts: _r, author: _a, ...m }) => m as Msg);
+  msgs.forEach((m) => counted.add(m.id));
+  await Promise.all(msgs.map(prepareMsg));
+  return msgs;
 }
 
 function cmp(a: Msg, b: Msg): number {
@@ -946,7 +1165,7 @@ function cmp(a: Msg, b: Msg): number {
 
 /** Добавить или обновить сообщение в ленте. Возвращает true, если оно новое. */
 export function upsertMessage(m: Msg): boolean {
-  const f = feedOf(m.chat_id);
+  const f = feedOf(feedKeyOf(m));
   const i = f.msgs.findIndex((x) => x.id === m.id);
   if (i >= 0) {
     f.msgs[i] = m;
@@ -961,6 +1180,8 @@ export function upsertMessage(m: Msg): boolean {
 
 /** Обновить «последнее сообщение» в списке чатов. */
 export function bumpChat(m: Msg): void {
+  // Комментарий — не «последнее сообщение» канала: он только прибавляет к счётчику под постом.
+  if (m.thread_id) { noteComment(m); return; }
   const c = S.chats.get(m.chat_id);
   if (!c) { reloadChatsSoon(); return; }
   if (c.last_id === m.id || ts(m.created_at) >= ts(c.last_at)) {
@@ -1146,9 +1367,13 @@ async function fetchPreviewPage(chatId: string, before?: Msg) {
   return msgs;
 }
 
-async function fetchPage(chatId: string, before?: Msg) {
+async function fetchPage(key: string, before?: Msg) {
+  const chatId = chatOfKey(key);
+  const post = postOfKey(key);
+  if (post) return fetchThreadPage(chatId, post, before);
   if (S.preview?.id === chatId) return fetchPreviewPage(chatId, before);
-  let q = sb.from('messages').select('*').eq('chat_id', chatId);
+  // Комментарии к постам — в своих лентах, не в ленте канала.
+  let q = sb.from('messages').select('*').eq('chat_id', chatId).is('thread_id', null);
   if (before) {
     const t = `"${before.created_at}"`;
     q = q.or(`created_at.lt.${t},and(created_at.eq.${t},id.lt.${before.id})`);
@@ -1175,28 +1400,34 @@ export async function loadReactions(ids: string[]): Promise<void> {
 }
 
 /** Загрузить (или освежить) последние сообщения и участников чата. */
-export async function loadFeed(chatId: string, force = false): Promise<void> {
-  const f = feedOf(chatId);
+export async function loadFeed(key: string, force = false): Promise<void> {
+  const f = feedOf(key);
   if (f.loaded && !force) return;
+  const chatId = chatOfKey(key);
+  const thread = postOfKey(key);
   const preview = S.preview?.id === chatId;
   try {
     const [rows, members] = await Promise.all([
-      fetchPage(chatId),
-      preview ? Promise.resolve({ data: [] as Member[], error: null }) : sb.from('chat_members').select('*').eq('chat_id', chatId),
+      fetchPage(key),
+      preview || thread ? Promise.resolve({ data: null as Member[] | null, error: null }) : sb.from('chat_members').select('*').eq('chat_id', chatId),
     ]);
     const fresh = !f.loaded;
     rows.forEach((m) => upsertMessage(m));
     if (fresh) f.hasMore = rows.length === PAGE;
     f.loaded = true;
     f.error = false;
-    if (!members.error) S.members.set(chatId, members.data);
+    if (!members.error && members.data) S.members.set(chatId, members.data);
     // В канале профили есть смысл спрашивать только у администраторов (подписчиков всё равно не видно).
-    const channel = chatById(chatId)?.kind === 'channel';
+    const chat = chatById(chatId);
+    const channel = chat?.kind === 'channel';
     const people = (members.data ?? []).filter((m) => !channel || m.role !== 'member').map((m) => m.user_id);
+    // Авторы комментариев пришли карточками вместе с обсуждением — их профили не читаем.
     await Promise.all([
       preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)),
-      ensureProfiles([...rows.map((r) => r.user_id), ...people]),
+      thread ? Promise.resolve() : ensureProfiles([...rows.map((r) => r.user_id), ...people]),
       loadPollStates(rows.filter(isPoll).map((r) => r.id)).catch(() => {}),
+      // Счётчики комментариев под постами (у канала, где их включили; до подписки — спрашиваем сервер).
+      channel && !thread && (chat?.comments || preview) ? loadCommentStats(chatId, commentable(rows)) : Promise.resolve(),
     ]);
   } catch (e) {
     f.loaded = true;
@@ -1207,21 +1438,25 @@ export async function loadFeed(chatId: string, force = false): Promise<void> {
   }
 }
 
-export async function loadOlder(chatId: string): Promise<void> {
-  const f = feedOf(chatId);
+export async function loadOlder(key: string): Promise<void> {
+  const f = feedOf(key);
   const oldest = f.msgs.find((m) => !m.pending);
   if (!f.hasMore || f.loadingOlder || !oldest) return;
   f.loadingOlder = true;
   emit('feed');
   try {
-    const rows = await fetchPage(chatId, oldest);
+    const rows = await fetchPage(key, oldest);
     rows.forEach((m) => upsertMessage(m));
     f.hasMore = rows.length === PAGE;
+    const chatId = chatOfKey(key);
+    const thread = postOfKey(key);
+    const chat = chatById(chatId);
     const preview = S.preview?.id === chatId;
     await Promise.all([
       preview ? Promise.resolve() : loadReactions(rows.map((r) => r.id)),
-      ensureProfiles(rows.map((r) => r.user_id)),
+      thread ? Promise.resolve() : ensureProfiles(rows.map((r) => r.user_id)),
       loadPollStates(rows.filter(isPoll).map((r) => r.id)).catch(() => {}),
+      chat?.kind === 'channel' && !thread && (chat.comments || preview) ? loadCommentStats(chatId, commentable(rows)) : Promise.resolve(),
     ]);
   } finally {
     f.loadingOlder = false;
@@ -1250,6 +1485,7 @@ function draftMessage(chatId: string, fields: Partial<Msg> & Pick<Message, 'kind
     call_id: null,
     edited_at: null,
     signature: null,
+    thread_id: null,
     pending: true,
     ...fields,
   };
@@ -1291,9 +1527,10 @@ async function insertRow(m: Msg): Promise<Insert> {
     return { id: m.id, chat_id: m.chat_id, body: '', kind: 'e2e', enc, key_id };
   }
   // Открытые чаты (канал, бот): ответ и пересылка — в отдельных колонках.
-  const extra: Pick<Insert, 'reply_to' | 'fwd'> = {};
+  const extra: Pick<Insert, 'reply_to' | 'fwd' | 'thread_id'> = {};
   if (m.reply_to) extra.reply_to = m.reply_to;
   if (m.fwd) extra.fwd = m.fwd;
+  if (m.thread_id) extra.thread_id = m.thread_id;
   if (view === 'sticker') return { id: m.id, chat_id: m.chat_id, body: m.body, kind: 'sticker', sticker: m.sticker, ...extra };
   if (view === 'voice' || view === 'video_note') {
     return {
@@ -1391,10 +1628,13 @@ async function post(m: Msg): Promise<void> {
 
 /** Черновик: зашифрованное сообщение имеет вид e2e, а что внутри — в view. */
 function draftFor(chatId: string, view: MessageKind, fields: Partial<Msg> & { body: string }, opts: SendOpts = {}): Msg {
-  // Отвечать можно только на сообщение этого же чата.
-  const reply = opts.reply && opts.reply.chat_id === chatId && !opts.reply.pending ? opts.reply : null;
+  // Отвечать можно только на сообщение этого же чата и той же ветки (пост — в ленте, комментарий — в обсуждении).
+  const thread = opts.thread ?? null;
+  const reply = opts.reply && opts.reply.chat_id === chatId && !opts.reply.pending && (opts.reply.thread_id ?? null) === thread
+    ? opts.reply : null;
   if (reply) Object.assign(fields, { reply_to: reply.id, replySnap: snapOf(reply) });
   if (opts.fwd) fields.fwd = opts.fwd;
+  if (thread) fields.thread_id = thread;
   if (!secretFor(chatId)) return draftMessage(chatId, { ...fields, kind: view, view });
   // Текст и вложения внутри шифротекста показываются как «e2e» — так же, как после расшифровки.
   return draftMessage(chatId, { ...fields, kind: 'e2e', view: view === 'text' || view === 'media' ? 'e2e' : view });
@@ -1471,7 +1711,7 @@ export function discardMessage(m: Msg): void {
   if (m.uploaded && m.media_path) uploaded.push(m.media_path);
   if (uploaded.length) void sb.storage.from('media').remove(uploaded).catch(() => {});
   m.local?.forEach((url) => URL.revokeObjectURL(url));
-  const f = feedOf(m.chat_id);
+  const f = feedOf(feedKeyOf(m));
   f.msgs = f.msgs.filter((x) => x.id !== m.id);
   emit('feed');
   reloadChatsSoon();
@@ -1520,6 +1760,7 @@ export async function deleteMessage(m: Msg): Promise<void> {
     emit('feed', 'chats');
     throw error;
   }
+  if (m.thread_id) refreshCommentStats(m.chat_id, [m.thread_id]);
   // Файлы удаляет автор: база хранит только ссылки на них (у зашифрованных — внутри шифротекста).
   if (m.user_id === meId()) {
     if (before.media_path) void sb.storage.from('media').remove([before.media_path]).catch(() => {});
@@ -1632,7 +1873,7 @@ const quoting = new Set<string>();
 
 /** Найти сообщение для цитаты: в ленте, среди догруженных или null (тогда догрузим). */
 export function quotedMsg(chatId: string, id: string): Msg | 'missing' | null {
-  const inFeed = S.feeds.get(chatId)?.msgs.find((x) => x.id === id);
+  const inFeed = findLoaded(chatId, id);
   if (inFeed) return inFeed;
   return S.quoted.get(id) ?? null;
 }
@@ -1640,7 +1881,7 @@ export function quotedMsg(chatId: string, id: string): Msg | 'missing' | null {
 /** Догрузить (и расшифровать) сообщения, на которые отвечают, — чтобы показать цитату. */
 export async function loadQuoted(chatId: string, ids: string[]): Promise<void> {
   const need = [...new Set(ids)].filter((id) => !S.quoted.has(id) && !quoting.has(id)
-    && !S.feeds.get(chatId)?.msgs.some((x) => x.id === id));
+    && !findLoaded(chatId, id));
   if (!need.length) return;
   need.forEach((id) => quoting.add(id));
   try {
@@ -1686,7 +1927,8 @@ export function canForward(m: Msg): boolean {
 export function forwardOf(m: Msg): Forward {
   if (m.fwd) return m.fwd;
   const chat = chatById(m.chat_id);
-  if (chat?.kind === 'channel') return { name: chat.name ?? 'Канал', kind: 'channel', at: m.created_at };
+  // Пост — от имени канала, комментарий — от его автора.
+  if (chat?.kind === 'channel' && !m.thread_id) return { name: chat.name ?? 'Канал', kind: 'channel', at: m.created_at };
   if (m.kind === 'system' || !m.user_id) return { name: 'СКАМ', kind: 'bot', at: m.created_at };
   const p = S.profiles.get(m.user_id);
   return { name: p?.name || 'Участник', from: m.user_id, kind: 'user', at: m.created_at };

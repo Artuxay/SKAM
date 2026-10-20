@@ -6,8 +6,8 @@ import { configured, sb } from '../lib/supabase';
 import { applyTheme } from '../lib/theme';
 import { SKAM_FULL } from '../lib/dom';
 import {
-  type ArticleFull, SLUG_RE, articleHeader, articleUrl, countView, deleteArticle, getArticle, hideArticle,
-  removeArticleImages, renderNodes, saveArticle, slugFromUrl,
+  type ArticleFull, SLUG_RE, applyArticleLook, articleHeader, articleUrl, countView, deleteArticle, getArticle, hideArticle,
+  readerMenu, removeArticleImages, renderNodes, saveArticle, slugFromUrl,
 } from '../lib/article';
 import { type Editor, createEditor, droppedImages } from '../lib/article-editor';
 
@@ -134,8 +134,10 @@ function showArticle(a: ArticleFull): void {
     },
   }));
   art.append(body);
+  // Шрифт автора и настройки читателя (шрифт, размер) — «Aa» в шапке.
+  applyArticleLook(art, a.font);
   page.replaceChildren(art, footer(a));
-  actions.replaceChildren();
+  actions.replaceChildren(readerMenu(() => applyArticleLook(art, a.font)));
   if (a.mine) {
     actions.append(abtn('Изменить', () => void startEdit(a)));
   }
@@ -178,7 +180,7 @@ function showLogin(): void {
 // Правка
 // ---------------------------------------------------------------------------
 
-type Draft = { title: string; author: string; authorUrl: string; content: ArticleFull['content']; at: number };
+type Draft = { title: string; author: string; authorUrl: string; content: ArticleFull['content']; font?: ArticleFull['font']; at: number };
 function readDraft(): Draft | null {
   try {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? 'null') as Draft | null;
@@ -197,7 +199,7 @@ async function startEdit(a: ArticleFull | null): Promise<void> {
   if (!uid) { showLogin(); return; }
   const draft = a ? null : readDraft();
   const init = a
-    ? { title: a.title, author: a.author_name ?? '', authorUrl: a.author_url ?? '', content: a.content }
+    ? { title: a.title, author: a.author_name ?? '', authorUrl: a.author_url ?? '', content: a.content, font: a.font ?? null }
     : draft ?? { title: '', author: await myName(uid), authorUrl: '', content: [] };
   editor?.destroy();
   let draftTimer = 0;
@@ -233,7 +235,7 @@ async function startEdit(a: ArticleFull | null): Promise<void> {
     const v = ed.value();
     publish.disabled = true;
     try {
-      const res = await saveArticle({ id: a?.id ?? null, title: v.title, author: v.author, authorUrl: v.authorUrl, content: v.content });
+      const res = await saveArticle({ id: a?.id ?? null, title: v.title, author: v.author, authorUrl: v.authorUrl, content: v.content, font: v.font });
       removeArticleImages(droppedImages(a?.content ?? [], v.content, ed.uploaded()));
       if (!a) writeDraft(null);
       const fresh = await getArticle(res.slug);

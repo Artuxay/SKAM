@@ -3,13 +3,14 @@
 //
 // Формат — как у Telegraph: массив узлов; узел — строка или { tag, attrs?, children? }.
 // Блоки: p, h3, h4, blockquote, aside (выделенная цитата), ul/ol + li, pre, figure (img + figcaption), hr.
-// Внутри строки: b, i, u, s, code, a (href), br. Всё остальное при разборе отбрасывается (остаётся текст).
+// Внутри строки: b, i, u, s, code, a (href), br, span (font — шрифт фрагмента, 0.5.1). Всё остальное при разборе
+// отбрасывается (остаётся текст). Шрифт всей статьи — отдельное поле font (null — с засечками, как раньше).
 // Пользовательский текст никогда не попадает в innerHTML — только textContent и проверенные атрибуты.
 import './article.css';
 import { sb } from './supabase';
-import type { ArticleCard, ArticleFull, ArticleNode, Json } from './database.types';
+import type { ArticleCard, ArticleFont, ArticleFull, ArticleNode, Json } from './database.types';
 
-export type { ArticleCard, ArticleFull, ArticleNode };
+export type { ArticleCard, ArticleFont, ArticleFull, ArticleNode };
 
 /** Основной адрес сайта: ссылки на статьи всегда ведут туда (тестовая копия и локальная сборка — та же база). */
 export const SITE = 'https://skam-messenger.ru';
@@ -22,6 +23,135 @@ export const CONTENT_MAX_BYTES = 120_000;
 
 const BLOCKS = new Set(['p', 'h3', 'h4', 'blockquote', 'aside', 'ul', 'ol', 'pre', 'figure', 'hr']);
 const INLINE = new Set(['b', 'i', 'u', 's', 'code', 'a', 'br']);
+
+// ---------------------------------------------------------------------------
+// Шрифты (0.5.1): у всей статьи (автор), у фрагмента (span font) и у читателя (на его устройстве)
+// ---------------------------------------------------------------------------
+
+/** Шрифты статей. Файлы — у нас на сервере (public/fonts, лицензия OFL), браузер качает только нужные. */
+export const ARTICLE_FONTS: { id: ArticleFont; label: string }[] = [
+  { id: 'serif', label: 'С засечками' },
+  { id: 'sans', label: 'Без засечек' },
+  { id: 'mono', label: 'Моноширинный' },
+  { id: 'hand', label: 'Рукописный' },
+  { id: 'wide', label: 'Широкий' },
+];
+const FONT_IDS = new Set<string>(ARTICLE_FONTS.map((f) => f.id));
+
+export function isArticleFont(v: unknown): v is ArticleFont {
+  return typeof v === 'string' && FONT_IDS.has(v);
+}
+
+export function fontLabel(f: ArticleFont | null | undefined): string {
+  return ARTICLE_FONTS.find((x) => x.id === f)?.label ?? 'С засечками';
+}
+
+/** Как читатель настроил статьи под себя: шрифт (auto — как у автора) и размер текста (0…4, 2 — обычный). */
+export type ReaderPrefs = { font: 'auto' | 'serif' | 'sans'; size: number };
+const READER_KEY = 'skam:reader';
+export const READER_SIZES = [0.86, 0.94, 1, 1.12, 1.25];
+
+export function readerPrefs(): ReaderPrefs {
+  try {
+    const p = JSON.parse(localStorage.getItem(READER_KEY) ?? 'null') as Partial<ReaderPrefs> | null;
+    const font = p?.font === 'serif' || p?.font === 'sans' ? p.font : 'auto';
+    const size = typeof p?.size === 'number' && p.size >= 0 && p.size < READER_SIZES.length ? Math.round(p.size) : 2;
+    return { font, size };
+  } catch {
+    return { font: 'auto', size: 2 };
+  }
+}
+
+export function setReaderPrefs(p: ReaderPrefs): void {
+  try { localStorage.setItem(READER_KEY, JSON.stringify(p)); } catch { /* без хранилища — только до перезагрузки */ }
+}
+
+/** Шрифт автора и настройки читателя → классы и размер у <article class="tl">. */
+export function applyArticleLook(art: HTMLElement, authorFont: ArticleFont | null | undefined, reader: ReaderPrefs | null = readerPrefs()): void {
+  [...art.classList].filter((c) => c.startsWith('tl-font-') || c.startsWith('tl-read-')).forEach((c) => art.classList.remove(c));
+  if (isArticleFont(authorFont) && authorFont !== 'serif') art.classList.add(`tl-font-${authorFont}`);
+  if (reader && reader.font !== 'auto') art.classList.add(`tl-read-${reader.font}`);
+  art.style.setProperty('--tl-k', String(READER_SIZES[reader?.size ?? 2] ?? 1));
+}
+
+/**
+ * Кнопка «Aa» и окошко настроек чтения: шрифт (как у автора / с засечками / без засечек) и размер текста.
+ * onChange — перерисовать статьи (настройки уже сохранены).
+ */
+export function readerMenu(onChange: () => void): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'tl-reader';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'tl-reader-btn';
+  toggle.textContent = 'Aa';
+  toggle.title = 'Шрифт и размер текста';
+  toggle.setAttribute('aria-label', 'Шрифт и размер текста');
+  toggle.setAttribute('aria-haspopup', 'true');
+  toggle.setAttribute('aria-expanded', 'false');
+  const pop = document.createElement('div');
+  pop.className = 'tl-reader-pop';
+  pop.hidden = true;
+  const render = () => {
+    const p = readerPrefs();
+    const fonts = document.createElement('div');
+    fonts.className = 'tl-reader-fonts';
+    fonts.setAttribute('role', 'radiogroup');
+    fonts.setAttribute('aria-label', 'Шрифт');
+    ([['auto', 'Как у автора'], ['serif', 'С засечками'], ['sans', 'Без засечек']] as const).forEach(([id, label]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `tl-reader-font${id === 'auto' ? '' : ` tl-f-${id}`}`;
+      b.textContent = label;
+      b.setAttribute('role', 'radio');
+      b.setAttribute('aria-checked', String(p.font === id));
+      b.addEventListener('click', () => { setReaderPrefs({ ...p, font: id }); render(); onChange(); });
+      fonts.append(b);
+    });
+    const size = document.createElement('div');
+    size.className = 'tl-reader-size';
+    const minus = document.createElement('button');
+    minus.type = 'button';
+    minus.className = 'tl-reader-step small';
+    minus.textContent = 'A−';
+    minus.setAttribute('aria-label', 'Мельче');
+    minus.disabled = p.size <= 0;
+    const plus = document.createElement('button');
+    plus.type = 'button';
+    plus.className = 'tl-reader-step';
+    plus.textContent = 'A+';
+    plus.setAttribute('aria-label', 'Крупнее');
+    plus.disabled = p.size >= READER_SIZES.length - 1;
+    const dots = document.createElement('span');
+    dots.className = 'tl-reader-dots';
+    dots.setAttribute('aria-label', `Размер ${p.size + 1} из ${READER_SIZES.length}`);
+    READER_SIZES.forEach((_, i) => {
+      const d = document.createElement('i');
+      if (i <= p.size) d.className = 'on';
+      dots.append(d);
+    });
+    const step = (d: number) => { setReaderPrefs({ ...p, size: Math.max(0, Math.min(READER_SIZES.length - 1, p.size + d)) }); render(); onChange(); };
+    minus.addEventListener('click', () => step(-1));
+    plus.addEventListener('click', () => step(1));
+    size.append(minus, dots, plus);
+    const hint = document.createElement('p');
+    hint.className = 'tl-reader-hint';
+    hint.textContent = 'Только у вас, на этом устройстве.';
+    pop.replaceChildren(fonts, size, hint);
+  };
+  const close = () => { pop.hidden = true; toggle.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true); };
+  const outside = (e: Event) => { if (!box.contains(e.target as Node)) close(); };
+  toggle.addEventListener('click', () => {
+    if (!pop.hidden) { close(); return; }
+    render();
+    pop.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', outside, true);
+  });
+  box.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) { e.stopPropagation(); close(); toggle.focus(); } });
+  box.append(toggle, pop);
+  return box;
+}
 
 export function articleUrl(slug: string): string {
   return `${SITE}/a/${slug}`;
@@ -149,6 +279,17 @@ function appendNode(parent: Node, n: ArticleNode, o: RenderOpts): void {
     appendNode(parent, { tag: 'figure', children: [n] }, o);
     return;
   }
+  if (tag === 'span') {
+    // Шрифт фрагмента. Неизвестный шрифт — просто текст.
+    const font = n.attrs?.font;
+    if (!isArticleFont(font)) { childrenOf(n).forEach((c) => appendNode(parent, c, o)); return; }
+    const sp = document.createElement('span');
+    sp.className = `tl-f tl-f-${font}`;
+    sp.dataset.font = font;
+    childrenOf(n).forEach((c) => appendNode(sp, c, o));
+    parent.appendChild(sp);
+    return;
+  }
   if (!BLOCKS.has(tag) && !INLINE.has(tag) && tag !== 'li' && tag !== 'figcaption') {
     childrenOf(n).forEach((c) => appendNode(parent, c, o));
     return;
@@ -232,6 +373,12 @@ function inlineOf(node: Node, out: Inline, o: { paste: boolean }): void {
       return;
     }
     if (tag) { if (kids.length) out.push({ tag, children: kids }); return; }
+    // Шрифт фрагмента: наш span (data-font) или <font face>, который ставит браузер в редакторе.
+    const font = e.tagName === 'SPAN' ? e.dataset.font : e.tagName === 'FONT' ? e.getAttribute('face') : null;
+    if (isArticleFont(font) && kids.length) {
+      out.push(...(o.paste ? styleWrap(e, [{ tag: 'span', attrs: { font }, children: kids }]) : [{ tag: 'span', attrs: { font }, children: kids }]));
+      return;
+    }
     out.push(...(o.paste ? styleWrap(e, kids) : kids));
   });
 }
@@ -371,6 +518,12 @@ export function nodesToHtml(nodes: ArticleNode[]): string {
     if (tag === 'br') return '<br>';
     if (tag === 'hr') return '<hr>';
     if (tag === 'figure' || tag === 'img') return '';
+    if (tag === 'span') {
+      const font = n.attrs?.font;
+      return isArticleFont(font)
+        ? `<span class="tl-f tl-f-${font}" data-font="${font}">${nodesToHtml(childrenOf(n))}</span>`
+        : nodesToHtml(childrenOf(n));
+    }
     const href = tag === 'a' ? safeHref(n.attrs?.href) : null;
     if (tag === 'a' && !href) return nodesToHtml(childrenOf(n));
     return `<${tag}${href ? ` href="${esc(href)}"` : ''}>${nodesToHtml(childrenOf(n))}</${tag}>`;
@@ -468,12 +621,14 @@ export async function getArticle(slug: string): Promise<ArticleFull | null> {
   return (data as ArticleFull | null) ?? null;
 }
 
-export type ArticleDraft = { id: string | null; title: string; author: string; authorUrl: string; content: ArticleNode[] };
+export type ArticleDraft = {
+  id: string | null; title: string; author: string; authorUrl: string; content: ArticleNode[]; font?: ArticleFont | null;
+};
 
 export async function saveArticle(d: ArticleDraft): Promise<{ id: string; slug: string }> {
   const { data, error } = await sb.rpc('article_save', {
     p_id: d.id, p_title: d.title, p_author_name: d.author || null, p_author_url: d.authorUrl || null,
-    p_content: d.content as unknown as Json,
+    p_content: d.content as unknown as Json, p_font: d.font && d.font !== 'serif' ? d.font : null,
   });
   if (error) throw error;
   return data;

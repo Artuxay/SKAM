@@ -1,13 +1,16 @@
 // Редактор статьи как в Telegraph: заголовок, имя автора и текст прямо «на странице».
-// Выделили текст — над ним панель (жирный, курсив, зачёркнутый, ссылка, заголовок, подзаголовок, цитата).
+// Выделили текст — над ним панель (жирный, курсив, зачёркнутый, ссылка, шрифт, заголовок, подзаголовок, цитата).
+// Шрифт всей статьи — кнопка «Aa» рядом с именем автора (0.5.1).
 // Пустая строка — слева «+»: картинка, разделитель, списки, код. Работают и привычные сокращения:
 // «- » или «* » — список, «1. » — нумерованный, «> » — цитата, «# » и «## » — заголовки, «```» — код, «---» — разделитель.
 import {
-  type ArticleNode, AUTHOR_MAX, CONTENT_MAX_BYTES, TITLE_MAX, contentBytes, domToNodes, editorFigure, htmlToNodes,
-  imagesOf, nodesToHtml, renderNodes, safeHref, textToNodes, uploadArticleImage,
+  ARTICLE_FONTS, type ArticleFont, type ArticleNode, AUTHOR_MAX, CONTENT_MAX_BYTES, TITLE_MAX, applyArticleLook, contentBytes,
+  domToNodes, editorFigure, htmlToNodes, imagesOf, isArticleFont, nodesToHtml, renderNodes, safeHref, textToNodes,
+  uploadArticleImage,
 } from './article';
 
-export type EditorValue = { title: string; author: string; authorUrl: string; content: ArticleNode[] };
+/** font — шрифт всей статьи; null — с засечками (как раньше). */
+export type EditorValue = { title: string; author: string; authorUrl: string; content: ArticleNode[]; font: ArticleFont | null };
 export type Editor = {
   root: HTMLElement;
   value(): EditorValue;
@@ -43,6 +46,7 @@ const IC = {
   ul: SVG('<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="3"/>'),
   ol: SVG('<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 5l1.5-1v5M3.8 15.2a1.4 1.4 0 0 1 2.4.8c0 1-2.4 2-2.4 3h2.6"/>'),
   code: SVG('<path d="M8.5 7L4 12l4.5 5M15.5 7L20 12l-4.5 5"/>'),
+  font: '<span class="tt-aa">Aa</span>',
 };
 
 function btn(cls: string, iconHtml: string, label: string): HTMLButtonElement {
@@ -96,7 +100,37 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
     authorUrl.hidden = false;
     authorUrl.focus();
   });
-  byline.append(author, linkToggle);
+  // Шрифт всей статьи: «Aa» и список с образцами.
+  let articleFont: ArticleFont | null = isArticleFont(init.font) && init.font !== 'serif' ? init.font : null;
+  const fontToggle = btn('tl-ufont', IC.font, 'Шрифт статьи');
+  fontToggle.setAttribute('aria-haspopup', 'true');
+  const fontMenu = document.createElement('div');
+  fontMenu.className = 'tl-font-menu';
+  fontMenu.hidden = true;
+  fontMenu.setAttribute('role', 'menu');
+  fontMenu.setAttribute('aria-label', 'Шрифт статьи');
+  const renderFontMenu = () => {
+    fontMenu.replaceChildren(...ARTICLE_FONTS.map((f) => {
+      const b = btn(`tl-font-opt tl-f-${f.id}`, '', f.label);
+      b.textContent = f.label;
+      b.setAttribute('role', 'menuitemradio');
+      b.setAttribute('aria-checked', String((articleFont ?? 'serif') === f.id));
+      b.addEventListener('click', () => {
+        articleFont = f.id === 'serif' ? null : f.id;
+        applyArticleLook(root, articleFont, null);
+        fontMenu.hidden = true;
+        fontToggle.title = `Шрифт статьи: ${f.label}`;
+        changed();
+      });
+      return b;
+    }));
+  };
+  fontToggle.addEventListener('click', () => {
+    if (!fontMenu.hidden) { fontMenu.hidden = true; return; }
+    renderFontMenu();
+    fontMenu.hidden = false;
+  });
+  byline.append(author, linkToggle, fontToggle, fontMenu);
 
   const body = document.createElement('div');
   body.className = 'tl-body';
@@ -118,13 +152,18 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
   const tItalic = btn('tt', IC.italic, 'Курсив (Ctrl+I)');
   const tStrike = btn('tt', IC.strike, 'Зачёркнутый');
   const tLink = btn('tt', IC.link, 'Ссылка (Ctrl+K)');
+  const tFont = btn('tt', IC.font, 'Шрифт выделенного');
   const tH3 = btn('tt', IC.h3, 'Заголовок');
   const tH4 = btn('tt', IC.h4, 'Подзаголовок');
   const tQuote = btn('tt', IC.quote, 'Цитата (ещё раз — выделенная цитата)');
   const sep = () => { const s = document.createElement('span'); s.className = 'tt-sep'; return s; };
   const toolRow = document.createElement('div');
   toolRow.className = 'tt-row';
-  toolRow.append(tBold, tItalic, tStrike, tLink, sep(), tH3, tH4, tQuote);
+  toolRow.append(tBold, tItalic, tStrike, tLink, tFont, sep(), tH3, tH4, tQuote);
+  // Шрифт выделенного текста: «Обычный» и шрифты с образцами.
+  const fontRow = document.createElement('div');
+  fontRow.className = 'tt-fonts';
+  fontRow.hidden = true;
   const linkRow = document.createElement('div');
   linkRow.className = 'tt-link';
   linkRow.hidden = true;
@@ -133,7 +172,7 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
   linkInput.placeholder = 'Вставьте или напишите ссылку…';
   linkInput.setAttribute('aria-label', 'Адрес ссылки');
   linkRow.append(linkInput);
-  tools.append(toolRow, linkRow);
+  tools.append(toolRow, linkRow, fontRow);
 
   // «+» у пустой строки.
   const plus = btn('tl-plus', IC.plus, 'Добавить: картинку, разделитель, список, код');
@@ -156,7 +195,10 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
 
   root.append(title, byline, authorUrl, body, tools, plus, plusMenu, files);
 
-  const initial = JSON.stringify({ t: oneLine(init.title ?? ''), a: oneLine(init.author ?? ''), u: (init.authorUrl ?? '').trim(), c: init.content ?? [] });
+  applyArticleLook(root, articleFont, null);
+  const initial = JSON.stringify({
+    t: oneLine(init.title ?? ''), a: oneLine(init.author ?? ''), u: (init.authorUrl ?? '').trim(), c: init.content ?? [], f: articleFont,
+  });
   const uploadedPaths: string[] = [];
   let pending = 0;
   let savedRange: Range | null = null;
@@ -332,6 +374,80 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
     return null;
   }
 
+  /** Шрифт, в котором стоит начало выделения (span data-font). */
+  function inFont(): HTMLElement | null {
+    const r = selRange();
+    let n: Node | null = r ? r.startContainer : null;
+    while (n && n !== body) {
+      if (n instanceof HTMLElement && n.dataset.font) return n;
+      n = n.parentNode;
+    }
+    return null;
+  }
+
+  function openFontRow(): void {
+    const r = selRange();
+    if (!r || r.collapsed) return;
+    savedRange = r.cloneRange();
+    const cur = inFont()?.dataset.font ?? null;
+    const opts: { id: ArticleFont | null; label: string }[] = [{ id: null, label: 'Обычный' }, ...ARTICLE_FONTS];
+    fontRow.replaceChildren(...opts.map((f) => {
+      const b = btn(`tt-font${f.id ? ` tl-f-${f.id}` : ''}`, '', f.id ? f.label : 'Обычный шрифт');
+      b.textContent = f.label;
+      b.classList.toggle('on', cur === f.id || (!cur && !f.id));
+      b.addEventListener('click', () => applyFont(f.id));
+      return b;
+    }));
+    toolRow.hidden = true;
+    fontRow.hidden = false;
+    positionAbove(tools, r.getBoundingClientRect());
+  }
+
+  function closeFontRow(): void {
+    toolRow.hidden = false;
+    fontRow.hidden = true;
+  }
+
+  /**
+   * Шрифт выделенному тексту. Браузер сам аккуратно оборачивает выделение (fontName → <font face>, с отменой
+   * по Ctrl+Z), а мы сразу меняем <font> на свой span data-font. «Обычный» снимает шрифт с затронутых кусков.
+   */
+  function applyFont(id: ArticleFont | null): void {
+    const r = savedRange;
+    savedRange = null;
+    closeFontRow();
+    if (!r) { tools.hidden = true; return; }
+    const s = getSelection();
+    body.focus({ preventScroll: true });
+    s?.removeAllRanges();
+    s?.addRange(r);
+    if (id) {
+      document.execCommand('styleWithCSS', false, 'false');
+      document.execCommand('fontName', false, id);
+    } else {
+      body.querySelectorAll<HTMLElement>('span[data-font]').forEach((sp) => {
+        if (r.intersectsNode(sp)) sp.replaceWith(...sp.childNodes);
+      });
+    }
+    body.querySelectorAll('font').forEach((f) => {
+      const face = f.getAttribute('face');
+      if (isArticleFont(face)) {
+        const sp = document.createElement('span');
+        sp.className = `tl-f tl-f-${face}`;
+        sp.dataset.font = face;
+        sp.append(...f.childNodes);
+        // Шрифт внутри другого шрифта: внутренний и так главнее, внешний не трогаем.
+        f.replaceWith(sp);
+      } else {
+        f.replaceWith(...f.childNodes);
+      }
+    });
+    body.querySelectorAll<HTMLElement>('span[data-font]').forEach((sp) => { if (!sp.textContent) sp.remove(); });
+    body.normalize();
+    changed();
+    updateUi();
+  }
+
   function caretAt(edge: 'start' | 'end', block: HTMLElement): boolean {
     const r = selRange();
     if (!r || !r.collapsed) return false;
@@ -357,7 +473,7 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
   function updateUi(): void {
     const r = selRange();
     // Панель над выделением.
-    if (r && !r.collapsed && linkRow.hidden) {
+    if (r && !r.collapsed && linkRow.hidden && fontRow.hidden) {
       const rect = r.getBoundingClientRect();
       if (rect.width || rect.height) {
         const blockTag = curBlockTag();
@@ -366,13 +482,14 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
         tItalic.classList.toggle('on', document.queryCommandState('italic'));
         tStrike.classList.toggle('on', document.queryCommandState('strikeThrough'));
         tLink.classList.toggle('on', !!inLink());
+        tFont.classList.toggle('on', !!inFont());
         tH3.classList.toggle('on', blockTag === 'h3');
         tH4.classList.toggle('on', blockTag === 'h4');
         tQuote.classList.toggle('on', blockTag === 'blockquote' || blockTag === 'aside');
-        [tBold, tItalic, tStrike, tLink, tH3, tH4, tQuote].forEach((b) => { b.disabled = inPre; });
+        [tBold, tItalic, tStrike, tLink, tFont, tH3, tH4, tQuote].forEach((b) => { b.disabled = inPre; });
         positionAbove(tools, rect);
       }
-    } else if (linkRow.hidden) {
+    } else if (linkRow.hidden && fontRow.hidden) {
       tools.hidden = true;
     }
     // «+» у пустого абзаца.
@@ -474,6 +591,7 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
   tItalic.addEventListener('click', () => { document.execCommand('italic'); changed(); updateUi(); });
   tStrike.addEventListener('click', () => { document.execCommand('strikeThrough'); changed(); updateUi(); });
   tLink.addEventListener('click', openLinkInput);
+  tFont.addEventListener('click', openFontRow);
   tH3.addEventListener('click', () => setBlock(curBlockTag() === 'h3' ? 'p' : 'h3'));
   tH4.addEventListener('click', () => setBlock(curBlockTag() === 'h4' ? 'p' : 'h4'));
   tQuote.addEventListener('click', () => {
@@ -699,6 +817,8 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
   document.addEventListener('selectionchange', onSel);
   const onDocDown = (e: PointerEvent) => {
     if (!plusMenu.hidden && !plusMenu.contains(e.target as Node) && e.target !== plus && !plus.contains(e.target as Node)) closePlus();
+    if (!fontRow.hidden && !tools.contains(e.target as Node)) { savedRange = null; closeFontRow(); tools.hidden = true; }
+    if (!fontMenu.hidden && !fontMenu.contains(e.target as Node) && !fontToggle.contains(e.target as Node)) fontMenu.hidden = true;
   };
   document.addEventListener('pointerdown', onDocDown);
 
@@ -713,6 +833,7 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
     author: oneLine(author.textContent ?? ''),
     authorUrl: authorUrl.value.trim(),
     content: domToNodes(body),
+    font: articleFont,
   });
 
   return {
@@ -721,7 +842,7 @@ export function createEditor(init: Partial<EditorValue>, o: EditorOpts): Editor 
     busy: () => pending > 0,
     dirty: () => {
       const v = value();
-      return JSON.stringify({ t: v.title, a: v.author, u: v.authorUrl, c: v.content }) !== initial;
+      return JSON.stringify({ t: v.title, a: v.author, u: v.authorUrl, c: v.content, f: v.font }) !== initial;
     },
     check: () => {
       const v = value();

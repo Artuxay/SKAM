@@ -10,9 +10,10 @@ import {
   S, SEARCH_MIN, USERNAME_RE, addMembers, bannedList, channelLink, chatById, chatUsernameAvailable, createChat,
   deleteChat, hasRight, inviteLink, isAdmin, joinChannel, leaveChat, memberList, meId, myContacts, normUsername, removeAdmin,
   removeChatAvatar, removeMember, resetInvite, searchNorm, searchUsers, setAdmin, setChatUsername, setVerified,
-  transferOwner, unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact, presenceOf,
+  transferOwner, unbanMember, updateChat, uploadChatAvatar, type Banned, type Contact, presenceOf, setChatComments,
 } from './store';
 import { nickOf } from './nicks';
+import { statusEl, statusOf as emojiStatusOf } from './estatus';
 
 /** Что нужно от основного интерфейса. */
 export type AdminEnv = {
@@ -185,6 +186,8 @@ function personRow(uid: string, sub: string, onClick: (() => void) | null, extra
   const nm = el('span', 'nm');
   nm.append(el('span', 'nm-t', uid === meId() ? `${env.name(uid)} (вы)` : env.name(uid)));
   if (p?.verified) nm.append(verifiedMark());
+  const es = emojiStatusOf(uid);
+  if (es) nm.append(statusEl(es));
   text.append(nm, el('span', `st${on ? ' on' : ''}`, sub));
   b.append(env.personAvatar(uid), text);
   if (extra) b.append(extra);
@@ -377,6 +380,17 @@ function pageMain(c: MyChat): HTMLElement {
         if (!canInfo) { toast('Нужно право «Изменение профиля канала».'); return; }
         updateChat(c.id, { sign: !c.sign_messages }).then(() => render(), (e) => toast(errText(e)));
       }));
+      // Комментарии под постами, как в Telegram (0.5.1). По умолчанию выключены.
+      const commentsRow = switchRow('💬', 'Комментарии', !!c.comments, () => {
+        if (!canInfo) { toast('Нужно право «Изменение профиля канала».'); return; }
+        const next = !c.comments;
+        setChatComments(c.id, next).then(() => {
+          toast(next ? 'Комментарии включены — подписчики могут обсуждать посты' : 'Комментарии выключены');
+          render();
+        }, (e) => toast(errText(e, 'Не получилось изменить настройку комментариев.')));
+      });
+      commentsRow.id = 'commentsSwitch';
+      list.append(commentsRow);
     }
     const admins = members.filter((m) => m.role !== 'member').length;
     list.append(navRow('⭐', 'Администраторы', admins ? String(admins) : '', () => go({ p: 'admins' })));
@@ -386,9 +400,10 @@ function pageMain(c: MyChat): HTMLElement {
     if (hasRight(c, 'ban') && !c.is_default) list.append(navRow('🚫', 'Чёрный список', '', () => go({ p: 'banned' })));
     stack.append(list);
     if (c.kind === 'channel') {
-      stack.append(el('p', 'hint ci-list-hint', c.sign_messages
+      stack.append(el('p', 'hint ci-list-hint', (c.sign_messages
         ? 'Под постами видно имя автора.'
-        : 'Посты публикуются от имени канала. Включите подписи, чтобы под постом было видно автора.'));
+        : 'Посты публикуются от имени канала. Включите подписи, чтобы под постом было видно автора.')
+        + (c.comments ? ' Под каждым постом — «Комментарии»: писать могут подписчики.' : ' Включите комментарии, чтобы подписчики могли обсуждать посты.')));
     }
   }
 
@@ -925,6 +940,8 @@ export function openAddMembers(chatId: string, opts: { dialog?: HTMLDialogElemen
     const nm = el('span', 'nm');
     nm.append(el('span', 'nm-t', env.name(uid)));
     if (S.profiles.get(uid)?.verified) nm.append(verifiedMark());
+    const es = emojiStatusOf(uid);
+    if (es) nm.append(statusEl(es));
     text.append(nm, el('span', `st${on && state === 'free' ? ' on' : ''}`, sub));
     l.append(env.personAvatar(uid), text, cb);
     return l;

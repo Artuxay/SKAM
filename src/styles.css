@@ -2075,3 +2075,71 @@ dialog.article-dlg[open]{display:flex}
   .ad-bar{padding-top:calc(10px + env(safe-area-inset-top, 0px));min-height:56px}
   .ad-title{display:none}
 }
+
+/* ---------- 0.5.1: эмодзи-статус у имени ---------- */
+.estatus{display:inline-grid;place-items:center;flex:none;width:1.2em;height:1.2em;margin-left:4px;font-family:var(--emoji);font-style:normal;font-weight:400;line-height:1;vertical-align:-.2em;text-decoration:none}
+.estatus img{width:100%;height:100%;object-fit:contain;display:block;-webkit-user-drag:none;user-select:none}
+.estatus.big{width:26px;height:26px;margin:0;font-size:22px;vertical-align:middle}
+.author .estatus{width:15px;height:15px;font-size:13px;margin-left:3px}
+.estatus-btn{flex:none;border:0;background:transparent;padding:2px;margin-left:2px;border-radius:8px;display:inline-grid;place-items:center;cursor:pointer;transition:background .15s var(--ease)}
+.estatus-btn:hover{background:var(--raised)}
+.lr-em .estatus{margin:0;width:22px;height:22px;font-size:19px}
+.es-body{display:flex;flex-direction:column;gap:10px}
+.es-now{display:flex;align-items:center;gap:12px;background:var(--surface);border-radius:14px;padding:12px 14px}
+.es-now .estatus.big{width:40px;height:40px;font-size:34px}
+.es-now-t{display:flex;flex-direction:column;gap:2px;min-width:0}
+.es-now-t span{color:var(--muted);font-size:13px;line-height:1.35}
+.es-label{margin:4px 0 0;font-size:13px;color:var(--muted)}
+.es-for{margin-left:0;flex-wrap:wrap;align-self:flex-start}
+.es-sec .sp-title{position:static;background:none;padding:6px 2px}
+.ep-item.on{background:var(--accent-soft);box-shadow:inset 0 0 0 2px var(--accent)}
+
+/* ---------- 0.5.1: комментарии к постам каналов ---------- */
+.conv-main.thread .back{display:grid}
+.conv-main.thread #findBtn,.conv-main.thread #headMenuBtn{display:none}
+.conv-emoji.thread-ic{background:var(--accent-soft);color:var(--accent-text);font-family:var(--font)}
+.conv-emoji.thread-ic svg{width:22px;height:22px}
+.cmt-bar{display:flex;align-items:center;gap:8px;clear:both;box-sizing:border-box;width:calc(100% + 26px);margin:8px -13px -6px;padding:7px 13px 8px;border:0;border-top:1px solid var(--line);background:transparent;border-radius:0 0 19px 19px;color:var(--accent-text);font:inherit;font-size:13.5px;font-weight:600;line-height:1.2;text-align:left;cursor:pointer;white-space:nowrap}
+.cmt-bar:hover{background:var(--raised)}
+.cmt-faces{display:flex;align-items:center;flex:none}
+.cmt-faces .av{width:22px;height:22px;font-size:10px;box-shadow:0 0 0 2px var(--in);margin-left:-6px}
+.cmt-faces .av:first-child{margin-left:0}
+.cmt-faces svg{width:18px;height:18px;display:block}
+.cmt-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.cmt-chev{display:grid;place-items:center;opacity:.7}
+.cmt-chev svg{width:16px;height:16px}
+.cmt-bar.bare{width:auto;margin:6px 0 0;padding:5px 11px;border:1px solid var(--line);border-radius:999px;background:var(--card)}
+.cmt-bar.bare .cmt-faces .av{box-shadow:0 0 0 2px var(--card)}
+.thread-start{align-self:center;margin:14px 0 6px;font-size:12px;font-weight:600;color:var(--muted);background:var(--surface);border-radius:999px;padding:4px 12px;text-align:center}
+
+/* ---------- 0.5.1: расшифровка голосовых и кружочков ---------- */
+.stt-btn{flex:none;align-self:center;width:32px;height:32px;border-radius:10px;border:0;padding:0;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent-text);display:grid;place-items:center;cursor:pointer;transition:background .15s var(--ease)}
+.stt-btn:hover{background:color-mix(in srgb,var(--accent) 24%,transparent)}
+.stt-btn.on{background:var(--accent);color:#fff}
+.row.mine .stt-btn{background:rgba(0,0,0,.1);color:#000}
+.row.mine .stt-btn.on{background:#000;color:#F9F9F9}
+.stt-btn.busy svg{animation:sttPulse 1.1s ease-in-out infinite}
+@keyframes sttPulse{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.stt-btn.busy svg{animation:none}}
+.stt-box{display:flex;flex-direction:column;gap:5px;margin-top:7px;max-width:360px;white-space:normal;font-size:14.5px;line-height:1.42}
+.stt-box[hidden]{display:none}
+.stt-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.stt-st{font-size:13px;color:var(--muted)}
+.row.mine .stt-st{color:rgba(0,0,0,.62)}
+.stt-st.err{color:var(--danger)}
+.row.mine .stt-st.err{color:#7A1208}
+.stt-bar{display:block;height:3px;border-radius:2px;background:color-mix(in srgb,currentColor 14%,transparent);overflow:hidden}
+.stt-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s var(--ease)}
+.row.mine .stt-bar i{background:#000}
+.stt-foot{font-size:11.5px;color:var(--muted)}
+.row.mine .stt-foot{color:rgba(0,0,0,.55)}
+.stt-link{border:0;background:none;padding:0;color:var(--accent-text);font:inherit;font-weight:600;cursor:pointer;text-decoration:underline;text-underline-offset:2px;align-self:flex-start}
+.row.mine .stt-link{color:#000}
+.vnote-box{position:relative;width:max-content}
+.stt-note{display:flex;flex-direction:column;align-items:flex-start;gap:6px;margin-top:6px}
+.row.mine .stt-note{align-items:flex-end}
+.stt-note .stt-box{margin:0;background:var(--in);border-radius:16px;padding:8px 12px}
+.row.mine .stt-note .stt-box{background:var(--grad-warm);color:#000}
+.vmeta .stt-btn{width:26px;height:22px;border-radius:7px;margin-left:2px}
+.vmeta .stt-btn svg{width:16px;height:16px}
+.stt-note .stt-btn{align-self:inherit}
