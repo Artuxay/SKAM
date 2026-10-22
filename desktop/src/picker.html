@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src data:">
+<title>Показать экран</title>
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="picker.css">
+</head>
+<body>
+<main class="pk">
+  <header class="pk-head">
+    <h1>Что показать?</h1>
+    <div class="seg" role="tablist" aria-label="Что показать">
+      <button type="button" role="tab" id="tabScreen" data-kind="screen" aria-selected="true">Экраны <span class="n" id="nScreen"></span></button>
+      <button type="button" role="tab" id="tabWindow" data-kind="window" aria-selected="false">Окна <span class="n" id="nWindow"></span></button>
+    </div>
+  </header>
+  <section class="grid" id="grid" role="listbox" aria-label="Экраны и окна" tabindex="-1"></section>
+  <p class="empty" id="empty" hidden>Открытых окон нет — сверните СКАМ и откройте то, что хотите показать.</p>
+  <footer class="pk-foot">
+    <button type="button" class="audio" id="audio" role="switch" aria-checked="true" hidden>
+      <span class="sw on" aria-hidden="true"></span>
+      <span class="audio-t">
+        <span class="audio-l">Звук компьютера</span>
+        <span class="audio-s">Всё, что звучит в Windows, — и голоса собеседников. Включайте для видео и игр.</span>
+      </span>
+    </button>
+    <span class="spacer"></span>
+    <button type="button" class="btn ghost" id="cancel">Отмена</button>
+    <button type="button" class="btn primary" id="share" disabled>Показать</button>
+  </footer>
+</main>
+<script src="picker.js"></script>
+</body>
+</html>

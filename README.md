@@ -11,7 +11,7 @@
 
 <a href="https://skam-messenger.ru"><img src="https://img.shields.io/badge/%D0%BE%D1%82%D0%BA%D1%80%D1%8B%D1%82%D1%8C-skam--messenger.ru-E85002?style=for-the-badge&labelColor=000000" alt="Открыть skam-messenger.ru"></a>
 
-<a href="CHANGELOG.md"><img src="https://img.shields.io/badge/%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.5.1-FFAB1A?style=flat-square&labelColor=000000" alt="Версия 0.5.1"></a>
+<a href="CHANGELOG.md"><img src="https://img.shields.io/badge/%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F-0.5.2-FFAB1A?style=flat-square&labelColor=000000" alt="Версия 0.5.2"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-GPL--3.0-66EA1B?style=flat-square&labelColor=000000" alt="Лицензия GPL-3.0"></a>
 <a href="%D0%A8%D0%98%D0%A4%D0%A0%D0%9E%D0%92%D0%90%D0%9D%D0%98%D0%95.md"><img src="https://img.shields.io/badge/%D1%88%D0%B8%D1%84%D1%80%D0%BE%D0%B2%D0%B0%D0%BD%D0%B8%D0%B5-%D1%81%D0%BA%D0%B2%D0%BE%D0%B7%D0%BD%D0%BE%D0%B5-E85002?style=flat-square&labelColor=000000" alt="Сквозное шифрование"></a>
 <a href="server/README.md"><img src="https://img.shields.io/badge/%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80-%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0-646464?style=flat-square&labelColor=000000" alt="Сервер в Москве"></a>
@@ -48,8 +48,8 @@
 </td>
 <td width="50%" valign="top">
 
-📱 **Ничего не нужно скачивать**<br>
-Открывается в браузере на телефоне и компьютере и ставится на главный экран как обычное приложение. Светлая и тёмная тема.
+📱 **Можно ничего не скачивать**<br>
+Открывается в браузере на телефоне и компьютере и ставится на главный экран как обычное приложение. А для Windows есть [приложение](#скам-для-windows) с треем и рацией в играх.
 
 </td>
 </tr>
@@ -71,6 +71,7 @@
 - 🕶 «Время захода»: все, контакты или никто — скрывает сам сервер
 - ✅ Официальные галочки, которые нельзя купить или подделать
 - 🏷 Свои ники для контактов, «О себе», эмодзи-статус и личный канал в профиле
+- 🖥 Приложение для Windows: живёт в трее, уведомляет с закрытым окном, рация работает даже в игре
 
 ## Начать за минуту
 
@@ -78,6 +79,20 @@
 2. Введите почту — придёт код. Аккаунта ещё нет? Создадим.
 3. Придумайте пароль шифрования: с ним ваши чаты откроются на любом новом устройстве.
 4. На телефоне добавьте СКАМ на главный экран — и он станет приложением.
+
+## СКАМ для Windows
+
+<a href="https://github.com/Artuxay/SKAM/releases/latest/download/SKAM-Setup.exe"><img src="https://img.shields.io/badge/%D1%81%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C-%D0%B4%D0%BB%D1%8F%20Windows-E85002?style=for-the-badge&labelColor=000000" alt="Скачать для Windows"></a>
+
+Тот же СКАМ, но в своём окне и с тем, чего не умеет браузер:
+
+- 📥 живёт в трее возле часов — сообщения и звонки приходят и с закрытым окном;
+- 🔔 уведомления Windows и число непрочитанных на панели задач;
+- 🎮 рация в звонках работает и в других окнах — например, в игре;
+- 🖥 показ экрана или окна со звуком компьютера;
+- 🚀 запуск вместе с Windows.
+
+Установка — двойной щелчок по `SKAM-Setup.exe`, без прав администратора. Интерфейс и шифрование обновляются вместе с сайтом сами, а о новой версии самого приложения оно напомнит. Подробнее — [desktop/README.md](desktop/README.md).
 
 ## Под капотом
 
@@ -94,6 +109,7 @@ npm run dev            # http://localhost:5173
 - 🛠 **[РАЗРАБОТКА.md](РАЗРАБОТКА.md)** — запуск, настройка Supabase, база данных, структура кода
 - 🔐 **[ШИФРОВАНИЕ.md](ШИФРОВАНИЕ.md)** — как устроено сквозное шифрование
 - 🖥 **[server/README.md](server/README.md)** — свой сервер: сборка, резервные копии, почта
+- 🪟 **[desktop/README.md](desktop/README.md)** — приложение для Windows (Electron)
 - 📝 **[CHANGELOG.md](CHANGELOG.md)** — что нового в каждой версии
 
 ## Связь

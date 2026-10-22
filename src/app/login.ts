@@ -5,6 +5,7 @@ import { sb } from '../lib/supabase';
 import { $, APP_ICON_HERO, SKAM_FULL_HTML, button, el, html, lsGet, lsSet } from '../lib/dom';
 import { OAUTH, authSettings, finishOAuth, knownSettings, lastProvider, oauthReturn, signInWith, type OAuthId } from '../lib/oauth';
 import { privacyLink, termsLink } from '../lib/legal';
+import { offerWindowsApp, windowsAppLink } from '../lib/desktop';
 
 type Method = 'phone' | 'email';
 type Target = { method: Method; value: string };
@@ -172,6 +173,12 @@ function startStep(saved: Target, notice: string | null): void {
   const providers = st?.oauth.map((p) => p.id) ?? [];
   if (providers.length) wrap.append(oauthBlock(providers, (msg) => { err.textContent = msg; }));
   body.replaceChildren(wrap, note, legal);
+  // На компьютере с Windows — ссылка на приложение (уведомления с закрытым окном, рация в играх).
+  if (offerWindowsApp()) {
+    const app = el('p', 'auth-note legal-links');
+    app.append(windowsAppLink('Скачать СКАМ для Windows'));
+    body.append(app);
+  }
   applyMethod();
 
   form.addEventListener('submit', async (ev) => {

@@ -1,0 +1,5 @@
+.off{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:32px 24px;text-align:center}
+.off h1{margin:14px 0 0;font-size:22px;font-weight:600;letter-spacing:-.01em}
+.off p{margin:0;max-width:360px;color:var(--muted)}
+.off .btn{margin-top:10px;min-width:160px}
+.off .state{min-height:1.45em;font-size:13px}

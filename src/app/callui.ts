@@ -1,6 +1,7 @@
 // Интерфейс звонков, как в Discord: сцена звонка над перепиской, панель «Голосовая связь
 // подключена» внизу слева, окно входящего звонка, записи о звонках в ленте и настройки устройств.
 import type { ActiveCall, CallMemberInfo, MyChat } from '../lib/database.types';
+import { desktop } from '../lib/desktop';
 import { $, ICONS, button, closeDialog, el, html, lsGet, lsSet, openDialog, plural, timeLabel, toast, touchMQ, wideMQ } from '../lib/dom';
 import { choiceRow, grp, grpLabel, grpNote, radioRow, rangeRow, row, selectRow, sheetHead, toggleRow, type IconName, type Opt } from './sheet';
 import { S, meId, peerBlocked, ts, type Msg } from './store';
@@ -858,7 +859,9 @@ export function openCallSettings(): void {
         window.addEventListener('keydown', capturing, true);
       } });
       parts.push(grp(keyBtn, meter));
-      parts.push(grpNote('Удерживайте клавишу — и вас слышно. Клавиши ловятся, пока вкладка СКАМ открыта и в фокусе: браузер не отдаёт нажатия из других окон. Печатая в поле ввода, рацию не нажать.'));
+      parts.push(grpNote(desktop?.pttEverywhere
+        ? 'Удерживайте клавишу — и вас слышно. Рация работает и в других окнах — например, в игре: приложение СКАМ ловит эту клавишу само. Печатая в поле ввода СКАМ, рацию не нажать.'
+        : 'Удерживайте клавишу — и вас слышно. Клавиши ловятся, пока вкладка СКАМ открыта и в фокусе: браузер не отдаёт нажатия из других окон (в приложении СКАМ для Windows — отдаёт). Печатая в поле ввода, рацию не нажать.'));
     }
     modeBox.replaceChildren(...parts);
   };
@@ -1054,7 +1057,10 @@ export function openShare(): void {
     (() => {
       const b = el('div', 'sh-body');
       b.append(grp(res, fps), note);
-      if (!live) b.append(grp(switchRow('sound', 'Со звуком', 'Звук вкладки или всего экрана. Звук отдельного окна браузер обычно не даёт.', () => o.audio, (v) => { o.audio = v; })));
+      const soundNote = desktop?.systemAudio
+        ? 'Звук всего компьютера — и для экрана, и для окна. Отключить можно и в следующем окне.'
+        : 'Звук вкладки или всего экрана. Звук отдельного окна браузер обычно не даёт.';
+      if (!live) b.append(grp(switchRow('sound', 'Со звуком', soundNote, () => o.audio, (v) => { o.audio = v; })));
       b.append(load, actions);
       return b;
     })(),

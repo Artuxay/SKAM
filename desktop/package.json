@@ -1,0 +1,93 @@
+{
+  "name": "skam-desktop",
+  "productName": "СКАМ",
+  "version": "0.5.2",
+  "description": "СКАМ для Windows — Свободный Конфиденциальный Автономный Мессенджер",
+  "author": "ArtuXay <skam.messenger@yandex.com>",
+  "homepage": "https://skam-messenger.ru",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "icons": "node scripts/make-icons.mjs",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "koffi": "2.16.3"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.17.0"
+  },
+  "build": {
+    "appId": "ru.skam-messenger.desktop",
+    "productName": "СКАМ",
+    "copyright": "© 2026 ArtuXay · GPL-3.0",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json",
+      "!assets/icon.png",
+      "!node_modules/koffi/src/**",
+      "!node_modules/koffi/doc/**",
+      "!node_modules/koffi/vendor/**",
+      "!node_modules/koffi/lib/**",
+      "!node_modules/koffi/build/koffi/{darwin_*,freebsd_*,linux_*,musl_*,openbsd_*,win32_arm64,win32_ia32}/**",
+      "!node_modules/koffi/build/koffi/win32_x64/*.{exp,lib}"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/build/koffi/win32_x64/**"
+    ],
+    "npmRebuild": false,
+    "electronLanguages": [
+      "ru",
+      "en-US"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "executableName": "SKAM",
+      "artifactName": "SKAM-Setup.${ext}",
+      "requestedExecutionLevel": "asInvoker",
+      "legalTrademarks": "СКАМ"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "СКАМ",
+      "uninstallDisplayName": "СКАМ",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerLanguages": [
+        "ru_RU"
+      ],
+      "language": "1049",
+      "deleteAppDataOnUninstall": false,
+      "differentialPackage": false
+    },
+    "publish": null,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    }
+  }
+}

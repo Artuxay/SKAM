@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src https: http:">
+<title>СКАМ — нет связи</title>
+<link rel="stylesheet" href="ui.css">
+<link rel="stylesheet" href="offline.css">
+</head>
+<body>
+<main class="off">
+  <svg class="mark" viewBox="0 0 200 200" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFAB1A"/><stop offset=".5" stop-color="#E85002"/><stop offset="1" stop-color="#66EA1B"/></linearGradient></defs><rect width="200" height="200" rx="46" fill="url(#g)"/><svg x="54.3" y="50.3" width="91.7" height="100.1" viewBox="-1 -1 131 143"><path fill="#000" fill-rule="evenodd" d="M9.84 98.75A64.5 64.5 0 1 1 39.9 124.1L0.5 140.5Z M34 64.5A30.5 30.5 0 1 0 95 64.5A30.5 30.5 0 1 0 34 64.5Z"/></svg></svg>
+  <h1>Нет связи с сервером</h1>
+  <p>Проверьте интернет — СКАМ подключится сам, как только связь появится.</p>
+  <button type="button" class="btn primary" id="retry">Повторить</button>
+  <p class="state" id="state" aria-live="polite"></p>
+</main>
+<script src="offline.js"></script>
+</body>
+</html>

@@ -55,6 +55,7 @@ import {
   unlinkOAuth, type OAuthId, type OAuthLink,
 } from '../lib/oauth';
 import { LEGAL_VERSION, acceptedVersion, privacyLink, termsLink } from '../lib/legal';
+import { desktop, offerWindowsApp, windowsAppLink } from '../lib/desktop';
 import { mountTerms } from './terms';
 import { ST, resetStories, storyState } from '../lib/stories';
 import { mountStories, openComposer, openStoriesOf, refreshStories, renderStoryStrip, ringClass, storyGrid } from './stories';
@@ -1109,6 +1110,8 @@ function setSideMini(on: boolean, save = true): void {
 }
 
 function updateTitle(): void {
+  // Идёт звонок — приложение для Windows слушает клавишу рации и в других окнах (только во время звонка).
+  document.documentElement.toggleAttribute('data-call', !!calls.C.session);
   const n = totalUnread();
   document.title = calls.ringing().length ? '📞 Входящий звонок — СКАМ' : n ? `(${n}) СКАМ` : 'СКАМ';
   const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
@@ -4095,7 +4098,9 @@ function profNotify(dlg: HTMLDialogElement): HTMLElement[] {
       }),
       perm === 'granted' && P.on ? row({ icon: 'bell', label: 'Проверить уведомление', fn: () => void testNotify() }) : null,
     ),
-    grpNote('Уведомления приходят, пока СКАМ открыт — во вкладке браузера или как приложение. Закрытый СКАМ не уведомляет. Чаты без звука молчат.'),
+    grpNote(desktop
+      ? 'Уведомления Windows приходят и с закрытым окном, пока СКАМ работает в трее возле часов. Чаты без звука молчат.'
+      : 'Уведомления приходят, пока СКАМ открыт — во вкладке браузера или как приложение. Закрытый СКАМ не уведомляет. Чаты без звука молчат.'),
     grpLabel('Без звука'),
     muted.length ? grp(...mutedRows) : grpNote('Таких чатов нет. Выключить звук чата можно в меню «⋮» в его шапке или правой кнопкой мыши по чату в списке.'),
   ];
@@ -4104,7 +4109,7 @@ function profNotify(dlg: HTMLDialogElement): HTMLElement[] {
 function profAbout(dlg: HTMLDialogElement): HTMLElement[] {
   const hero = el('div', 'sh-hero about');
   hero.append(html(APP_ICON_HERO), el('span', 'wordmark', 'СКАМ'), html(SKAM_FULL_HTML), el('p', 'sh-sub', 'Не развод, а мессенджер'),
-    el('p', 'sh-sub', `Версия ${__SKAM_VERSION__}`));
+    el('p', 'sh-sub', desktop ? `Версия ${__SKAM_VERSION__} · приложение для Windows ${desktop.version}` : `Версия ${__SKAM_VERSION__}`));
   const linkRow = (a: HTMLAnchorElement, icon: IconName, text: string) => {
     a.className = 'lr';
     const ic = el('span', 'lr-ic');
@@ -4122,6 +4127,7 @@ function profAbout(dlg: HTMLDialogElement): HTMLElement[] {
     grp(
       linkRow(termsLink(), 'file', 'Пользовательское соглашение'),
       linkRow(privacyLink(), 'lock', 'Политика конфиденциальности'),
+      offerWindowsApp() ? linkRow(windowsAppLink(), 'download', 'Скачать СКАМ для Windows') : null,
       row({ icon: 'help', label: 'Написать в поддержку', chev: true, fn: () => { closeDialog(dlg); openSupport(); } }),
     ),
     grpNote('Нашли ошибку или есть идея — напишите в поддержку. Ответ придёт на почту.'),

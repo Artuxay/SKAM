@@ -17,6 +17,7 @@ import { lsGet, lsSet, uuid } from '../lib/dom';
 import { S, emit, ensureProfiles, meId, reloadChatsSoon } from './store';
 import * as e2e from './e2e';
 import * as snd from './sounds';
+import { desktop } from '../lib/desktop';
 
 /** В звонке — до 8 человек (как ограничивает сервер). */
 export const MAX_PEOPLE = 8;
@@ -1043,7 +1044,8 @@ export async function startScreen(opts: ShareOpts): Promise<boolean> {
     setTrack(s, SCR, v);
     setTrack(s, SCR_AUDIO, s.scrAudio);
     stateChanged(s);
-    if (opts.audio && !s.scrAudio) notice('Показ идёт без звука: браузер не дал звук этого окна. Для звука выберите вкладку или весь экран и отметьте «Поделиться звуком».');
+    // В приложении для Windows звук выключают в его окне выбора экрана — тогда это не ошибка.
+    if (opts.audio && !s.scrAudio && !desktop) notice('Показ идёт без звука: браузер не дал звук этого окна. Для звука выберите вкладку или весь экран и отметьте «Поделиться звуком».');
     return true;
   } catch (e) {
     const m = mediaError(e, 'screen');

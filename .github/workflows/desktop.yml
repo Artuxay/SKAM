@@ -1,0 +1,57 @@
+# Приложение СКАМ для Windows (папка desktop/). При изменениях в desktop/ GitHub собирает установщик
+# на Windows и выкладывает его в Releases как «СКАМ для Windows X.Y.Z» (тег desktop-vX.Y.Z).
+# Сайт и само приложение берут установщик по постоянной ссылке
+# https://github.com/Artuxay/SKAM/releases/latest/download/SKAM-Setup.exe
+# Новая версия выходит, только если поднять version в desktop/package.json (и в public/desktop.json).
+name: Приложение для Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run dist
+
+      - name: Выложить в Releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          tag="desktop-v$v"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Версия $v уже выложена. Новый установщик выйдет, когда поднимут version в desktop/package.json."
+            exit 0
+          fi
+          gh release create "$tag" dist/SKAM-Setup.exe \
+            --target "$GITHUB_SHA" \
+            --title "СКАМ для Windows $v" \
+            --notes-file release-notes.md \
+            --latest
