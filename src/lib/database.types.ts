@@ -548,6 +548,16 @@ export type Database = {
       };
       /** Я владелец СКАМ (могу выдавать официальные галочки)? */
       am_app_owner: { Args: Record<PropertyKey, never>; Returns: boolean };
+      /** Страница /admin/ (0.5.3) — только владельцам СКАМ, остальным 42501. */
+      admin_stats: { Args: { p_days?: number }; Returns: AdminStats };
+      admin_support: {
+        Args: { p_status?: SupportStatus | null; p_limit?: number; p_before?: string | null };
+        Returns: AdminSupport;
+      };
+      admin_support_set: {
+        Args: { p_id: string; p_status?: SupportStatus | null; p_note?: string | null };
+        Returns: { id: string; status: SupportStatus; note: string | null; handled_at: string | null; handled_by_name: string | null };
+      };
       set_verified: { Args: { p_kind: 'user' | 'channel'; p_id: string; p_on: boolean }; Returns: undefined };
       /** Неофициальные наборы стикеров. */
       sticker_pack: { Args: { p_pack: string }; Returns: StickerPackInfo | null };
@@ -804,4 +814,59 @@ export type PollState = {
   id: string; chat_id: string; n: number; options: string[] | null; multiple: boolean; anonymous: boolean; quiz: boolean;
   counts: number[]; voters: number; closed: boolean; mine: number[]; correct: number | null; solution: string | null;
   recent: string[] | null; can_close: boolean; can_vote: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// Страница владельцев /admin/ (0.5.3)
+// ---------------------------------------------------------------------------
+
+/** Сводка «сейчас» (private.stats_now). Окна — последние сутки по Москве, 7 и 30 дней; тестовые аккаунты не считаются. */
+export type AdminNow = {
+  users: number; test_accounts: number;
+  new_1d: number; new_7d: number; new_30d: number;
+  seen_1d: number; seen_7d: number; seen_30d: number;
+  writers_1d: number; writers_7d: number; writers_30d: number;
+  messages_1d: number; messages_7d: number;
+  chats_active_7d: number;
+  /** Группы, где за 7 дней писали трое и больше. */
+  groups_alive_7d: number;
+  /** Ни одного личного чата или группы с другим человеком. */
+  lonely: number;
+  calls_7d: number; calls_answered_7d: number; call_minutes_7d: number;
+  /** Новички за 30 дней: написали кому-то в первые сутки. */
+  activation: { total: number; done: number };
+  /** Зарегистрировались 7–37 дней назад: заходили или писали спустя неделю. */
+  week_return: { total: number; done: number };
+  ratings: { count: number; avg: number | null; dist: number[] };
+  support: { new: number; work: number; done: number; unmailed: number };
+  content: { channels: number; public_channels: number; groups: number; stories_7d: number; articles: number; polls_30d: number };
+};
+
+export type AdminDay = { day: string; new_users: number; messages: number; writers: number; calls: number; seen: number | null };
+
+export type AdminStats = {
+  at: string; today: string; days: number; tz: string;
+  /** С какого дня есть снимки (ряд «Заходили»). */
+  snapshots_since: string | null;
+  now: AdminNow;
+  daily: AdminDay[];
+  top_channels: { name: string | null; username: string; verified: boolean; members: number; posts_7d: number; comments_7d: number }[];
+};
+
+export type SupportStatus = 'new' | 'work' | 'done';
+
+export type AdminSupportItem = {
+  id: string; no: string; created_at: string; topic: 'bug' | 'question' | 'idea' | 'other' | string; body: string;
+  email: string | null; name: string | null; username: string | null; user_id: string;
+  meta: Record<string, string> | null;
+  mailed_at: string | null; attempts: number; last_error: string | null;
+  status: SupportStatus; note: string | null; handled_at: string | null; handled_by_name: string | null;
+  profile_name: string | null; profile_username: string | null;
+  /** Сколько всего обращений у этого человека. */
+  user_total: number;
+};
+
+export type AdminSupport = {
+  counts: { new: number; work: number; done: number; all: number; unmailed: number };
+  items: AdminSupportItem[];
 };

@@ -42,8 +42,9 @@ export default defineConfig({
   worker: { format: 'es' },
   build: {
     rollupOptions: {
-      // Две страницы: мессенджер и лёгкая страница статьи (без чатов, шифрования и звонков).
-      input: { main: 'index.html', article: 'a/index.html' },
+      // Три страницы: мессенджер, лёгкая страница статьи (без чатов, шифрования и звонков)
+      // и страница владельцев /admin/ — статистика и обращения в поддержку (0.5.3).
+      input: { main: 'index.html', article: 'a/index.html', admin: 'admin/index.html' },
       // supabase-js — общий для обеих страниц: отдельным файлом, он меняется реже приложения.
       output: { manualChunks: (id) => (id.includes('node_modules') ? 'vendor' : undefined) },
     },

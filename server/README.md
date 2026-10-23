@@ -73,6 +73,15 @@ docker logs supabase-edge-functions --since 30m 2>&1 | grep bot-ai
 
 Задания хранятся 30 дней (для лимитов), текст сообщений в них не копируется. Экземпляр функции на этом сервере живёт не дольше минуты (`workerTimeoutMs` в `volumes/functions/main/index.ts`), поэтому функция берёт задание, только пока успевает, а **pg_cron** (`cron.job` `skam-bot-ai-kick`, каждые 15 секунд) вызывает `private.bot_ai_kick()` — он будит функцию, если есть вопросы в очереди или задание оборвалось (через 65 секунд оно пробуется ещё раз, всего две попытки). Застрявшие дольше 10 минут помечаются `failed` (`stale`). Журнал будильника: `select * from cron.job_run_details order by start_time desc limit 5;`.
 
+## Статистика для админки (с 0.5.3)
+
+Страница `https://skam-messenger.ru/admin/` (только владельцам СКАМ) берёт числа из базы. Кто заходил за день, задним числом не посчитать (`private.presence` хранит только последний заход), поэтому **pg_cron** (`cron.job` `skam-stats-snapshot`, каждые 10 минут) вызывает `private.stats_snapshot()` и пишет снимок текущего дня по Москве в `private.stats_daily`. Ряд «Заходили» на графике копится с 23 октября 2026.
+
+```sql
+select day, data, taken_at from private.stats_daily order by day desc limit 7;
+select * from cron.job_run_details where jobid = (select jobid from cron.job where jobname = 'skam-stats-snapshot') order by start_time desc limit 5;
+```
+
 ## Модели расшифровки голосовых (с 0.5.1)
 
 Голосовые превращаются в текст прямо в браузере (Whisper), а файлы модели браузер берёт у нас — из публичного бакета **`models`**: `https://api.skam-messenger.ru/storage/v1/object/public/models/<модель>/…`. Hugging Face из России не открывается, поэтому модели лежат на своём сервере. Звук и текст на сервер не приходят.

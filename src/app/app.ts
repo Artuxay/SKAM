@@ -3542,6 +3542,11 @@ function profHome(dlg: HTMLDialogElement): HTMLElement[] {
       row({ icon: 'star', label: 'Оценить СКАМ', em: avg, chev: true, fn: () => { closeDialog(dlg); openRate(); } }),
       row({ icon: 'info', label: 'О приложении', em: __SKAM_VERSION__, chev: true, fn: () => profGo('about') }),
     ),
+    // Владельцам СКАМ — страница со статистикой и обращениями в поддержку (0.5.3).
+    grp(S.appOwner ? row({
+      icon: 'chart', label: 'Админка', sub: 'Статистика и обращения в поддержку', chev: true,
+      fn: () => { window.open(new URL('admin/', document.baseURI).href, '_blank', 'noopener'); },
+    }) : null),
     grp(row({ icon: 'logout', label: 'Выйти', danger: true, confirm: 'Точно выйти? Нажмите ещё раз', fn: () => void logout() })),
   ];
 }
